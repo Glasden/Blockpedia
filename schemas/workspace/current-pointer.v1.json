@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:workspace:current-pointer.v1",
+  "title": "Blockpedia current release pointer",
+  "type": "object",
+  "$defs": {
+    "VersionPointer": {
+      "type": "object",
+      "properties": {
+        "release_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "minecraft_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$",
+          "maxLength": 32
+        },
+        "relative_path": {
+          "type": "string",
+          "pattern": "^releases/[0-9]+\\.[0-9]+(?:\\.[0-9]+)?/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "manifest_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "required": ["release_id", "minecraft_version", "relative_path", "manifest_sha256"],
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "current-pointer.v1"},
+    "versions": {
+      "type": "object",
+      "patternProperties": {
+        "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$": {"$ref": "#/$defs/VersionPointer"}
+      },
+      "additionalProperties": false,
+      "minProperties": 1
+    },
+    "default_minecraft_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$",
+      "maxLength": 32
+    },
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "required": [
+    "schema_version",
+    "versions",
+    "default_minecraft_version",
+    "updated_at"
+  ],
+  "additionalProperties": false
+}

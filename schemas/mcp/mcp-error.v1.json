@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:mcp:mcp-error.v1",
+  "title": "Blockpedia MCP error output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_id", "error_code", "message", "retryable", "minecraft_version", "details", "warnings", "images"],
+  "properties": {
+    "schema_version": {"const": "mcp-error.v1"},
+    "request_id": {"$ref": "#/$defs/opaque_id"},
+    "error_code": {"enum": ["DATA_ROOT_INVALID", "CURRENT_POINTER_MISSING", "CURRENT_POINTER_INVALID", "VERSION_NOT_AVAILABLE", "RELEASE_NOT_FOUND", "RELEASE_NOT_BUILT", "RELEASE_INTEGRITY_FAILED", "INDEX_INFO_UNAVAILABLE", "INDEX_OPEN_FAILED", "QUERY_INVALID", "QUERY_PARSE_FAILED", "HARD_CONSTRAINT_UNSUPPORTED", "BLOCK_NOT_FOUND", "IMAGE_READ_FAILED", "IMAGE_MAPPING_INVALID", "RERANK_REQUIRED_UNAVAILABLE", "READ_ONLY_VIOLATION", "MCP_INTERNAL_ERROR"]},
+    "message": {"type": "string", "minLength": 1, "maxLength": 500},
+    "retryable": {"type": "boolean"},
+    "minecraft_version": {"anyOf": [{"$ref": "#/$defs/minecraft_version"}, {"type": "null"}]},
+    "details": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release_id", "available_versions", "invalid_block_ids", "field_errors", "provider_error_code", "integrity_component"],
+      "properties": {
+        "release_id": {"anyOf": [{"$ref": "#/$defs/opaque_id"}, {"type": "null"}]},
+        "available_versions": {"type": "array", "items": {"$ref": "#/$defs/minecraft_version"}, "uniqueItems": true},
+        "invalid_block_ids": {"type": "array", "items": {"$ref": "#/$defs/block_id"}, "uniqueItems": true},
+        "field_errors": {"type": "array", "items": {"$ref": "#/$defs/field_error"}},
+        "provider_error_code": {"anyOf": [{"enum": ["PROVIDER_NOT_CONFIGURED", "PROVIDER_CONFIG_INVALID", "PROVIDER_CAPABILITY_MISSING", "PROVIDER_STORAGE_UNSUPPORTED", "PROVIDER_AUTH_FAILED", "PROVIDER_PERMISSION_DENIED", "PROVIDER_MODEL_UNAVAILABLE", "PROVIDER_NETWORK_ERROR", "PROVIDER_TIMEOUT", "PROVIDER_RATE_LIMITED", "PROVIDER_SERVER_ERROR", "PROVIDER_REQUEST_INVALID", "PROVIDER_PAYLOAD_TOO_LARGE", "PROVIDER_REFUSAL", "PROVIDER_INCOMPLETE", "PROVIDER_SCHEMA_INVALID_REPAIRABLE", "PROVIDER_SCHEMA_INVALID", "PROVIDER_OUTPUT_ID_MISMATCH", "PROVIDER_MACHINE_FACT_CONFLICT", "PROVIDER_CANCELLED", "PROVIDER_UNKNOWN"]}, {"type": "null"}]},
+        "integrity_component": {"anyOf": [{"enum": ["current_pointer", "manifest", "checksums", "quality_report", "index"]}, {"type": "null"}]}
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 500}},
+    "images": {"const": []}
+  },
+  "$defs": {
+    "opaque_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"},
+    "minecraft_version": {"type": "string", "pattern": "^[0-9]{1,3}\\.[0-9]{1,3}(?:\\.[0-9]{1,3})?$", "minLength": 3, "maxLength": 11},
+    "block_id": {"type": "string", "pattern": "^minecraft:[a-z0-9_./-]+$"},
+    "field_error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "code", "message"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 200},
+        "code": {"type": "string", "minLength": 1, "maxLength": 100},
+        "message": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    }
+  }
+}

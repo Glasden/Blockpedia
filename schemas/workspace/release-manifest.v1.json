@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:workspace:release-manifest.v1",
+  "title": "Blockpedia release manifest",
+  "type": "object",
+  "$defs": {
+    "Sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "SafePath": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*\\\\)[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$"
+    },
+    "ProviderSnapshot": {
+      "type": "object",
+      "properties": {
+        "adapter": {"const": "openai_responses"},
+        "profile_id": {"type": "string", "minLength": 1, "maxLength": 64},
+        "model_id": {"type": "string", "minLength": 1, "maxLength": 200},
+        "base_url_stable_id": {"type": "string", "minLength": 1, "maxLength": 512},
+        "secret_reference": {"type": "string", "minLength": 1, "maxLength": 256},
+        "prompt_version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "request_envelope_schema_id": {"const": "provider-batch-envelope.v1"},
+        "wire_schema_ids": {
+          "type": "object",
+          "properties": {
+            "offline_annotation": {"const": "annotation-batch-output.v1"},
+            "query_spec": {"const": "query-spec-output.v1"},
+            "visual_rerank": {"const": "rerank-output.v1"}
+          },
+          "required": ["offline_annotation", "query_spec", "visual_rerank"],
+          "additionalProperties": false
+        },
+        "search_ranking_version": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "required": [
+        "adapter",
+        "profile_id",
+        "model_id",
+        "base_url_stable_id",
+        "secret_reference",
+        "prompt_version",
+        "request_envelope_schema_id",
+        "wire_schema_ids",
+        "search_ranking_version"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "release-manifest.v1"},
+    "release_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "minecraft_version": {"const": "26.2"},
+    "source_export_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "source_export_manifest_sha256": {"$ref": "#/$defs/Sha256"},
+    "toolchain_lock_sha256": {"$ref": "#/$defs/Sha256"},
+    "schemas_inventory_path": {"const": "schemas.sha256"},
+    "provider_snapshot": {"$ref": "#/$defs/ProviderSnapshot"},
+    "functional_inputs": {
+      "type": "object",
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$": {"$ref": "#/$defs/Sha256"}
+      },
+      "additionalProperties": false
+    },
+    "functional_artifacts": {
+      "type": "object",
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$": {"$ref": "#/$defs/Sha256"}
+      },
+      "additionalProperties": false
+    },
+    "quality_report_path": {"const": "quality_report.json"},
+    "quality_report_sha256": {"$ref": "#/$defs/Sha256"},
+    "fts_mode": {"enum": ["trigram", "normalized_like"]}
+  },
+  "required": [
+    "schema_version",
+    "release_id",
+    "minecraft_version",
+    "source_export_id",
+    "source_export_manifest_sha256",
+    "toolchain_lock_sha256",
+    "schemas_inventory_path",
+    "provider_snapshot",
+    "functional_inputs",
+    "functional_artifacts",
+    "quality_report_path",
+    "quality_report_sha256",
+    "fts_mode"
+  ],
+  "additionalProperties": false
+}

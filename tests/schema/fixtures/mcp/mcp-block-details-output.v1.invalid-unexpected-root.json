@@ -1,0 +1,10 @@
+{
+  "schema_version": "mcp-block-details-output.v1",
+  "request_id": "mcp_01J",
+  "minecraft_version": "26.2",
+  "resolved_release_id": "rel_01J",
+  "manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "warnings": [],
+  "data": {"block_id": "minecraft:yellow_carpet", "official_names": {"zh_cn": "黄色地毯", "en_us": "Yellow Carpet"}, "translation_key": "block.minecraft.yellow_carpet", "default_state_id": "minecraft:yellow_carpet", "property_definitions": [], "states": [], "block_facts": {"has_item": true, "has_block_entity": false, "tags": [], "default_state_behavior": {"transparent": false, "emissive": false, "emission_level": 0, "passable": false, "waterloggable": false, "requires_support": true, "redstone_related": false, "support": {"above": "unknown", "below": true, "east": "unknown", "north": "unknown", "south": "unknown", "west": "unknown", "none": false}}}, "variants": [], "images": [], "audit": {"skip_records": [], "override_refs": [], "qualification_review_refs": []}},
+  "unexpected": true
+}

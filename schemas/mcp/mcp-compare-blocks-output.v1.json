@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:mcp:mcp-compare-blocks-output.v1",
+  "title": "Blockpedia MCP compare blocks output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_id", "minecraft_version", "resolved_release_id", "manifest_sha256", "warnings", "data"],
+  "properties": {
+    "schema_version": {"const": "mcp-compare-blocks-output.v1"},
+    "request_id": {"$ref": "#/$defs/opaque_id"},
+    "minecraft_version": {"$ref": "#/$defs/minecraft_version"},
+    "resolved_release_id": {"$ref": "#/$defs/opaque_id"},
+    "manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "warnings": {"$ref": "#/$defs/warnings"},
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["block_ids", "rows", "contact_sheet", "images"],
+      "properties": {
+        "block_ids": {"type": "array", "minItems": 2, "maxItems": 6, "uniqueItems": true, "items": {"$ref": "#/$defs/block_id"}},
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "values"],
+            "properties": {
+              "field": {"type": "string", "minLength": 1, "maxLength": 200},
+              "values": {"type": "array", "items": {"$ref": "#/$defs/row_value"}}
+            }
+          }
+        },
+        "contact_sheet": {"$ref": "#/$defs/contact_sheet"},
+        "images": {"type": "array", "items": {"$ref": "#/$defs/image"}}
+      }
+    }
+  },
+  "$defs": {
+    "opaque_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"},
+    "minecraft_version": {"type": "string", "pattern": "^[0-9]{1,3}\\.[0-9]{1,3}(?:\\.[0-9]{1,3})?$", "minLength": 3, "maxLength": 11},
+    "block_id": {"type": "string", "pattern": "^minecraft:[a-z0-9_./-]+$"},
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "warnings": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 500}},
+    "tile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "variant_id", "block_id", "row", "column"],
+      "properties": {
+        "candidate_id": {"$ref": "#/$defs/opaque_id"},
+        "variant_id": {"$ref": "#/$defs/opaque_id"},
+        "block_id": {"$ref": "#/$defs/block_id"},
+        "row": {"type": "integer", "minimum": 0},
+        "column": {"type": "integer", "minimum": 0}
+      }
+    },
+    "contact_sheet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image_id", "tile_mapping"],
+      "properties": {
+        "image_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
+        "tile_mapping": {"type": "array", "items": {"$ref": "#/$defs/tile"}}
+      }
+    },
+    "row_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["block_id", "value", "source"],
+      "properties": {
+        "block_id": {"$ref": "#/$defs/block_id"},
+        "value": {"type": ["boolean", "number", "string"]},
+        "source": {"enum": ["machine", "annotation"]}
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image_id", "purpose", "mime_type", "width", "height", "sha256", "content_index", "mapping"],
+      "properties": {
+        "image_id": {"$ref": "#/$defs/opaque_id"},
+        "purpose": {"const": "compare_contact_sheet"},
+        "mime_type": {"const": "image/png"},
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "content_index": {"type": "integer", "minimum": 0},
+        "mapping": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["candidate_id", "variant_id", "block_id"], "properties": {"candidate_id": {"type": ["string", "null"]}, "variant_id": {"$ref": "#/$defs/opaque_id"}, "block_id": {"$ref": "#/$defs/block_id"}}}}
+      }
+    }
+  }
+}

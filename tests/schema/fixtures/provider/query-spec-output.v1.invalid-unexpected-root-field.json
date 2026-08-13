@@ -1,0 +1,29 @@
+{
+  "schema_id": "query-spec-output.v1",
+  "source": "llm",
+  "hard": {
+    "minecraft_version": {"value": "26.2", "source": "request", "required": true},
+    "release_status": {"value": "current", "source": "system", "required": true},
+    "legal_state": {"value": true, "source": "system", "required": true},
+    "behaviors": [],
+    "support": [],
+    "transparency": [],
+    "emission": [],
+    "orientation": [],
+    "shape": []
+  },
+  "soft": {
+    "colors": [],
+    "materials": [],
+    "uses": [],
+    "styles": [],
+    "shape_terms": [],
+    "avoid_for": [],
+    "keywords": []
+  },
+  "ambiguities": [],
+  "needs_user_choice": false,
+  "suggested_followups": [],
+  "unknown_terms": [],
+  "unexpected": true
+}

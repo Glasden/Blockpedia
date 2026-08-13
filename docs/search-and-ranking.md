@@ -2,7 +2,7 @@
 
 ## 文档状态、优先级与关联规范
 
-本文定义 Blockpedia MVP 的 `QuerySpec`、硬过滤、FTS5 检索、确定性排序、联系表、同一个 OpenAI Responses 模型视觉重排和降级语义。正文使用简体中文；字段名、Schema、状态、错误码、权重键和命令保持英文。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 为规范性关键字。
+本文定义 Blockpedia MVP 的 `QuerySpec`、硬过滤、FTS5 检索、确定性排序、联系表、同一个 OpenAI Responses 模型视觉重排和降级语义。精确数据字段形状由 `schemas/{workspace,provider,mcp}/` 下的真实 Schema 文件拥有；本文示例和行为规则不重复穷举字段。正文使用简体中文；字段名、Schema、状态、错误码、权重键和命令保持英文。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 为规范性关键字。
 
 本文服从 [`../AGENTS.md`](../AGENTS.md)、[`roadmap.md`](roadmap.md) 和 [`decisions.md`](decisions.md)，并与 [`product-scope.md`](product-scope.md) 和 [`architecture.md`](architecture.md) 保持一致。原始稿 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 仅作历史背景和最低优先级参考，不与本契约一起执行；冲突内容禁止实现。字段事实来自 [`data-and-schemas.md`](data-and-schemas.md)、导出规则来自 [`export-contract.md`](export-contract.md)、工作/发布边界来自 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)。
 
@@ -94,7 +94,7 @@
 - 用户显式方向，例如 `horizontal`、`vertical`、`north`；
 - 用户显式形状，例如 `horizontal_thin_sheet`、`stair_like`。
 
-颜色、材质观感、建筑用途、风格、模糊形状描述和普通关键词默认只能进入 `soft`。模型不得把“看起来像”“适合”“大概”“类似”提升为硬约束；只有请求文本中的明确强制词或系统安全规则能提升。`hard` 的每个对象必须有 `source` 和 `required=true`，硬约束值必须来自当前词表或机器事实枚举。
+颜色、材质观感、建筑用途、风格、模糊形状描述和普通关键词默认只能进入 `soft`。模型不得把“看起来像”“适合”“大概”“类似”提升为硬约束；只有请求文本中的明确强制词或系统安全规则能提升。`hard` 的每个对象必须有 `source` 和 `required=true`，硬约束值必须来自真实 Schema 允许的 bounded semantic fields 或机器事实枚举。
 
 `unknown` 永远不能满足硬约束：要求 `true` 只接受 `true`，要求 `false` 只接受 `false`，排除行为时 `unknown` 不能当作安全的 `false`。视觉条件未由机器事实验证时，不能硬过滤为满足，必须保留候选并设置 `visual_constraints_verified=false` 和 warning。
 
@@ -147,7 +147,7 @@ machine_tags
 behavior_terms
 ```
 
-每个通道必须可单独诊断并在 `score_breakdown` 中返回。未经审核的开放文本不能成为硬匹配；AI 和人工语义必须先通过 Schema/词表。行为、透明、发光、支撑、方向和几何事实以结构化列/JSON 过滤，不能依赖 FTS 文本猜测。
+每个通道必须可单独诊断并在 `score_breakdown` 中返回。未经审核的开放文本不能成为硬匹配；AI 和人工语义必须先通过真实 Schema 的 bounded fields。行为、透明、发光、支撑、方向和几何事实以结构化列/JSON 过滤，不能依赖 FTS 文本猜测。
 
 ### 3.3 颜色、几何、用途、风格和行为
 
@@ -272,11 +272,11 @@ MCP 等价在线搜索结构化结果使用 `mcp-search-blocks-output.v1`，至�
 
 ### 7.3 Provider 不可用
 
-`query_spec` 失败时，本地 parser 只能使用受控词表和用户显式词，未知内容进入 `unknown_terms`/soft keyword；无法安全解析硬约束时返回 `QUERY_PARSE_FAILED` 或明确未解析硬约束的安全空成功结果，不得猜测。`visual_rerank` 失败时使用本地排序，保留 warnings、`reranked_by_llm=false` 和 provider 错误码。若 Studio active profile 或 release-bound snapshot 的 `secret_reference` 无法从 Keyring/env 解析，在线查询只可本地降级并 warning，不得写状态、修改 profile 或缓存。若运行时能力不满足 release snapshot 的要求，也必须本地降级并 warning。降级不得增加候选、放宽过滤、改变 release 或写入数据。
+`query_spec` 失败时，本地 parser 只能使用真实 Schema 允许的 bounded semantic fields 和用户显式词，未知内容进入 `unknown_terms`/soft keyword；无法安全解析硬约束时返回 `QUERY_PARSE_FAILED` 或明确未解析硬约束的安全空成功结果，不得猜测。`visual_rerank` 失败时使用本地排序，保留 warnings、`reranked_by_llm=false` 和 provider 错误码。若 Studio active profile 或 release-bound snapshot 的 `secret_reference` 无法从 Keyring/env 解析，在线查询只可本地降级并 warning，不得写状态、修改 profile 或缓存。若运行时能力不满足 release snapshot 的要求，也必须本地降级并 warning。降级不得增加候选、放宽过滤、改变 release 或写入数据。
 
 ## 8. 版本化缓存和可重复性
 
-在线 QuerySpec/重排缓存必须遵循 [`openai-provider.md`](openai-provider.md) 的八字段 key：`image_hash`、`machine_metadata_hash`、`prompt_version`、`model_id`、`schema_version`、`vocabulary_version`、`base_url_stable_id`、`stage`，并额外绑定 `minecraft_version`、resolved release manifest hash、原始 query hash、QuerySpec hash、候选集合 hash 和 `search-ranking_version`。缓存只能保存通过 Schema 的最小 artifact，不保存完整 response、图片或 usage；MCP 进程不写此缓存。
+在线 QuerySpec/重排缓存必须遵循 [`openai-provider.md`](openai-provider.md) 的 key：`image_hash`、`machine_metadata_hash`、`prompt_version`、`model_id`、`schema_version`、`base_url_stable_id`、`stage`，并额外绑定 `minecraft_version`、resolved release manifest hash、原始 query hash、QuerySpec hash、候选集合 hash 和 `search-ranking_version`。缓存只能保存通过 Schema 的最小 artifact，不保存完整 response、图片或 usage；MCP 进程不写此缓存。
 
 同一 release、同一 QuerySpec、同一排序配置和同一 fixture 必须产生相同 Top-24、family 去重、tile mapping、候选 ID 和本地顺序；时间、request ID 和展示 `search_id` 不参与排序。
 
@@ -290,7 +290,7 @@ MCP 等价在线搜索结构化结果使用 `mcp-search-blocks-output.v1`，至�
 | `RELEASE_INTEGRITY_FAILED` | manifest/hash/质量门失败 | 否 |
 | `QUERY_INVALID` | query/context/Schema 非法 | 否 |
 | `QUERY_PARSE_FAILED` | 无法得到安全 QuerySpec | 仅返回安全空结果 |
-| `HARD_CONSTRAINT_UNSUPPORTED` | 请求硬条件不在机器/词表能力内 | 否，须追问 |
+| `HARD_CONSTRAINT_UNSUPPORTED` | 请求硬条件不在机器或 bounded semantic fields 能力内 | 否，须追问 |
 | `NO_CANDIDATES` | 保留为内部/兼容诊断码；正常硬过滤空集不得作为 MCP error | 否，保持空成功 |
 | `PROVIDER_NOT_CONFIGURED` | Studio 无可用 active profile，或 release-bound snapshot 的 secret 无法解析 | 是，local parser/local rank |
 | `PROVIDER_CAPABILITY_MISSING` | provider 图片/strict 能力缺失 | 是，local parser/local rank |
@@ -307,7 +307,7 @@ MCP 等价在线搜索结构化结果使用 `mcp-search-blocks-output.v1`，至�
 
 实现必须用原创 SQLite/PNG fixture 验证：
 
-1. `QuerySpec` 的 wire `query-spec-output.v1` 和本地完整 Schema 均拒绝未知字段、候选 ID、非法词表、缺少来源和硬/软混淆；`unknown` 不满足任何硬约束。
+1. `QuerySpec` 的 wire `query-spec-output.v1` 和本地 Schema 均拒绝未知字段、候选 ID、越界语义值、缺少来源和硬/软混淆；`unknown` 不满足任何硬约束。
 2. 版本、发布状态、合法状态、明确排除行为、明确支撑/透明/发光/方向/形状先过滤；空结果为成功空集，不放宽并带建议追问。
 3. FTS5 trigram 和 `normalized_like` fallback 都覆盖名称、同义词、颜色、几何、用途、风格和行为通道。
 4. `search-ranking.v1` 权重精确为 `.35/.30/.15/.10/.05/.05`；未出现维度按规则归一化；结果可复现。

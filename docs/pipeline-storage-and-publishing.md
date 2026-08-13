@@ -75,14 +75,14 @@ MCP                   → 只读根 current.json 与指定版本 release
 
 ## 4. Python/SDK 锁定和 `PREPARE`
 
-Fabric/Gradle 工具链由导出契约固定为 Minecraft Java `26.2`、Java `25`、Fabric Loader `0.19.3`、Fabric API `0.157.0+26.2`、Loom `1.17`、Gradle `9.5.1` 和 Mojang mappings。R0 阶段验证 Python 和所用 SDK；R0 结束后必须把 `python_version`、Python 包 lockfile 哈希、OpenAI SDK 版本和 Schema 引擎版本完全锁定。candidate check/build 的前置只要求 R0-R3 和 candidate-build gate；activation-check/apply 的前置才要求 R0-R4、activation gate 和用户确认。
+Fabric/Gradle 工具链由导出契约固定为 Minecraft Java `26.2`、Java `25`、Fabric Loader `0.19.3`、Fabric API `0.157.0+26.2`、Loom `1.17.19`、Gradle `9.5.1`；Minecraft 26.2 使用 native Mojang names/unobfuscated，不解析外部 mappings artifact。R0 只锁定实际引入的 Python tooling 依赖；不预锁未实现的 R2-R4 栈。后续依赖在使用前必须精确/hash 锁定并在 Windows 11 x86_64 与 Linux x86_64 `manylinux_2_17` / glibc `>=2.17` 上重新验证。candidate check/build 的前置只要求 R0-R3 和 candidate-build gate；activation-check/apply 的前置才要求 R0-R4、activation gate 和用户确认。
 
 `PREPARE` 在任何外部模型请求或写入成功产物前必须检查：
 
 1. 导出包存在、路径在 `<data_root>/exports/` 或经用户明确授权的位置，且通过 [导出契约](export-contract.md) 校验。
-2. manifest 的 MC/Fabric/Java/Loom/Gradle/mappings 精确值与当前项目 lock 一致。
-3. R0 产生的 Python/SDK lock 已存在，运行解释器和 SDK 哈希一致；否则报告 `TOOLCHAIN_NOT_LOCKED` 并停止。
-4. `state-policy.v1`、`render.v1`、`fixture.v1`、`dedupe.v1`、`vocab.v1` 和所有 JSON Schema 已加载并校验；Studio 只校验 exporter 已写入的策略版本，不执行状态选择或渲染。
+2. manifest 的 MC/Fabric/Java/Loom/Gradle/mappings 精确值与当前项目 lock 一致；精确字段形状以真实 Schema 文件为准。
+3. R0 tooling 的 Python lock 已存在，运行解释器和实际使用依赖哈希一致；否则报告 `TOOLCHAIN_NOT_LOCKED` 并停止。
+4. exporter 已写入的策略版本和所有真实 JSON Schema 已加载并校验；Studio 只校验 exporter 已写入的策略版本，不执行状态选择或渲染。
 5. 资源包只有 vanilla 标识/哈希，没有原始资源副本；导出 scope 是 `minecraft` block registry。
 6. 计算 `run_id`、`input_signature`、工作库 Schema 版本和每阶段幂等键。
 7. 同一输入签名已有成功阶段产物时，验证哈希后复用，不重新执行；不存在 `store=false` 能力证明时停止，不允许 warning/ack 继续 provider 任务。
@@ -129,7 +129,6 @@ image_hash
 + prompt_version
 + model_id
 + schema_version
-+ vocabulary_version
 + base_url_stable_id
 + stage
 ```
@@ -237,7 +236,7 @@ recover 不能删除成功产物，也不能把未知结果当作 AI 已返回�
 
 ### 6.5 provider 配置冻结
 
-`AI_ANNOTATE` 和在线 query lane 使用同一个已启用的 `OpenAIResponsesProvider`。release candidate 必须冻结以下非秘密 provider 引用和版本：`profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、`prompt_version`、各 wire/record Schema version、`vocabulary_version`、`search_ranking_version`。MCP 只能从 release metadata 读取这些值，并按 `secret_reference` 从 Keyring 或允许的环境变量读取秘密；MCP **MUST NOT** 读取 workspace 数据库、可变 provider profile 或缓存。compatible `base_url` 仍属于同一 Responses provider；能力探测和 `store=false` 未完全通过时不得冻结为可用配置。
+`AI_ANNOTATE` 和在线 query lane 使用同一个已启用的 `OpenAIResponsesProvider`。release candidate 必须冻结以下非秘密 provider 引用和版本：`profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、`prompt_version`、各 wire/record Schema version、`search_ranking_version`。MCP 只能从 release metadata 读取这些值，并按 `secret_reference` 从 Keyring 或允许的环境变量读取秘密；MCP **MUST NOT** 读取 workspace 数据库、可变 provider profile 或缓存。compatible `base_url` 仍属于同一 Responses provider；能力探测和 `store=false` 未完全通过时不得冻结为可用配置。
 
 ## 7. 错误、恢复和重试语义
 
@@ -282,9 +281,9 @@ recover 不能删除成功产物，也不能把未知结果当作 AI 已返回�
 └── checksums.sha256
 ```
 
-`index.sqlite3` 是为只读 MCP 构建的发布投影，包含 FTS 索引和仅 `eligible`/满足条件的 `conditional` 视觉候选；可以保留用于详情查看的完整 Block/状态事实，但不得把 skipped 或 `excluded` 项伪装成可搜索图片。release 不包含原版资源。MCP 所需 provider snapshot 也必须冻结在 release metadata 中：`profile_id`、`model_id`、`base_url_stable_id`、不可逆 `secret_reference`、prompt/Schema/vocab/search 版本；MCP 不读 workspace provider profile，也不把该 snapshot 视为新的 active profile。
+`index.sqlite3` 是为只读 MCP 构建的发布投影，包含 FTS 索引和仅 `eligible`/满足条件的 `conditional` 视觉候选；可以保留用于详情查看的完整 Block/状态事实，但不得把 skipped 或 `excluded` 项伪装成可搜索图片。release 不包含原版资源。MCP 所需 provider snapshot 也必须冻结在 release metadata 中：`profile_id`、`model_id`、`base_url_stable_id`、不可逆 `secret_reference`、prompt/Schema/search 版本；MCP 不读 workspace provider profile，也不把该 snapshot 视为新的 active profile。
 
-`release.json` 使用 `release.v1`，至少记录；同目录 `manifest.json` 使用独立的 `release-manifest.v1`，只记录功能输入/产物和 Schema inventory 引用。`release-manifest.v1` 的顶层 `schema_version` 必须为 `release-manifest.v1`，其功能哈希不得包含 `release.json`、`manifest.json`、`schemas.sha256` 或 `checksums.sha256`，避免自引用和循环；`release.json` 仅保存 `manifest_sha256`，不保存自身或 checksum 的摘要：
+`release.json` 使用 `release.v1`，至少记录；同目录 `manifest.json` 使用独立的 `release-manifest.v1`，只记录功能输入/产物和 Schema inventory 引用。精确字段形状由 `schemas/workspace/` 下的真实 Schema 文件拥有，以下仅为说明性示例。`release-manifest.v1` 的顶层 `schema_version` 必须为 `release-manifest.v1`，其功能哈希不得包含 `release.json`、`manifest.json`、`schemas.sha256` 或 `checksums.sha256`，避免自引用和循环；`release.json` 仅保存 `manifest_sha256`，不保存自身或 checksum 的摘要：
 
 ```json
 {
@@ -305,7 +304,6 @@ recover 不能删除成功产物，也不能把未知结果当作 AI 已返回�
       "query_spec": "query-spec-output.v1",
       "visual_rerank": "rerank-output.v1"
     },
-    "vocabulary_version": "vocab.v1",
     "search_ranking_version": "search-ranking.v1"
   },
   "manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
@@ -324,7 +322,7 @@ recover 不能删除成功产物，也不能把未知结果当作 AI 已返回�
 }
 ```
 
-release 创建成功后目录内容和数据库权限/应用层均视为只读。所有普通文件必须复制到 staging 后逐文件计算 `sha256:<64 lowercase hex>`，不得使用 symlink/hardlink；完成 flush/fsync 后原子 rename 为 release ID，并由 `release.json` 的 `immutable: true` 记录不可变语义，不得额外写入契约外的 marker 文件。manifest 只记录功能输入/产物 hash，不记录自身、`release.json` 或 `checksums.sha256` hash；`release.json` 只记录 `manifest_sha256`，而 `checksums.sha256` 独立列出并校验 release 内其它普通文件。`schemas.sha256` 是按 schema-id UTF-8 字节序排序的 Schema inventory，每行严格为 `<64hex><two spaces><schema-id><two spaces><canonical-repository-relative-posix-path>\n`，路径必须是仓库规范相对 POSIX 路径且不声称位于 release；它和 `checksums.sha256` 都不被自身或 release metadata 反向哈希。任何修订都新建 `release_id`，即使只改变 Schema、词表、prompt、模型、图片或人工覆盖也不能更新旧 release。
+release 创建成功后目录内容和数据库权限/应用层均视为只读。所有普通文件必须复制到 staging 后逐文件计算 `sha256:<64 lowercase hex>`，不得使用 symlink/hardlink；完成 flush/fsync 后原子 rename 为 release ID，并由 `release.json` 的 `immutable: true` 记录不可变语义，不得额外写入契约外的 marker 文件。manifest 只记录功能输入/产物 hash，不记录自身、`release.json` 或 `checksums.sha256` hash；`release.json` 只记录 `manifest_sha256`，而 `checksums.sha256` 独立列出并校验 release 内其它普通文件。`schemas.sha256` 是按 schema-id UTF-8 字节序排序的 Schema inventory，每行严格为 `<64hex><two spaces><schema-id><two spaces><canonical-repository-relative-posix-path>\n`，路径必须是仓库规范相对 POSIX 路径且不声称位于 release；它和 `checksums.sha256` 都不被自身或 release metadata 反向哈希。任何修订都新建 `release_id`，即使只改变 Schema、semantic constraints、prompt、模型、图片或人工覆盖也不能更新旧 release。
 
 `manifest.json` 示例至少包含：
 

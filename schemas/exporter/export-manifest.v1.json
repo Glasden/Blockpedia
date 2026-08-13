@@ -1,0 +1,376 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:exporter:export-manifest.v1",
+  "title": "Blockpedia Export Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "export-manifest.v1" },
+    "export_contract_version": { "const": "export-contract.v1" },
+    "export_id": { "$ref": "#/$defs/opaqueId" },
+    "export_key": { "$ref": "#/$defs/hash" },
+    "logical_input_signature": { "$ref": "#/$defs/hash" },
+    "render_input_signature": { "$ref": "#/$defs/hash" },
+    "status": { "enum": ["succeeded", "needs_review", "failed"] },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "completed_at": { "$ref": "#/$defs/timestamp" },
+    "toolchain": { "$ref": "#/$defs/toolchain" },
+    "runtime": { "$ref": "#/$defs/runtime" },
+    "platform": { "$ref": "#/$defs/platform" },
+    "render_environment": { "$ref": "#/$defs/renderEnvironment" },
+    "policies": { "$ref": "#/$defs/policies" },
+    "schema_inventory": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inventoryEntry" },
+            {
+              "properties": {
+                "schema_id": { "const": "export-block.v1" },
+                "repository_path": { "const": "schemas/exporter/export-block.v1.json" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inventoryEntry" },
+            {
+              "properties": {
+                "schema_id": { "const": "export-failure.v1" },
+                "repository_path": { "const": "schemas/exporter/export-failure.v1.json" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inventoryEntry" },
+            {
+              "properties": {
+                "schema_id": { "const": "export-manifest.v1" },
+                "repository_path": { "const": "schemas/exporter/export-manifest.v1.json" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inventoryEntry" },
+            {
+              "properties": {
+                "schema_id": { "const": "export-state.v1" },
+                "repository_path": { "const": "schemas/exporter/export-state.v1.json" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inventoryEntry" },
+            {
+              "properties": {
+                "schema_id": { "const": "export-variant.v1" },
+                "repository_path": { "const": "schemas/exporter/export-variant.v1.json" }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/inventoryEntry" },
+            {
+              "properties": {
+                "schema_id": { "const": "render-metadata.v1" },
+                "repository_path": { "const": "schemas/exporter/render-metadata.v1.json" }
+              }
+            }
+          ]
+        }
+      ],
+      "items": false,
+      "minItems": 6,
+      "maxItems": 6
+    },
+    "scope": { "$ref": "#/$defs/scope" },
+    "counts": { "$ref": "#/$defs/counts" },
+    "files": { "$ref": "#/$defs/files" },
+    "integrity": { "$ref": "#/$defs/integrity" }
+  },
+  "required": [
+    "schema_version",
+    "export_contract_version",
+    "export_id",
+    "export_key",
+    "logical_input_signature",
+    "render_input_signature",
+    "status",
+    "created_at",
+    "completed_at",
+    "toolchain",
+    "runtime",
+    "platform",
+    "render_environment",
+    "policies",
+    "schema_inventory",
+    "scope",
+    "counts",
+    "files",
+    "integrity"
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "opaqueId": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "blockId": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+$"
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "minecraft_edition": { "const": "Java" },
+        "minecraft_version": { "const": "26.2" },
+        "java_version": { "const": "25" },
+        "fabric_loader_version": { "const": "0.19.3" },
+        "fabric_api_version": { "const": "0.157.0+26.2" },
+        "loom_version": { "const": "1.17.19" },
+        "gradle_version": { "const": "9.5.1" },
+        "mappings": {
+          "const": "Minecraft 26.2 native Mojang names (unobfuscated); no external mappings artifact"
+        },
+        "exporter_mod_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "exporter_version": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "required": [
+        "minecraft_edition",
+        "minecraft_version",
+        "java_version",
+        "fabric_loader_version",
+        "fabric_api_version",
+        "loom_version",
+        "gradle_version",
+        "mappings",
+        "exporter_mod_id",
+        "exporter_version"
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource_pack_id": { "const": "vanilla" },
+        "resource_pack_sha256": { "$ref": "#/$defs/hash" },
+        "language_primary": { "const": "zh_cn" },
+        "language_secondary": { "const": "en_us" },
+        "shader": { "const": "disabled" },
+        "world_fixture_version": { "const": "fixture.v1" },
+        "biome": { "$ref": "#/$defs/blockId" },
+        "weather": { "const": "clear" },
+        "world_time": { "type": "integer", "minimum": 0, "maximum": 24000 },
+        "fov": { "type": "number", "exclusiveMinimum": 0, "maximum": 180 },
+        "gui_scale": { "type": "integer", "minimum": 1 },
+        "render_distance": { "type": "integer", "minimum": 1 }
+      },
+      "required": [
+        "resource_pack_id",
+        "resource_pack_sha256",
+        "language_primary",
+        "language_secondary",
+        "shader",
+        "world_fixture_version",
+        "biome",
+        "weather",
+        "world_time",
+        "fov",
+        "gui_scale",
+        "render_distance"
+      ]
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "os_name": { "enum": ["Windows", "Linux"] },
+        "os_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "architecture": { "const": "x86_64" },
+        "gpu_vendor": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "gpu_model": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "driver_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "render_backend": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "framebuffer_resolution": { "const": "512x512" },
+        "render_environment_sha256": { "$ref": "#/$defs/hash" }
+      },
+      "required": [
+        "os_name",
+        "os_version",
+        "architecture",
+        "gpu_vendor",
+        "gpu_model",
+        "driver_version",
+        "render_backend",
+        "framebuffer_resolution",
+        "render_environment_sha256"
+      ]
+    },
+    "renderEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "camera_policy_version": { "const": "camera.v1" },
+        "camera_sha256": { "$ref": "#/$defs/hash" },
+        "lighting_policy_version": { "const": "lighting.v1" },
+        "lighting_sha256": { "$ref": "#/$defs/hash" },
+        "background_sha256": { "$ref": "#/$defs/hash" },
+        "backboard_sha256": { "$ref": "#/$defs/hash" },
+        "support_fixture_sha256": { "$ref": "#/$defs/hash" }
+      },
+      "required": [
+        "camera_policy_version",
+        "camera_sha256",
+        "lighting_policy_version",
+        "lighting_sha256",
+        "background_sha256",
+        "backboard_sha256",
+        "support_fixture_sha256"
+      ]
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state_policy_version": { "const": "state-policy.v1" },
+        "render_policy_version": { "const": "render.v1" },
+        "fixture_policy_version": { "const": "fixture.v1" },
+        "dedupe_policy_version": { "const": "dedupe.v1" }
+      },
+      "required": [
+        "state_policy_version",
+        "render_policy_version",
+        "fixture_policy_version",
+        "dedupe_policy_version"
+      ]
+    },
+    "inventoryEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_id": {
+          "enum": [
+            "export-manifest.v1",
+            "export-block.v1",
+            "export-state.v1",
+            "export-variant.v1",
+            "export-failure.v1",
+            "render-metadata.v1"
+          ]
+        },
+        "schema_sha256": { "$ref": "#/$defs/hash" },
+        "repository_path": {
+          "type": "string",
+          "pattern": "^schemas/exporter/[a-z0-9-]+\\.v1\\.json$"
+        }
+      },
+      "required": ["schema_id", "schema_sha256", "repository_path"]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": { "const": "minecraft" },
+        "registry": { "const": "block" },
+        "registry_snapshot_sha256": { "$ref": "#/$defs/hash" }
+      },
+      "required": ["namespace", "registry", "registry_snapshot_sha256"]
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registry_blocks": { "type": "integer", "minimum": 0 },
+        "block_records": { "type": "integer", "minimum": 0 },
+        "state_records": { "type": "integer", "minimum": 0 },
+        "selected_variant_records": { "type": "integer", "minimum": 0 },
+        "skipped_variant_records": { "type": "integer", "minimum": 0 },
+        "failure_records": { "type": "integer", "minimum": 0 },
+        "pending_review_records": { "type": "integer", "minimum": 0 }
+      },
+      "required": [
+        "registry_blocks",
+        "block_records",
+        "state_records",
+        "selected_variant_records",
+        "skipped_variant_records",
+        "failure_records",
+        "pending_review_records"
+      ]
+    },
+    "fileDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": { "const": true },
+        "kind": { "enum": ["jsonl", "checksum", "log", "render_directory"] },
+        "record_schema": {
+          "enum": [
+            "export-block.v1",
+            "export-state.v1",
+            "export-variant.v1",
+            "export-failure.v1"
+          ]
+        },
+        "line_hash_format": { "const": "64-lowercase-hex-without-prefix" }
+      },
+      "required": ["required", "kind"]
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "blocks.jsonl": { "$ref": "#/$defs/fileDescriptor" },
+        "states.jsonl": { "$ref": "#/$defs/fileDescriptor" },
+        "variants.jsonl": { "$ref": "#/$defs/fileDescriptor" },
+        "failures.jsonl": { "$ref": "#/$defs/fileDescriptor" },
+        "checksums.sha256": { "$ref": "#/$defs/fileDescriptor" },
+        "exporter.log": { "$ref": "#/$defs/fileDescriptor" },
+        "renders/": { "$ref": "#/$defs/fileDescriptor" }
+      },
+      "required": [
+        "blocks.jsonl",
+        "states.jsonl",
+        "variants.jsonl",
+        "failures.jsonl",
+        "checksums.sha256",
+        "exporter.log",
+        "renders/"
+      ]
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": { "const": "SHA-256" },
+        "checksum_file": { "const": "checksums.sha256" },
+        "canonical_json": { "const": "JCS-RFC8785" },
+        "jsonl_record_terminator": { "const": "LF" }
+      },
+      "required": [
+        "algorithm",
+        "checksum_file",
+        "canonical_json",
+        "jsonl_record_terminator"
+      ]
+    }
+  }
+}

@@ -1,0 +1,3 @@
+# R0 validation tooling only.  The transitive lock is generated from this file.
+jsonschema==4.26.0
+pytest==8.4.2

@@ -1,0 +1,101 @@
+{
+  "schema_version": "export-manifest.v1",
+  "export_contract_version": "export-contract.v1",
+  "export_id": "exp_fixture",
+  "export_key": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "logical_input_signature": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "render_input_signature": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "status": "succeeded",
+  "created_at": "2026-08-13T10:00:00Z",
+  "completed_at": "2026-08-13T10:01:00Z",
+  "toolchain": {
+    "minecraft_edition": "Java",
+    "minecraft_version": "26.2",
+    "java_version": "25",
+    "fabric_loader_version": "0.19.3",
+    "fabric_api_version": "0.157.0+26.2",
+    "loom_version": "1.17.19",
+    "gradle_version": "9.5.1",
+    "mappings": "Minecraft 26.2 native Mojang names (unobfuscated); no external mappings artifact",
+    "exporter_mod_id": "blockpedia-exporter",
+    "exporter_version": "1.0.0"
+  },
+  "runtime": {
+    "resource_pack_id": "vanilla",
+    "resource_pack_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "language_primary": "zh_cn",
+    "language_secondary": "en_us",
+    "shader": "disabled",
+    "world_fixture_version": "fixture.v1",
+    "biome": "minecraft:plains",
+    "weather": "clear",
+    "world_time": 6000,
+    "fov": 70,
+    "gui_scale": 2,
+    "render_distance": 8
+  },
+  "platform": {
+    "os_name": "Windows",
+    "os_version": "11",
+    "architecture": "x86_64",
+    "gpu_vendor": "fixture",
+    "gpu_model": "fixture",
+    "driver_version": "fixture",
+    "render_backend": "fixture",
+    "framebuffer_resolution": "512x512",
+    "render_environment_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "render_environment": {
+    "camera_policy_version": "camera.v1",
+    "camera_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "lighting_policy_version": "lighting.v1",
+    "lighting_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "background_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "backboard_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "support_fixture_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "policies": {
+    "state_policy_version": "state-policy.v1",
+    "render_policy_version": "render.v1",
+    "fixture_policy_version": "fixture.v1",
+    "dedupe_policy_version": "dedupe.v1"
+  },
+  "schema_inventory": [
+    { "schema_id": "export-block.v1", "schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "repository_path": "schemas/exporter/export-block.v1.json" },
+    { "schema_id": "export-failure.v1", "schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "repository_path": "schemas/exporter/export-failure.v1.json" },
+    { "schema_id": "export-manifest.v1", "schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "repository_path": "schemas/exporter/export-manifest.v1.json" },
+    { "schema_id": "export-state.v1", "schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "repository_path": "schemas/exporter/export-state.v1.json" },
+    { "schema_id": "export-variant.v1", "schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "repository_path": "schemas/exporter/export-variant.v1.json" },
+    { "schema_id": "render-metadata.v1", "schema_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "repository_path": "schemas/exporter/render-metadata.v1.json" }
+  ],
+  "scope": {
+    "namespace": "minecraft",
+    "registry": "block",
+    "registry_snapshot_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "counts": {
+    "registry_blocks": 1,
+    "block_records": 1,
+    "state_records": 1,
+    "selected_variant_records": 1,
+    "skipped_variant_records": 0,
+    "failure_records": 0,
+    "pending_review_records": 0
+  },
+  "files": {
+    "blocks.jsonl": { "required": true, "kind": "jsonl", "record_schema": "export-block.v1" },
+    "states.jsonl": { "required": true, "kind": "jsonl", "record_schema": "export-state.v1" },
+    "variants.jsonl": { "required": true, "kind": "jsonl", "record_schema": "export-variant.v1" },
+    "failures.jsonl": { "required": true, "kind": "jsonl", "record_schema": "export-failure.v1" },
+    "checksums.sha256": { "required": true, "kind": "checksum", "line_hash_format": "64-lowercase-hex-without-prefix" },
+    "exporter.log": { "required": true, "kind": "log" },
+    "renders/": { "required": true, "kind": "render_directory" }
+  },
+  "integrity": {
+    "algorithm": "SHA-256",
+    "checksum_file": "checksums.sha256",
+    "canonical_json": "JCS-RFC8785",
+    "jsonl_record_terminator": "LF"
+  },
+  "unexpected": true
+}

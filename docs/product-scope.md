@@ -4,13 +4,13 @@
 
 Blockpedia 是面向建筑 Agent 的本地、只读 Minecraft 方块知识与检索系统。它把自然语言中的视觉、形状、用途和行为要求，映射到指定 Minecraft Java 版本中真实存在的原版方块，并返回可核对的图片、`block_id`、建议状态和警告。
 
-Blockpedia **不是** Minecraft 官方产品、百科、资源包或整栋建筑生成器。公开说明和所有用户可见入口都必须明确“Blockpedia 非官方，与 Mojang 或 Microsoft 无关”。正式支持平台为 Windows 11 和 Linux x86_64。
+Blockpedia **不是** Minecraft 官方产品、百科、资源包或整栋建筑生成器。公开说明和所有用户可见入口都必须明确“Blockpedia 非官方，与 Mojang 或 Microsoft 无关”。正式支持平台为 Windows 11 x86_64 和 Linux x86_64（Linux `manylinux_2_17` / glibc `>=2.17`）。精确数据字段形状由 26 个真实 Schema 文件拥有；本文件只描述产品行为，示例不构成穷举字段规范。
 
 本文件服从 [`../AGENTS.md`](../AGENTS.md) 和 [`decisions.md`](decisions.md)，执行顺序见 [`roadmap.md`](roadmap.md)。移入的原始设计稿仅是历史背景和最低优先级参考，不与新文档一起执行；冲突内容禁止实现。
 
 ## MVP 用户闭环
 
-1. 用户在固定的 Minecraft Java `26.2` 环境中启动自制 Fabric exporter，生成绑定版本的导出包；exporter 在 Minecraft 内完成 `EXPORT_REGISTRY → SELECT_VARIANTS → RENDER_VARIANTS`。
+1. 用户在固定的 Minecraft Java `26.2` 环境（Loom `1.17.19`；native Mojang names/unobfuscated；无外部 mappings artifact）中启动自制 Fabric exporter，生成绑定版本的导出包；exporter 在 Minecraft 内完成 `EXPORT_REGISTRY → SELECT_VARIANTS → RENDER_VARIANTS`。
 2. 用户在 loopback WebUI 中显式选择 `minecraft_version`，导入导出包；Python Index Studio 只验证 exporter 已生成的 variants/renders，并运行离线特征提取。
 3. Studio/WebUI 使用唯一 active profile 的 OpenAI Responses 模型生成受控语义，并把异常、低置信度和冲突交给人工审核；release-bound MCP 只使用 resolved release snapshot。能力探测不能证明并实际使用 `store=false` 时不得 enable。
 4. Studio 按 `PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS → VALIDATE_RENDERS → EXTRACT_FEATURES → AI_ANNOTATE → VALIDATE → HUMAN_REVIEW → BUILD_RELEASE → ACTIVATE_RELEASE` 构建不可变 candidate/release；Python 不重选 variant 或重渲染。
@@ -27,6 +27,7 @@ Blockpedia **不是** Minecraft 官方产品、百科、资源包或整栋建筑
 - 中文/英文名称、受控同义词、颜色词、形状词、材质观感、建筑用途、风格和不适用场景。
 - 默认原版资源包生成的本地预览；第三方资源包、模组和 Bedrock 不在范围内。
 - Fabric 客户端 exporter、Python/FastAPI/Jinja2/HTMX 本地 WebUI、SQLite、本地图片和进程内 Worker。
+- Python 基线为 CPython `3.14.7`；R0 只锁定实际引入的 tooling 依赖。
 - OpenAI Responses 的文本/图片输入和 strict JSON Schema；只实现一个 `OpenAIResponsesProvider` adapter，允许用户批准的兼容 Responses 语义 `base_url`，不实现第二个 provider adapter。wire Schema ID 与 Responses `text.format.name` 分开，固定 name 为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`。
 - `stdio` MCP 的 `index_info`、`search_blocks`、`get_block_details`、`compare_blocks` 四个工具。
 - 多 Minecraft 版本和每个版本的 release 历史并存；WebUI 导入、任务、构建、发布必须显式选择版本；MCP 可省略版本以使用 default，但不支持隐式“最新”或显式历史 release selector。

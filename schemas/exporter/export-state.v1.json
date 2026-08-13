@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:exporter:export-state.v1",
+  "title": "Blockpedia Export State v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "export-state.v1" },
+    "export_id": { "$ref": "#/$defs/opaqueId" },
+    "minecraft_version": { "const": "26.2" },
+    "state_id": { "$ref": "#/$defs/stateId" },
+    "block_id": { "$ref": "#/$defs/blockId" },
+    "properties": { "$ref": "#/$defs/stateProperties" },
+    "is_default": { "type": "boolean" },
+    "legal_state": { "const": true },
+    "shape": { "$ref": "#/$defs/shapeFacts" },
+    "collision": { "$ref": "#/$defs/shapeFacts" },
+    "behavior": { "$ref": "#/$defs/behaviorFacts" },
+    "variant_ids": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/opaqueId" },
+      "uniqueItems": true,
+      "maxItems": 65536
+    },
+    "mapping_status": { "enum": ["mapped", "skipped"] },
+    "source": { "$ref": "#/$defs/runtimeSource" }
+  },
+  "required": [
+    "schema_version",
+    "export_id",
+    "minecraft_version",
+    "state_id",
+    "block_id",
+    "properties",
+    "is_default",
+    "legal_state",
+    "shape",
+    "collision",
+    "behavior",
+    "variant_ids",
+    "mapping_status",
+    "source"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "mapping_status": { "const": "mapped" },
+        "variant_ids": { "minItems": 1 }
+      }
+    },
+    {
+      "properties": {
+        "mapping_status": { "const": "skipped" },
+        "variant_ids": { "maxItems": 0 }
+      }
+    }
+  ],
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+    },
+    "blockId": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+$"
+    },
+    "stateId": {
+      "type": "string",
+      "maxLength": 8192,
+      "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "triState": {
+      "oneOf": [
+        { "type": "boolean" },
+        { "const": "unknown" }
+      ]
+    },
+    "stateProperties": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z0-9_]+$": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.-]+$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "supportFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "above": { "$ref": "#/$defs/triState" },
+        "below": { "$ref": "#/$defs/triState" },
+        "east": { "$ref": "#/$defs/triState" },
+        "north": { "$ref": "#/$defs/triState" },
+        "south": { "$ref": "#/$defs/triState" },
+        "west": { "$ref": "#/$defs/triState" },
+        "none": { "$ref": "#/$defs/triState" }
+      },
+      "required": ["above", "below", "east", "north", "south", "west", "none"]
+    },
+    "behaviorFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "transparent": { "$ref": "#/$defs/triState" },
+        "emissive": { "$ref": "#/$defs/triState" },
+        "passable": { "$ref": "#/$defs/triState" },
+        "waterloggable": { "$ref": "#/$defs/triState" },
+        "redstone_related": { "$ref": "#/$defs/triState" },
+        "requires_support": { "$ref": "#/$defs/triState" },
+        "support": { "$ref": "#/$defs/supportFacts" },
+        "emission_level": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 15 },
+            { "const": "unknown" }
+          ]
+        }
+      },
+      "required": [
+        "transparent",
+        "emissive",
+        "passable",
+        "waterloggable",
+        "redstone_related",
+        "requires_support",
+        "support",
+        "emission_level"
+      ]
+    },
+    "box": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_x": { "type": "number" },
+        "min_y": { "type": "number" },
+        "min_z": { "type": "number" },
+        "max_x": { "type": "number" },
+        "max_y": { "type": "number" },
+        "max_z": { "type": "number" }
+      },
+      "required": ["min_x", "min_y", "min_z", "max_x", "max_y", "max_z"]
+    },
+    "shapeFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "boxes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/box" },
+          "maxItems": 4096
+        },
+        "signature": { "$ref": "#/$defs/hash" }
+      },
+      "required": ["boxes", "signature"]
+    },
+    "runtimeSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "runtime" },
+        "minecraft_version": { "const": "26.2" },
+        "export_id": { "$ref": "#/$defs/opaqueId" },
+        "exporter_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "stage": { "const": "EXPORT_REGISTRY" }
+      },
+      "required": ["type", "minecraft_version", "export_id", "exporter_version", "stage"]
+    }
+  }
+}

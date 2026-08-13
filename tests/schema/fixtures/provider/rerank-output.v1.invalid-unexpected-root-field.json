@@ -1,0 +1,14 @@
+{
+  "schema_id": "rerank-output.v1",
+  "ranking": [
+    {
+      "candidate_id": "A1",
+      "fit": 0.9,
+      "reason": "Fits the requested shape."
+    }
+  ],
+  "needs_user_choice": false,
+  "ambiguity_points": [],
+  "suggested_followups": [],
+  "unexpected": true
+}

@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:workspace:state-record.v1",
+  "title": "Blockpedia state record",
+  "type": "object",
+  "$defs": {
+    "TriState": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "const": "unknown"
+        }
+      ]
+    },
+    "Box": {
+      "type": "object",
+      "properties": {
+        "min_x": {
+          "type": "number"
+        },
+        "min_y": {
+          "type": "number"
+        },
+        "min_z": {
+          "type": "number"
+        },
+        "max_x": {
+          "type": "number"
+        },
+        "max_y": {
+          "type": "number"
+        },
+        "max_z": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "min_x",
+        "min_y",
+        "min_z",
+        "max_x",
+        "max_y",
+        "max_z"
+      ],
+      "additionalProperties": false
+    },
+    "ShapeFacts": {
+      "type": "object",
+      "properties": {
+        "boxes": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "$ref": "#/$defs/Box"
+          }
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "boxes",
+        "signature"
+      ],
+      "additionalProperties": false
+    },
+    "SupportFacts": {
+      "type": "object",
+      "properties": {
+        "above": {
+          "$ref": "#/$defs/TriState"
+        },
+        "below": {
+          "$ref": "#/$defs/TriState"
+        },
+        "east": {
+          "$ref": "#/$defs/TriState"
+        },
+        "north": {
+          "$ref": "#/$defs/TriState"
+        },
+        "south": {
+          "$ref": "#/$defs/TriState"
+        },
+        "west": {
+          "$ref": "#/$defs/TriState"
+        },
+        "none": {
+          "$ref": "#/$defs/TriState"
+        }
+      },
+      "required": [
+        "above",
+        "below",
+        "east",
+        "north",
+        "south",
+        "west",
+        "none"
+      ],
+      "additionalProperties": false
+    },
+    "BehaviorFacts": {
+      "type": "object",
+      "properties": {
+        "transparent": {
+          "$ref": "#/$defs/TriState"
+        },
+        "emissive": {
+          "$ref": "#/$defs/TriState"
+        },
+        "emission_level": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 15
+            },
+            {
+              "const": "unknown"
+            }
+          ]
+        },
+        "passable": {
+          "$ref": "#/$defs/TriState"
+        },
+        "waterloggable": {
+          "$ref": "#/$defs/TriState"
+        },
+        "requires_support": {
+          "$ref": "#/$defs/TriState"
+        },
+        "redstone_related": {
+          "$ref": "#/$defs/TriState"
+        },
+        "support": {
+          "$ref": "#/$defs/SupportFacts"
+        }
+      },
+      "required": [
+        "transparent",
+        "emissive",
+        "emission_level",
+        "passable",
+        "waterloggable",
+        "requires_support",
+        "redstone_related",
+        "support"
+      ],
+      "additionalProperties": false
+    },
+    "RuntimeSource": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "runtime"
+        },
+        "minecraft_version": {
+          "const": "26.2"
+        },
+        "export_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "exporter_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "stage": {
+          "const": "EXPORT_REGISTRY"
+        }
+      },
+      "required": [
+        "type",
+        "minecraft_version",
+        "export_id",
+        "exporter_version",
+        "stage"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "state-record.v1"
+    },
+    "export_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "minecraft_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$",
+      "maxLength": 32
+    },
+    "state_id": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$",
+      "maxLength": 8192
+    },
+    "block_id": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+$",
+      "maxLength": 256
+    },
+    "properties": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z0-9_]+$": {
+          "type": "string",
+          "pattern": "^[a-z0-9_.-]+$",
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false
+    },
+    "is_default": {
+      "type": "boolean"
+    },
+    "legal_state": {
+      "const": true
+    },
+    "shape": {
+      "$ref": "#/$defs/ShapeFacts"
+    },
+    "collision": {
+      "$ref": "#/$defs/ShapeFacts"
+    },
+    "behavior": {
+      "$ref": "#/$defs/BehaviorFacts"
+    },
+    "variant_ids": {
+      "type": "array",
+      "maxItems": 65536,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "mapping_status": {
+      "enum": [
+        "mapped",
+        "skipped"
+      ]
+    },
+    "failure_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 128
+    },
+    "source": {
+      "$ref": "#/$defs/RuntimeSource"
+    }
+  },
+  "required": [
+    "schema_version",
+    "export_id",
+    "minecraft_version",
+    "state_id",
+    "block_id",
+    "properties",
+    "is_default",
+    "legal_state",
+    "shape",
+    "collision",
+    "behavior",
+    "variant_ids",
+    "mapping_status",
+    "failure_id",
+    "source"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mapping_status": {
+            "const": "mapped"
+          }
+        },
+        "required": [
+          "mapping_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "variant_ids": {
+            "minItems": 1
+          },
+          "failure_id": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mapping_status": {
+            "const": "skipped"
+          }
+        },
+        "required": [
+          "mapping_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "variant_ids": {
+            "maxItems": 0
+          },
+          "failure_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

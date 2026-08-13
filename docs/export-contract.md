@@ -19,7 +19,7 @@
 
 ## 2. 契约版本和固定工具链
 
-导出包根级字段 `export_contract_version` 固定为 `export-contract.v1`；它是契约版本，不是某个记录 Schema 的别名。导出业务记录使用全局唯一且用途分离的 Schema ID：`export-manifest.v1`、`export-block.v1`、`export-state.v1`、`export-variant.v1`、`export-failure.v1` 和 `render-metadata.v1`。各业务 JSONL 记录必须携带自己的 `schema_version`；`exporter.log` 是不进入业务 Schema 命名空间的诊断事件流。Schema 使用 JSON Schema Draft 2020-12，严格对象必须设置 `additionalProperties: false`。Schema、受控词表、状态策略和渲染策略变化时必须重建导出包，MVP **MUST NOT** 使用通用数据转换机制把旧数据伪装成新版本。
+导出包根级字段 `export_contract_version` 固定为 `export-contract.v1`；它是契约版本，不是某个记录 Schema 的别名。导出业务记录使用全局唯一且用途分离的 Schema ID：`export-manifest.v1`、`export-block.v1`、`export-state.v1`、`export-variant.v1`、`export-failure.v1` 和 `render-metadata.v1`。各业务 JSONL 记录必须携带自己的 `schema_version`；`exporter.log` 是不进入业务 Schema 命名空间的诊断事件流。精确字段形状唯一由 `schemas/exporter/` 下的真实 Schema 文件拥有；本文件的示例只说明 exporter 行为。Schema 使用 JSON Schema Draft 2020-12，严格对象必须设置 `additionalProperties: false`。Schema、状态策略和渲染策略变化时必须重建导出包，MVP **MUST NOT** 使用通用数据转换机制把旧数据伪装成新版本。
 
 Fabric 客户端导出器的构建和运行环境必须完全固定如下；这些值既进入构建配置，也进入 `manifest.json`：
 
@@ -30,11 +30,11 @@ Fabric 客户端导出器的构建和运行环境必须完全固定如下；这�
 | `java_version` | `25` |
 | `fabric_loader_version` | `0.19.3` |
 | `fabric_api_version` | `0.157.0+26.2` |
-| `loom_version` | `1.17` |
+| `loom_version` | `1.17.19` |
 | `gradle_version` | `9.5.1` |
-| `mappings` | `mojang` |
+| `mappings` | `native_mojang_names_unobfuscated_no_external_artifact` |
 
-构建和 manifest **MUST NOT** 使用 `latest`、版本范围、动态依赖或未解析映射。任一固定值变化都必须执行代表性回归集和全量导出；发布门按精确字符串比较，不接受“兼容版本”。Python 和 SDK 不属于导出器运行时，由 R0 验证后完全锁定，并在工作库和 release manifest 中记录，规则见 [流水线、存储与发布](pipeline-storage-and-publishing.md)。
+构建和 manifest **MUST NOT** 使用 `latest`、版本范围、动态依赖或未解析映射。任一固定值变化都必须执行代表性回归集和全量导出；发布门按精确字符串比较，不接受“兼容版本”。Python 和 SDK 不属于导出器运行时；R0 只锁定实际引入的 tooling 依赖，后续依赖在使用前精确/hash 锁定并按 [流水线、存储与发布](pipeline-storage-and-publishing.md) 重新验证。
 
 ## 3. 导出包目录、编码和资产边界
 
@@ -81,9 +81,9 @@ Fabric 客户端导出器的构建和运行环境必须完全固定如下；这�
     "java_version": "25",
     "fabric_loader_version": "0.19.3",
     "fabric_api_version": "0.157.0+26.2",
-    "loom_version": "1.17",
+    "loom_version": "1.17.19",
     "gradle_version": "9.5.1",
-    "mappings": "mojang",
+    "mappings": "native_mojang_names_unobfuscated_no_external_artifact",
     "exporter_mod_id": "blockpedia-exporter",
     "exporter_version": "1.0.0"
   },

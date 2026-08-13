@@ -1,0 +1,19 @@
+{
+  "schema_version": "release.v1",
+  "release_id": "rel_01",
+  "minecraft_version": "26.2",
+  "built_at": "2026-08-13T12:00:00Z",
+  "source_export_id": "exp_01",
+  "manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "record_schema_versions": {
+    "block": "block-record.v1",
+    "state": "state-record.v1",
+    "variant": "visual-variant-record.v1",
+    "annotation": "annotation-record.v1",
+    "manual_override": "manual-override.v1",
+    "skip_review": "skip-review.v1",
+    "qualification_review": "qualification-review.v1"
+  },
+  "quality_report_path": "quality_report.json",
+  "immutable": true
+}

@@ -1,0 +1,15 @@
+{
+  "variant_id": "vv_01",
+  "synonyms_zh": ["黄色薄层"],
+  "synonyms_en": ["yellow thin layer"],
+  "summary_zh": "黄色且非常薄。",
+  "summary_en": "Yellow and very thin.",
+  "color_terms": ["yellow"],
+  "shape_terms": ["horizontal_thin_sheet"],
+  "material_impressions": [],
+  "building_roles": [],
+  "style_tags": [],
+  "avoid_for": [],
+  "confidence": 0.8,
+  "reason": "Matches the supplied machine context."
+}

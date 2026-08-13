@@ -2,7 +2,7 @@
 
 ## 1. 目的、规范词和关联文档
 
-本文定义 `Block`、`VisualVariant`、`Annotation` 三层数据模型、来源隔离、严格 JSON Schema、受控词表和人工覆盖。所有实现必须遵守 `MUST`、`MUST NOT`、`SHOULD`、`MAY` 的规范含义。默认 SQLite 与本地文件实现可按记录影响和所有者批准替换，但不得破坏本文数据不变量。原始设计稿仅是历史背景，不与本契约共同作为规范。
+本文定义 `Block`、`VisualVariant`、`Annotation` 三层数据模型、来源隔离和人工覆盖。精确字段形状唯一由 `schemas/{exporter,workspace,provider,mcp}/` 下的 26 个真实 Schema 文件拥有；本文的业务行为和示例不重复穷举字段规范。所有实现必须遵守 `MUST`、`MUST NOT`、`SHOULD`、`MAY` 的规范含义。默认 SQLite 与本地文件实现可按记录影响和所有者批准替换，但不得破坏本文数据不变量。原始设计稿仅是历史背景，不与本契约共同作为规范。
 
 关联文档：
 
@@ -21,7 +21,7 @@
 
 ### 2.1 版本字段
 
-每个持久化业务记录必须带 `schema_version`、`minecraft_version` 和其契约要求的适用上下文；导出/release 记录、current pointer、审核记录、人工覆盖和 provider 请求 envelope 分别按各自契约使用 `export_id`/`release_id`、指针、审计目标、输入签名或 `request_id`，不强行添加不适用的通用字段。Schema ID 全局唯一且用途分离；所有声明的 JSON Schema **MUST** 在 R0 物化为真实文件并完成 strict 验收，本文件定义字段契约但不以 Markdown 替代 Schema 文件。MVP 使用以下固定 Schema ID：
+每个持久化业务记录必须带其 Schema 要求的版本和上下文；导出/release 记录、current pointer、审核记录、人工覆盖和 provider 请求 envelope 的具体字段以对应真实 Schema 为准。Schema ID 全局唯一且用途分离；所有声明的 JSON Schema **MUST** 在 R0 物化为真实文件并完成 strict 验收。MVP 使用以下固定 Schema ID：
 
 ```text
 export-manifest.v1
@@ -52,17 +52,16 @@ release.v1
 current-pointer.v1
 ```
 
-以下是版本化策略/词表标识，不是 Schema ID：
+以下是版本化策略标识，不是 Schema ID；R0 不引入独立词汇 artifact：
 
 ```text
 state-policy.v1
 render.v1
 fixture.v1
 dedupe.v1
-vocab.v1
 ```
 
-JSON Schema 使用 Draft 2020-12，Schema 文件本身的哈希进入导出 manifest 和 release manifest。严格对象 **MUST** 使用 `additionalProperties: false`；枚举、数组长度、字符串长度、正则格式和引用关系均须校验。当前 ID 仅使用 exporter、workspace/release、provider 和 MCP 冻结命名空间中的标识；旧 ID 不作为新规范当前 ID。真实 Responses wire 使用 `annotation-batch-output.v1`、`query-spec-output.v1` 和 `rerank-output.v1`，其 `text.format.name` 分别固定为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`；标注批次中的元素使用独立的 `annotation-wire-item.v1`，不携带持久 annotation 的 `annotation_id` 或 source/version 字段。`provider-batch-envelope.v1` 是三类请求的 envelope，不替代各自 wire output Schema。未知字段不得保留后继续发布，必须使对应阶段进入 `failed` 或 `needs_review`。
+JSON Schema 使用 Draft 2020-12；每个 root object 拒绝未知字段，重要 nested objects 关闭未知字段。R0 只做 inventory、fixtures 和 provider wire 基础验证；不引入通用规则引擎。当前 ID 仅使用 exporter、workspace/release、provider 和 MCP 冻结命名空间中的标识；旧 ID 不作为新规范当前 ID。真实 Responses wire 使用 `annotation-batch-output.v1`、`query-spec-output.v1` 和 `rerank-output.v1`，其 `text.format.name` 分别固定为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`；标注批次中的元素使用独立的 `annotation-wire-item.v1`。未知字段必须拒绝，不得静默发布。
 
 Schema inventory 的规范仓库路径固定为 `schemas/<namespace>/<schema-id>.json`，其中 `<namespace>` 只能是 `exporter`、`workspace`、`provider` 或 `mcp`；路径使用相对仓库根的 POSIX 写法，不含 `./`、`..`、反斜杠或绝对路径。release 内的 `schemas.sha256` 每行必须严格为：
 
@@ -72,7 +71,7 @@ Schema inventory 的规范仓库路径固定为 `schemas/<namespace>/<schema-id>
 
 行首 digest 不带 `sha256:`，按 Schema ID 的 UTF-8 字节序排序；文件自身不列入自身 inventory。`schemas.sha256` 只证明仓库 Schema 文件摘要和路径，不声称这些路径位于 release；release 内普通文件的完整性仍由排除自身的 `checksums.sha256` 独立覆盖。
 
-Schema 或词表变更时，旧 release 只读不改；工作库以新版本从导出包重建。MVP **MUST NOT** 提供通用数据库迁移框架，也不能靠运行时 `ALTER` 把旧语义伪装成新 Schema。
+Schema 变更时，旧 release 只读不改；工作库以新版本从导出包重建。MVP **MUST NOT** 提供通用数据库迁移框架，也不能靠运行时 `ALTER` 把旧语义伪装成新 Schema。受控语义字段在具体使用前只需采用 bounded strings；词汇 membership 只有未来出现具体需求时才增加，不引入新服务或框架。
 
 ### 2.2 通用标识和引用
 
@@ -178,7 +177,6 @@ Schema 或词表变更时，旧 release 只读不改；工作库以新版本从�
   "subject_type": "visual_variant",
   "subject_id": "vv_7c5e...",
   "minecraft_version": "26.2",
-  "vocabulary_version": "vocab.v1",
   "source": {
     "type": "llm",
     "model_id": "configured-model-id",
@@ -251,39 +249,23 @@ Minecraft、Fabric、资源包、Schema 或数据版本
 
 默认 scope 是单个 `variant_id`。`family` 或 `global` scope 必须显式写出范围、匹配条件、影响字段、理由、作者、批准者和适用输入签名。重建时必须重新解析和校验所有目标引用；引用失效、版本不匹配、selector 为空或命中机器字段时，构建失败而非忽略。
 
-## 5. 受控词表与开放文本
+## 5. 受控语义与开放文本
 
-### 5.1 受控词表
-
-词表版本固定为 `vocab.v1`，至少包含：
-
-```text
-shape_terms
-color_terms
-material_impressions
-building_roles
-style_tags
-avoid_for
-machine_tags
-support_directions
-review_reason_codes
-```
-
-词表值使用稳定英文技术标识，例如 `horizontal_thin_sheet`、`transparent`、`roof_detail`；界面显示名可另行本地化。AI 和人工字段中的数组只能引用当前词表值，去重后排序；未知词、拼写变体和自由分类名使 Schema 校验失败或进入审核，不能自动加入词表。
+受控语义字段在 R0 只使用真实 Schema 中的 bounded strings/arrays；不引入独立词汇 artifact、词汇 hash 或通用 membership engine。未来只有在具体实现需要词汇 membership 时，才在对应 Schema 和行为契约中增加最小规则，不新增服务或框架。
 
 ### 5.2 开放文本
 
-开放文本只允许用于描述或理由：`summary_zh`、`summary_en`、`description`、`reason`、`review_note`。单字段长度为 2～500 个 Unicode 字符；不得承载新 ID、状态语法、机器事实或未受控标签。开放文本不参与硬过滤；搜索只使用已校验词表字段和官方名称/同义词索引。
+开放文本只允许用于描述或理由：`summary_zh`、`summary_en`、`description`、`reason`、`review_note`。单字段长度为 2～500 个 Unicode 字符；不得承载新 ID、状态语法、机器事实或未受控标签。开放文本不参与硬过滤；搜索只使用真实 Schema 允许的 bounded semantic fields 和官方名称/同义词索引。
 
 ## 6. AI 校验、置信度和审核
 
 每个 Annotation 必须通过：
 
 1. JSON Schema 和严格字段检查；
-2. `subject_id`、`minecraft_version`、词表版本和批次映射检查；
+2. `subject_id`、`minecraft_version` 和批次映射检查；
 3. 每个编号恰好一次、无重复、无新增对象检查；
 4. 机器事实冲突检查；
-5. 文本长度、数组去重和词表检查。
+5. 文本长度和数组去重检查。
 
 AI 置信度门控固定如下：
 
@@ -370,6 +352,6 @@ Schema 实现验收必须包含正例和拒绝例：
 - LLM 输出 block ID、状态、几何、行为、资格或事实标签必须拒绝并创建高优先级审核任务。
 - 未知词、额外字段、重复数组值、超长开放文本和无置信度 Annotation 必须拒绝。
 - 无效 variant/family/global override、越权机器字段或过期输入签名必须阻断重建。
-- Schema/词表版本变化不会修改现有 release，而是使新构建使用新版本并重新跑完整门禁。
+- Schema 或语义字段约束变化不会修改现有 release，而是使新构建使用新版本并重新跑完整门禁。
 
 具体字段、接口错误码和版本协商由 [OpenAI Responses 提供商接口](openai-provider.md)、[WebUI 与运行接口](webui-and-operations.md)、[搜索与排序接口](search-and-ranking.md)、[MCP API 接口](mcp-api.md) 和 [质量与测试接口](quality-and-testing.md) 继续细化；本文件规定不可违背的分层和来源边界。

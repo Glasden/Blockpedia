@@ -1,0 +1,25 @@
+{
+  "schema_version": "block-record.v1",
+  "export_id": "exp_01",
+  "minecraft_version": "26.2",
+  "block_id": "minecraft:stone",
+  "translation_key": "block.minecraft.stone",
+  "official_names": {
+    "zh_cn": "石头",
+    "en_us": "Stone"
+  },
+  "default_state_id": "minecraft:stone",
+  "properties": {},
+  "tags": [],
+  "machine_facts": {
+    "has_item": true,
+    "has_block_entity": false
+  },
+  "source": {
+    "type": "runtime",
+    "minecraft_version": "26.2",
+    "export_id": "exp_01",
+    "exporter_version": "1.0.0",
+    "stage": "EXPORT_REGISTRY"
+  }
+}

@@ -77,9 +77,9 @@ block-index mcp [--data-root <path>]
 CLI startup arguments > environment variables > profile/project configuration > built-in defaults
 ```
 
-来源冲突或类型不兼容必须返回 `CONFIG_PRECEDENCE_CONFLICT`，不得静默合并。CLI 只能覆盖 `data-root` 等非冻结启动项；host/port 不属于配置，永远固定为 `127.0.0.1:8765`。环境变量包括 `BLOCKPEDIA_DATA_ROOT` 和 `OPENAI_API_KEY`（后者只作为秘密回退）；profile/project 配置包含 `model_id`、非秘密 `base_url`、版本、超时、并发、Schema/词表/prompt 和搜索版本；内置默认只提供冻结值。
+来源冲突或类型不兼容必须返回 `CONFIG_PRECEDENCE_CONFLICT`，不得静默合并。CLI 只能覆盖 `data-root` 等非冻结启动项；host/port 不属于配置，永远固定为 `127.0.0.1:8765`。环境变量包括 `BLOCKPEDIA_DATA_ROOT` 和 `OPENAI_API_KEY`（后者只作为秘密回退）；profile/project 配置包含 `model_id`、非秘密 `base_url`、版本、超时、并发、Schema/prompt 和搜索版本；精确字段形状由真实 Schema 文件拥有，内置默认只提供冻结值。
 
-最终生效配置必须计算 `effective_config_hash` 并写入 run/job snapshot。snapshot 可以包含：`profile_id`、`model_id`、`base_url_stable_id`、`minecraft_version`、`resolved_release_id`、`manifest_sha256`、并发、超时、Schema/prompt/vocabulary/search 版本、重试策略和非秘密路径稳定标识；**MUST NOT** 包含 API key、Authorization、图片 bytes、完整 provider response、Token usage、成本或预算。
+最终生效配置必须计算 `effective_config_hash` 并写入 run/job snapshot。snapshot 可以包含：`profile_id`、`model_id`、`base_url_stable_id`、`minecraft_version`、`resolved_release_id`、`manifest_sha256`、并发、超时、Schema/prompt/search 版本、重试策略和非秘密路径稳定标识；**MUST NOT** 包含 API key、Authorization、图片 bytes、完整 provider response、Token usage、成本或预算。
 
 ### 3.3 秘密
 
@@ -143,7 +143,7 @@ Provider 页面可以保存多个非活动 `openai_responses` profile，但全�
 
 `GET /api/provider/profile` 返回无秘密 `ProviderProfile`。
 
-`PUT /api/provider/profile` 请求最少包含：`profile_id`、`base_url`、`model_id`、`secret_reference`、`request_timeout_ms`、三个 stage 的 `batch_size/concurrency`、`prompt_version`、`annotation-batch-output.v1`、`query-spec-output.v1`、`rerank-output.v1`、`vocabulary_version`、`search_ranking_version`。请求 Schema 不包含任何存储确认或绕过字段。出现 `api_key`、`provider` 非 `openai_responses`、第二 model 或未知字段必须返回 `PROVIDER_CONFIG_INVALID`。保存状态为非活动 `unverified`；改变 base URL、model、secret ref、Schema、词表、prompt 或排序版本必须使能力变为 `unverified` 并禁用该 profile 的新 AI job。`draft` 只能作为配置编辑命令/事件，不得作为持久化 run、stage 或 item 状态。
+`PUT /api/provider/profile` 的精确字段由真实 Schema 文件拥有；请求 Schema 不包含任何存储确认或绕过字段。出现 `api_key`、`provider` 非 `openai_responses`、第二 model 或未知字段必须返回 `PROVIDER_CONFIG_INVALID`。保存状态为非活动 `unverified`；改变 base URL、model、secret ref、Schema、prompt 或排序版本必须使能力变为 `unverified` 并禁用该 profile 的新 AI job。`draft` 只能作为配置编辑命令/事件，不得作为持久化 run、stage 或 item 状态。
 
 `POST /api/provider/probe` 请求只接受 profile 标识，不提供任何存储确认或绕过字段：
 
@@ -179,7 +179,7 @@ PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS
 
 item 状态固定为 `pending|running|succeeded|needs_review|failed|skipped`；run/stage 状态固定为 `pending|running|paused|needs_review|failed|succeeded|cancelled`。合法持久转换为 `pending→running`、`running→paused`、`paused→running`、`running→needs_review|failed|succeeded|cancelled`；pause/cancel 只作为命令或 event，不作为持久状态。release 的 build/apply 独立于 run 状态；recover 只能恢复 heartbeat 超时且未完成的 job；成功 job 不重跑。
 
-`POST /api/runs` 请求至少包含：`import_id`、`minecraft_version`、`profile_id`、联系表大小和置信度阈值；不得接受或要求 `release_build_id`。服务必须检查版本、导出契约、profile capability、Schema/词表、阈值和 R0–R3 前置门，返回 `run_id`、`status=pending`、`effective_config_hash` 和非秘密 snapshot。后续 `POST /api/releases/check` 以 `run_id` 创建并返回 `release_build_id`。
+`POST /api/runs` 请求至少包含：`import_id`、`minecraft_version`、`profile_id`、联系表大小和置信度阈值；不得接受或要求 `release_build_id`。服务必须检查版本、导出契约、profile capability、Schema/semantic constraints、阈值和 R0–R3 前置门，返回 `run_id`、`status=pending`、`effective_config_hash` 和非秘密 snapshot。后续 `POST /api/releases/check` 以 `run_id` 创建并返回 `release_build_id`。
 
 `GET /api/runs/{run_id}` 至少返回：`run_id`、精确版本、run status、stage、progress、heartbeat、非秘密 config snapshot 和 warnings。启动时 stale 只读展示，不改变这些状态；不得返回 Token usage、费用、图片 base64 或完整 provider response。
 

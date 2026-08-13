@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:workspace:block-record.v1",
+  "title": "Blockpedia block record",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "block-record.v1"
+    },
+    "export_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "minecraft_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$",
+      "maxLength": 32
+    },
+    "block_id": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+$",
+      "maxLength": 256
+    },
+    "translation_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "official_names": {
+      "type": "object",
+      "properties": {
+        "zh_cn": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "en_us": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "zh_cn",
+        "en_us"
+      ],
+      "additionalProperties": false
+    },
+    "default_state_id": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$",
+      "maxLength": 8192
+    },
+    "properties": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z0-9_]+$": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9_.-]+$",
+            "maxLength": 256
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 2048,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^minecraft:[a-z0-9_./-]+$",
+        "maxLength": 256
+      }
+    },
+    "machine_facts": {
+      "type": "object",
+      "properties": {
+        "has_item": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "const": "unknown"
+            }
+          ]
+        },
+        "has_block_entity": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "const": "unknown"
+            }
+          ]
+        }
+      },
+      "required": [
+        "has_item",
+        "has_block_entity"
+      ],
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "runtime"
+        },
+        "minecraft_version": {
+          "const": "26.2"
+        },
+        "export_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "exporter_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "stage": {
+          "const": "EXPORT_REGISTRY"
+        }
+      },
+      "required": [
+        "type",
+        "minecraft_version",
+        "export_id",
+        "exporter_version",
+        "stage"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "export_id",
+    "minecraft_version",
+    "block_id",
+    "translation_key",
+    "official_names",
+    "default_state_id",
+    "properties",
+    "tags",
+    "machine_facts",
+    "source"
+  ],
+  "additionalProperties": false
+}

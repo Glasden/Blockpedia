@@ -1,0 +1,46 @@
+{
+  "schema_version": "state-record.v1",
+  "export_id": "exp_01",
+  "minecraft_version": "26.2",
+  "state_id": "minecraft:stone",
+  "block_id": "minecraft:stone",
+  "properties": {},
+  "is_default": true,
+  "legal_state": true,
+  "shape": {
+    "boxes": [],
+    "signature": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "collision": {
+    "boxes": [],
+    "signature": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "behavior": {
+    "transparent": false,
+    "emissive": false,
+    "emission_level": 0,
+    "passable": false,
+    "waterloggable": false,
+    "requires_support": false,
+    "redstone_related": false,
+    "support": {
+      "above": false,
+      "below": true,
+      "east": false,
+      "north": false,
+      "south": false,
+      "west": false,
+      "none": true
+    }
+  },
+  "variant_ids": ["vv_01"],
+  "mapping_status": "mapped",
+  "failure_id": null,
+  "source": {
+    "type": "runtime",
+    "minecraft_version": "26.2",
+    "export_id": "exp_01",
+    "exporter_version": "1.0.0",
+    "stage": "EXPORT_REGISTRY"
+  }
+}

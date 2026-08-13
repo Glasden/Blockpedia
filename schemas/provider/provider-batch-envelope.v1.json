@@ -1,0 +1,356 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:provider:provider-batch-envelope.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "stage",
+    "profile_id",
+    "model_id",
+    "base_url_stable_id",
+    "secret_reference",
+    "prompt_version",
+    "wire_schema_id",
+    "wire_format_name",
+    "minecraft_version",
+    "export_id",
+    "release_id",
+    "resolved_release_manifest_sha256",
+    "vocabulary_version",
+    "vocabulary_sha256",
+    "search_ranking_version",
+    "store",
+    "created_at",
+    "input_summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "provider-batch-envelope.v1"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+    },
+    "stage": {
+      "enum": [
+        "offline_annotation",
+        "query_spec",
+        "visual_rerank"
+      ]
+    },
+    "profile_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "base_url_stable_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "secret_reference": {
+      "type": "string",
+      "pattern": "^(keyring:blockpedia/[a-z][a-z0-9_-]{0,63}|env:OPENAI_API_KEY)$"
+    },
+    "prompt_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "wire_schema_id": {
+      "enum": [
+        "annotation-batch-output.v1",
+        "query-spec-output.v1",
+        "rerank-output.v1"
+      ]
+    },
+    "wire_format_name": {
+      "enum": [
+        "annotation_batch_output_v1",
+        "query_spec_output_v1",
+        "rerank_output_v1"
+      ]
+    },
+    "minecraft_version": {
+      "const": "26.2"
+    },
+    "export_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "release_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resolved_release_manifest_sha256": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "vocabulary_version": {
+      "const": "vocab.v1"
+    },
+    "vocabulary_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "search_ranking_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "store": {
+      "const": false
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "input_summary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tile_variant_map"],
+          "properties": {
+            "tile_variant_map": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "tile_id",
+                  "variant_id",
+                  "image_sha256",
+                  "machine_metadata_sha256"
+                ],
+                "properties": {
+                  "tile_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+                  },
+                  "variant_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+                  },
+                  "image_sha256": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "machine_metadata_sha256": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["query_sha256"],
+          "properties": {
+            "query_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "query_sha256",
+            "query_spec_sha256",
+            "candidate_set_sha256",
+            "candidate_map"
+          ],
+          "properties": {
+            "query_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "query_spec_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "candidate_set_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "candidate_map": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 12,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "candidate_id",
+                  "variant_id",
+                  "block_id",
+                  "recommended_state_id",
+                  "image_sha256"
+                ],
+                "properties": {
+                  "candidate_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+                  },
+                  "variant_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+                  },
+                  "block_id": {
+                    "type": "string",
+                    "pattern": "^minecraft:[a-z0-9_./-]+$"
+                  },
+                  "recommended_state_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8192
+                  },
+                  "image_sha256": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["stage"],
+        "properties": {
+          "stage": {
+            "const": "offline_annotation"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "wire_schema_id": {
+            "const": "annotation-batch-output.v1"
+          },
+          "wire_format_name": {
+            "const": "annotation_batch_output_v1"
+          },
+          "export_id": {
+            "type": "string"
+          },
+          "release_id": {
+            "type": "null"
+          },
+          "resolved_release_manifest_sha256": {
+            "type": "null"
+          },
+          "input_summary": {
+            "required": ["tile_variant_map"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["stage"],
+        "properties": {
+          "stage": {
+            "const": "query_spec"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "wire_schema_id": {
+            "const": "query-spec-output.v1"
+          },
+          "wire_format_name": {
+            "const": "query_spec_output_v1"
+          },
+          "export_id": {
+            "type": "null"
+          },
+          "release_id": {
+            "type": "string"
+          },
+          "resolved_release_manifest_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "input_summary": {
+            "required": ["query_sha256"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["stage"],
+        "properties": {
+          "stage": {
+            "const": "visual_rerank"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "wire_schema_id": {
+            "const": "rerank-output.v1"
+          },
+          "wire_format_name": {
+            "const": "rerank_output_v1"
+          },
+          "export_id": {
+            "type": "null"
+          },
+          "release_id": {
+            "type": "string"
+          },
+          "resolved_release_manifest_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "input_summary": {
+            "required": ["candidate_map"]
+          }
+        }
+      }
+    }
+  ]
+}

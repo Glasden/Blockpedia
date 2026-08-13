@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:workspace:release.v1",
+  "title": "Blockpedia release identity",
+  "type": "object",
+  "properties": {
+    "schema_version": {"const": "release.v1"},
+    "release_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "minecraft_version": {"const": "26.2"},
+    "built_at": {"type": "string", "format": "date-time"},
+    "source_export_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "manifest_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "record_schema_versions": {
+      "type": "object",
+      "properties": {
+        "block": {"const": "block-record.v1"},
+        "state": {"const": "state-record.v1"},
+        "variant": {"const": "visual-variant-record.v1"},
+        "annotation": {"const": "annotation-record.v1"},
+        "manual_override": {"const": "manual-override.v1"},
+        "skip_review": {"const": "skip-review.v1"},
+        "qualification_review": {"const": "qualification-review.v1"}
+      },
+      "required": [
+        "block",
+        "state",
+        "variant",
+        "annotation",
+        "manual_override",
+        "skip_review",
+        "qualification_review"
+      ],
+      "additionalProperties": false
+    },
+    "quality_report_path": {"const": "quality_report.json"},
+    "immutable": {"const": true}
+  },
+  "required": [
+    "schema_version",
+    "release_id",
+    "minecraft_version",
+    "built_at",
+    "source_export_id",
+    "manifest_sha256",
+    "record_schema_versions",
+    "quality_report_path",
+    "immutable"
+  ],
+  "additionalProperties": false
+}

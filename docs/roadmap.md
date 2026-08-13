@@ -2,40 +2,40 @@
 
 - **版本**：MVP 冻结版
 - **日期**：2026-08-13
-- **目标**：在 Windows 11 和 Linux x86_64 上完成原版 Minecraft Java 26.2 的本地单机端到端闭环
-- **当前状态**：本仓库当前只有设计与治理文档，没有实现、测试报告、真实导出数据或发布索引。
+- **目标**：在 Windows 11 x86_64 和 Linux x86_64（`manylinux_2_17` / glibc `>=2.17`）上完成原版 Minecraft Java 26.2 的本地单机端到端闭环
+- **当前状态**：R0 契约冻结已完成；仓库已有真实 Schema、fixtures、轻量验收、依赖锁和可构建 Fabric/Gradle 骨架。R1–R5 的真实导出、产品实现、索引和 release 尚未开始。
 
 规范优先级和硬限制见 [`../AGENTS.md`](../AGENTS.md)；冻结决定集中见 [`decisions.md`](decisions.md)。冲突必须先更新高优先级文档，不能在实现中静默偏离。移入的原始设计稿仅是历史背景和最低优先级参考，不能与新文档一起作为执行规范；其中冲突内容禁止实现。
 
 ## 路线图文档索引
 
-当前索引列出的 13 份具体文档均已存在并完成语义终审。治理入口 `AGENTS.md` 与 `decisions.md` 另列为已生成的高优先级入口；原始设计稿虽列入索引，但仅是历史背景/最低优先级参考，不与新文档一起执行且保持字节不变。当前路径审查证据为 16 个 Markdown/治理文件、本地链接目标零断链；独立语义终审在修复全部 Critical/High 问题后复核为 0 Critical、0 High。该结果只证明 Markdown 契约已收敛，不代替真实 Schema、工具链、实现或跨平台验证。
+当前仓库已完成最小 R0 物化和验收。后续阶段只在实际实现需要时增加测试与平台证据，不重复设计或为未来阶段预建验证体系。
 
 所有链接均相对于本文件所在的 `docs/` 目录。
 
 | 文档 | 链接 | 本次状态 |
 |---|---|---|
 | 治理硬限制 | [`../AGENTS.md`](../AGENTS.md) | 已生成 |
-| 冻结决定 | [`decisions.md`](decisions.md) | 已生成；语义终审通过 |
-| 产品范围 | [`product-scope.md`](product-scope.md) | 已生成；语义终审通过 |
-| 总体架构 | [`architecture.md`](architecture.md) | 已生成；语义终审通过 |
-| 导出契约 | [`export-contract.md`](export-contract.md) | 已生成；语义终审通过 |
-| 状态策略与渲染 | [`state-policy-and-rendering.md`](state-policy-and-rendering.md) | 已生成；语义终审通过 |
-| 数据与 Schema | [`data-and-schemas.md`](data-and-schemas.md) | 已生成；语义终审通过 |
-| 流水线、存储与发布 | [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md) | 已生成；语义终审通过 |
-| OpenAI provider | [`openai-provider.md`](openai-provider.md) | 已生成；语义终审通过 |
-| 搜索与排序 | [`search-and-ranking.md`](search-and-ranking.md) | 已生成；语义终审通过 |
-| MCP API | [`mcp-api.md`](mcp-api.md) | 已生成；语义终审通过 |
-| WebUI 与运维 | [`webui-and-operations.md`](webui-and-operations.md) | 已生成；语义终审通过 |
-| 质量与测试 | [`quality-and-testing.md`](quality-and-testing.md) | 已生成；语义终审通过 |
-| 安全与分发 | [`security-and-distribution.md`](security-and-distribution.md) | 已生成；语义终审通过 |
+| 冻结决定 | [`decisions.md`](decisions.md) | 已生成；R0 最小范围已记录 |
+| 产品范围 | [`product-scope.md`](product-scope.md) | 已生成；字段形状引用真实 Schema |
+| 总体架构 | [`architecture.md`](architecture.md) | 已生成；字段形状引用真实 Schema |
+| 导出契约 | [`export-contract.md`](export-contract.md) | 已生成；字段形状由 exporter Schema 拥有 |
+| 状态策略与渲染 | [`state-policy-and-rendering.md`](state-policy-and-rendering.md) | 已生成；字段形状由 exporter Schema 拥有 |
+| 数据与 Schema | [`data-and-schemas.md`](data-and-schemas.md) | 已生成；R0 Schema owner 说明已记录 |
+| 流水线、存储与发布 | [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md) | 已生成；字段形状引用真实 Schema |
+| OpenAI provider | [`openai-provider.md`](openai-provider.md) | 已生成；字段形状由 provider Schema 拥有 |
+| 搜索与排序 | [`search-and-ranking.md`](search-and-ranking.md) | 已生成；字段形状引用真实 Schema |
+| MCP API | [`mcp-api.md`](mcp-api.md) | 已生成；字段形状由 MCP Schema 拥有 |
+| WebUI 与运维 | [`webui-and-operations.md`](webui-and-operations.md) | 已生成；字段形状引用真实 Schema |
+| 质量与测试 | [`quality-and-testing.md`](quality-and-testing.md) | 已生成；R0 验证范围已记录 |
+| 安全与分发 | [`security-and-distribution.md`](security-and-distribution.md) | 已生成；核心安全边界保留 |
 | 原始设计稿（字节不变） | [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) | 历史参考；当前哈希已验证 |
 
-索引列出的 13 份具体文档当前均可由路径找到并已通过语义终审。原始稿执行地位始终是历史背景/最低优先级，不与新文档一起执行；其中冲突内容禁止实现。不得以默认值、原始稿或本索引代替具体契约。未来若发现冲突，必须先遵循并更新本文件、`AGENTS.md` 和 `decisions.md`，再收敛具体契约，禁止在实现中静默偏离。
+索引列出的 13 份具体文档当前均可由路径找到；其 Markdown 业务行为保留，精确字段形状由真实 Schema 文件拥有。原始稿执行地位始终是历史背景/最低优先级，不与新文档一起执行；其中冲突内容禁止实现。不得以默认值、原始稿或本索引代替具体契约。未来若发现冲突，必须先遵循并更新本文件、`AGENTS.md` 和 `decisions.md`，再收敛具体契约，禁止在实现中静默偏离。
 
 ## 阶段依赖与退出门
 
-依赖链为 `R0 → R1 → R2 → R3 → R4 → R5`。每一阶段的退出条件全部满足并有证据后，才允许开始下一阶段；任何失败、未决高优先级审核或缺失契约都会阻断后续阶段。当前没有实现，因此除文档路径审查事实外，所有实现、测试、数据和发布复选框均保持未勾选。
+依赖链为 `R0 → R1 → R2 → R3 → R4 → R5`。每一阶段只以该阶段已经定义的最小交付物和验收为退出条件；后续阶段的平台、运行时、数据和发布证据不得倒灌阻塞前一阶段。R0 已退出，R1 可以开始；R1–R5 未完成项保持未勾选。
 
 ### R0：契约冻结
 
@@ -47,35 +47,31 @@
 - [x] 集中记录 2026-08-13 grill 后冻结的技术、范围、发布和 MCP 决定。
 - [x] 写入产品范围与总体架构的可执行边界。
 - [x] 具体文档已生成且零断链；当前证据为 16 个 Markdown/治理文件，本地链接目标零断链和逐路径审查。
-- [x] 完成具体契约的语义终审并由主代理复审通过；最终复核为 0 Critical、0 High。
-- [ ] 将 Markdown 契约物化为真实 JSON Schema 文件，并完成 strict Schema 验收；本路线图不以 Markdown 文字替代真实 Schema 文件。
-- [ ] 在固定 Minecraft 基线环境中验证 Fabric/Gradle 工具链可用。
-- [ ] 将 R0 之后的全部直接和间接依赖锁定到精确版本及完整校验信息。
+- [x] 物化恰好 26 个最小 Draft 2020-12 JSON Schema；每个拒绝未知 root fields，重要 nested objects closed；每个 Schema 提供一个 valid 和一个 extra-field rejection fixture。
+- [x] 运行轻量测试验证 Schema inventory、fixtures 和 provider wire 基础约束；不引入通用规则引擎或额外 Schema ID。
+- [x] 建立固定基线的 Fabric/Gradle toolchain skeleton，并以 Java 25、Gradle 9.5.1、Loom 1.17.19 完成 Windows offline build。真实 Minecraft 运行/导出在 R1 验证。
+- [x] 锁定 R0 tooling 实际引入的 Python 依赖及 hashes；未预锁未实现的 R2-R4 栈。
 
 #### 交付物
 
 - [x] `AGENTS.md`。
 - [x] `docs/roadmap.md`、`docs/decisions.md`、`docs/product-scope.md`、`docs/architecture.md`。
 - [x] 13 份具体文档均存在；链接路径审查为零断链。
-- [ ] 真实 JSON Schema 文件、Schema 哈希和正例/拒绝例验收报告。
+- [x] 真实 JSON Schema 文件、Schema 哈希、fixtures 和轻量验收报告。
 
 #### 验证与退出条件
 
-- [x] 高优先级文档与索引列出的 13 份具体文档语义终审通过；原始稿已按最低优先级历史背景完成冲突隔离。
-- [ ] Minecraft Java `26.2`、Java `25`、Fabric Loader `0.19.3`、Fabric API `0.157.0+26.2`、Loom `1.17`、Gradle `9.5.1` 和 Mojang mappings 的运行验证记录齐全。
-- [ ] 其他依赖已精确锁定，且 Windows 11 与 Linux x86_64 的复现安装验证通过。
-- [ ] 所有声明的 JSON Schema 已物化为真实文件，strict Schema 验收通过并可由路径、命令和报告复核。
+- [x] Fabric 骨架声明 Minecraft Java `26.2`、Java `25`、Fabric Loader `0.19.3`、Fabric API `0.157.0+26.2`、Loom `1.17.19`、Gradle `9.5.1` 和 native Mojang names/unobfuscated（无外部 mappings artifact），并完成 Windows offline build；Minecraft runtime/export 验证归 R1。
+- [x] R0 tooling 依赖已精确/hash 锁定并完成当前开发环境安装/一致性检查；CPython `3.14.7` 产品运行和 Linux 验证在实际引入对应实现的阶段执行，不阻塞 R0。
+- [x] 恰好 26 个 Schema 已物化，52 个 fixtures 和轻量 inventory/provider-wire 验收通过。
 
 **证据区**
 
-- 已有路径证据：`AGENTS.md`、4 份高优先级治理/总览文档、索引列出的 13 份具体文档和原始设计稿均可从索引路径找到；路径审查记录为 16 个 Markdown/治理文件，本地链接目标零断链。
-- 已有语义证据：独立终审先后检查职责、Schema ID、发布门、provider 生命周期、MCP 只读、状态机、哈希和版本指针；最终复核结果为 0 Critical、0 High。
-- 原始稿证据：当前文件 SHA 已验证、旧路径不存在；不声称仓库独立证明移动前哈希。
-- R0 依赖锁证据仍缺失，必须形成并复核以下证据：
-  - Gradle `gradle/wrapper/gradle-wrapper.properties`、wrapper JAR checksum、Gradle dependency locking 和 `gradle/verification-metadata.xml`；
-  - Python `requirements.lock`，包含全部传递依赖及每个发行物 hash，以及生成该锁文件的输入/命令；
-  - Windows 11 与 Linux x86_64 的 offline install/build 精确命令、完整输出、退出码和报告路径。
-- 因工具链、真实 Schema、依赖锁和跨平台报告缺失，R0 退出门尚未通过。
+- 契约物化：`schemas/{exporter,workspace,provider,mcp}/` 恰好 26 个 Schema；`tests/schema/fixtures/` 恰好 52 个正反 fixtures。
+- 轻量验收：`python -m tools.validate_r0 --repo-root . --report` 通过，输出 `R0 validation passed: 26 schemas, 52 fixture case(s)`，报告为 `docs/evidence/r0-schema-report.json`；`python -m pytest -q tests/test_r0_schemas.py` 输出 `1 passed`。
+- Python 锁：`requirements.in` 与 `requirements.lock`；`python -m pip install --require-hashes -r requirements.lock` 和 `python -m pip check` 已通过。精确 CPython `3.14.7` 产品运行验证留到 R2。
+- Gradle/Fabric 骨架：`build.gradle`、`settings.gradle`、`gradle.properties`、`gradle/wrapper/`、`gradle/dependency-locks.lockfile`、`gradle/verification-metadata.xml` 和 `src/main/`。wrapper JAR SHA-256 为 `497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7`，与 Gradle 官方 9.5.1 记录一致；Windows 使用 Zulu Java 25 执行 `gradlew.bat --offline build`，结果为 `BUILD SUCCESSFUL`。
+- R0 于 2026-08-13 关闭。Linux、真实 Minecraft runtime/export 和双平台端到端复现分别在 R1、R2 及 R5 按实际交付物验证，不再作为 R0 blocker。
 
 ### R1：确定性导出
 

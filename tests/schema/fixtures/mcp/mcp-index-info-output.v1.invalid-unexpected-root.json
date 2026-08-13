@@ -1,0 +1,10 @@
+{
+  "schema_version": "mcp-index-info-output.v1",
+  "request_id": "mcp_01J",
+  "minecraft_version": "26.2",
+  "resolved_release_id": "rel_01J",
+  "manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "warnings": [],
+  "data": {"product": "Blockpedia", "official_disclaimer": "NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.", "release_id": "rel_01J", "built_at": "2026-08-13T12:00:00Z", "counts": {"blocks": 1, "visual_variants": 1, "audited_skips": 0}, "quality_gate": {"passed": true, "quality_report_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}},
+  "unexpected": true
+}

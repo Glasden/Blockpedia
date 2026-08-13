@@ -2,7 +2,7 @@
 
 ## 文档状态、优先级与关联规范
 
-本文是 Blockpedia MVP 的 OpenAI provider 可实施契约。正文使用简体中文；`OpenAIResponsesProvider`、字段名、Schema 标识、状态、错误码和命令保持英文。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 使用规范性含义。
+本文是 Blockpedia MVP 的 OpenAI provider 行为契约。精确 wire/profile 字段形状唯一由 `schemas/provider/` 下的真实 Schema 文件拥有；本文示例仅用于说明行为。正文使用简体中文；`OpenAIResponsesProvider`、字段名、Schema 标识、状态、错误码和命令保持英文。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 使用规范性含义。
 
 本文件服从 [`../AGENTS.md`](../AGENTS.md)、[`roadmap.md`](roadmap.md) 和 [`decisions.md`](decisions.md)，并与 [`product-scope.md`](product-scope.md) 和 [`architecture.md`](architecture.md) 保持一致。原始设计稿 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 仅作历史背景和最低优先级参考，不与本契约一起执行；冲突内容禁止实现。数据来源和发布边界还必须遵守 [`data-and-schemas.md`](data-and-schemas.md)、[`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)、[`export-contract.md`](export-contract.md) 与 [`state-policy-and-rendering.md`](state-policy-and-rendering.md)。
 
@@ -28,7 +28,7 @@ query_spec
 visual_rerank
 ```
 
-同一 release 的离线标注、QuerySpec 和视觉重排必须使用同一 release-bound `model_id`。`model_id` 是运行时配置，不得硬编码；每个 run 的非秘密配置快照、每个 AI 产物和最终 release manifest **MUST** 记录实际使用的 `profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、prompt/schema/vocabulary/search 版本。非活动 profile 不得用于 Studio 新写任务或新 release；但 release-bound MCP 必须使用已解析 release 冻结的 provider snapshot，不读取或比较可变的 active profile。切换 Studio active profile 不影响旧 release，release snapshot 也不算另一个 active profile。改变其中任一值后，旧缓存不得被当作新输入的成功结果，必须产生新的输入签名和新的 release。`secret_reference` 只保存引用，不保存 key。
+同一 release 的离线标注、QuerySpec 和视觉重排必须使用同一 release-bound `model_id`。`model_id` 是运行时配置，不得硬编码；每个 run 的非秘密配置快照、每个 AI 产物和最终 release manifest **MUST** 记录实际使用的 `profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、prompt/schema/search 版本。非活动 profile 不得用于 Studio 新写任务或新 release；但 release-bound MCP 必须使用已解析 release 冻结的 provider snapshot，不读取或比较可变的 active profile。切换 Studio active profile 不影响旧 release，release snapshot 也不算另一个 active profile。改变其中任一值后，旧缓存不得被当作新输入的成功结果，必须产生新的输入签名和新的 release。`secret_reference` 只保存引用，不保存 key。
 
 ### 1.2 兼容 `base_url`
 
@@ -58,7 +58,6 @@ Provider profile 配置对象使用 JSON Schema Draft 2020-12，严格对象必�
   "annotation_output_schema_id": "annotation-batch-output.v1",
   "query_spec_output_schema_id": "query-spec-output.v1",
   "rerank_output_schema_id": "rerank-output.v1",
-  "vocabulary_version": "vocab.v1",
   "search_ranking_version": "search-ranking.v1",
   "request_timeout_ms": 60000,
   "stages": {
@@ -87,7 +86,7 @@ Provider profile 配置对象使用 JSON Schema Draft 2020-12，严格对象必�
 | `batch_size` | `offline_annotation` 为 8–16；在线阶段固定为 1 |
 | `concurrency` | 1–4；不能借此绕过 provider 限流或重试上限 |
 
-profile 必须满足以下启用不变量：`adapter=openai_responses`、`enabled=true`、三个阶段的 model 解析值相同、能力状态严格为 `verified`、秘密可读取、实际 wire Schema ID 固定、词表/prompt/search 版本存在，并且 `store=false` 硬门通过。保存非活动 profile 不需要探测，但不得用于 Studio 新写任务或新 release；release-bound MCP 例外使用已解析 release 冻结的 provider snapshot，不读取或比较可变 active profile。一个 profile 被启用后不得再启用第二个；变更活动 profile 必须停止新 AI job，并在新 run 中使用新快照。
+profile 必须满足以下启用不变量：`adapter=openai_responses`、`enabled=true`、三个阶段的 model 解析值相同、能力状态严格为 `verified`、秘密可读取、实际 wire Schema ID 固定、Schema/prompt/search 版本存在，并且 `store=false` 硬门通过。保存非活动 profile 不需要探测，但不得用于 Studio 新写任务或新 release；release-bound MCP 例外使用已解析 release 冻结的 provider snapshot，不读取或比较可变 active profile。一个 profile 被启用后不得再启用第二个；变更活动 profile 必须停止新 AI job，并在新 run 中使用新快照。
 
 ### 2.2 配置来源和秘密
 
@@ -143,7 +142,7 @@ Studio 三类新写调用都必须使用同一个活动 profile、同一个 `mod
 
 `json_object`、普通文本、Markdown JSON、正则解析自由文本或“strict 失败后自由文本”均不得作为正常回退。严格 Schema 不可用时，能力探测失败，不能启用 profile。端点不需要、也不被要求接受任意本地 Draft 2020-12 关键字；实现必须只发送探测已证明支持的 Structured Outputs 子集。
 
-图片只能是为当前阶段裁剪的 PNG 或联系表；请求文本只能包含当前查询、短编号、必要机器元数据、已验证受控词表和 Schema 约束。不得发送 SQLite、完整导出包、无关方块、文件系统路径、日志、人工秘密或 API key。
+图片只能是为当前阶段裁剪的 PNG 或联系表；请求文本只能包含当前查询、短编号、必要机器元数据、Schema 允许的 bounded semantic fields 和约束。不得发送 SQLite、完整导出包、无关方块、文件系统路径、日志、人工秘密或 API key。
 
 ### 3.2 `offline_annotation`
 
@@ -172,7 +171,7 @@ Studio 三类新写调用都必须使用同一个活动 profile、同一个 `mod
 }
 ```
 
-`block_id`、`variant_id` 之外的 ID 不得由模型创建；`block_id`、状态、几何、透明度、发光、支撑、红石、发布状态和 `candidate_qualification` 不属于该输出 Schema。真实 wire Schema 的每个对象字段都必须在 `required` 中，所有 object 都必须 `additionalProperties=false`，只使用探测通过的 endpoint Structured Outputs 子集。消费端必须再次执行 wire/local Schema、tile 映射、词表、长度、重复和机器事实冲突校验；模型返回的越权字段即使服务端返回也必须拒绝并创建 high review。
+`block_id`、`variant_id` 之外的 ID 不得由模型创建；`block_id`、状态、几何、透明度、发光、支撑、红石、发布状态和 `candidate_qualification` 不属于该输出 Schema。真实 wire Schema 的每个对象字段都必须在 `required` 中，所有 object 都必须 `additionalProperties=false`，只使用探测通过的 endpoint Structured Outputs 子集。消费端必须再次执行 wire/local Schema、tile 映射、bounded string/array、长度、重复和机器事实冲突校验；模型返回的越权字段即使服务端返回也必须拒绝并创建 high review。
 
 ### 3.3 `query_spec`
 
@@ -251,7 +250,7 @@ Studio 三类新写调用都必须使用同一个活动 profile、同一个 `mod
 
 服务端返回 `refusal` 或 `incomplete` 时必须保留分类和脱敏原因，不得当作空 JSON、成功 annotation 或“模型已完成”。本地 JSON Schema 失败必须记录 `schema_error_class`、字段路径和 stage，但不得记录完整响应。认证、权限、无能力和拒绝均不得盲重试或隐式更换 model/provider。
 
-离线 `offline_annotation` 在预算用尽后必须创建 high priority review；不能把空语义发布。在线 `query_spec` 或 `visual_rerank` 最终失败时，搜索必须继续使用不放宽硬约束的确定性路径，并返回 `reranked_by_llm=false`；如果 QuerySpec 无法解析，使用本地受控词表解析，未知词只作为 soft keyword，不能猜成硬条件。
+离线 `offline_annotation` 在预算用尽后必须创建 high priority review；不能把空语义发布。在线 `query_spec` 或 `visual_rerank` 最终失败时，搜索必须继续使用不放宽硬约束的确定性路径，并返回 `reranked_by_llm=false`；如果 QuerySpec 无法解析，使用本地 bounded semantic fields 和用户显式词解析，未知词只作为 soft keyword，不能猜成硬条件。
 
 ### 5.3 响应保留边界
 
@@ -269,7 +268,6 @@ machine_metadata_hash
 prompt_version
 model_id
 schema_version
-vocabulary_version
 base_url_stable_id
 stage
 ```
@@ -280,7 +278,7 @@ stage
 
 ### 6.2 发布冻结
 
-发布前必须把每个 AI artifact 与以下版本/哈希绑定并写入 release manifest 或发布索引：`profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、`prompt_version`、对应 stage 的 wire `schema_id`、`vocabulary_version`、`search_ranking_version`、`image_hash`、`machine_metadata_hash`、`cache_key` 和 `artifact_hash`。发布后这些字段只能读取；任一变化必须构建新的不可变 release。发布门和 `quality_report.json` 见 [`quality-and-testing.md`](quality-and-testing.md)。
+发布前必须把每个 AI artifact 与以下版本/哈希绑定并写入 release manifest 或发布索引：`profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、`prompt_version`、对应 stage 的 wire `schema_id`、`search_ranking_version`、`image_hash`、`machine_metadata_hash`、`cache_key` 和 `artifact_hash`。发布后这些字段只能读取；任一变化必须构建新的不可变 release。发布门和 `quality_report.json` 见 [`quality-and-testing.md`](quality-and-testing.md)。
 
 ## 7. Provider 错误码和返回对象
 
@@ -311,7 +309,7 @@ stage
 实现必须提供 fake Responses endpoint 或脱敏协议 fixture，验证：
 
 1. 三阶段都发送同一个 `model_id`、图片输入（QuerySpec 可无图但能力必须已探测）、`store=false` 和 `json_schema/strict=true`；不存在 `json_object` 或自由文本正常路径。
-2. profile 只有一个活动 model；改变 model/base URL/Schema/词表会改变 cache key 和 run snapshot。
+2. profile 只有一个活动 model；改变 model/base URL/Schema/semantic constraints 会改变 cache key 和 run snapshot。
 3. `store=false` 不支持或不能证明时 probe fail、enable 被硬阻断；不存在可绕过硬门的确认或豁免路径。
 4. SDK retry 加应用 retry 的总尝试数不超过 2；认证、权限、无能力、refusal、incomplete 不重试；可修复 Schema 只进行一次 strict 修复。
 5. 离线最终失败创建 high review；在线最终失败返回本地结果、warning 和 `reranked_by_llm=false`，不放宽硬约束。

@@ -2,7 +2,7 @@
 
 ## 1. 范围、术语和关联文档
 
-本文定义 Fabric exporter 如何从一个方块的全部合法 `BlockState` 选择 `VisualVariant`，以及如何在固定摄影棚中生成可复现图片。状态选择和 Minecraft 渲染只能由 exporter 执行；Python Studio 只验证 `export-variant.v1` 和 `render-metadata.v1` 结果。本文不改变注册表事实：所有合法状态仍必须进入 `states.jsonl`，策略只决定哪些状态需要独立的视觉/用途代表。
+本文定义 Fabric exporter 如何从一个方块的全部合法 `BlockState` 选择 `VisualVariant`，以及如何在固定摄影棚中生成可复现图片。精确记录字段形状由 `schemas/exporter/` 下的真实 Schema 文件拥有；本文只定义选择/渲染行为和示例。状态选择和 Minecraft 渲染只能由 exporter 执行；Python Studio 只验证 `export-variant.v1` 和 `render-metadata.v1` 结果。本文不改变注册表事实：所有合法状态仍必须进入 `states.jsonl`，策略只决定哪些状态需要独立的视觉/用途代表。
 
 规范性词汇 `MUST`、`MUST NOT`、`SHOULD`、`MAY` 按 RFC 2119 解释。默认 Fabric 客户端导出器可以被等价实现替换，但必须在 [`decisions.md`](decisions.md) 记录影响并取得所有者批准。
 

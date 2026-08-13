@@ -10,7 +10,7 @@
 - [`openai-provider.md`](openai-provider.md)、[`search-and-ranking.md`](search-and-ranking.md)、[`mcp-api.md`](mcp-api.md)、[`webui-and-operations.md`](webui-and-operations.md)；
 - [`security-and-distribution.md`](security-and-distribution.md)。
 
-当前仓库只有设计/治理文档，没有实现、真实导出、发布索引或测试报告；因此本文件定义验收，不宣称任何运行结果已通过。路线图复选框只有在本文件第 10 节规定的路径、命令输出、退出码、报告和哈希存在后才能勾选。
+当前仓库已完成 R0 契约、Schema/fixture 轻量验收、依赖锁和工具链骨架；尚无 R1–R5 的真实导出、产品索引或 release。本文件后续验收只在对应实现阶段执行，不作为未开始阶段的提前 blocker。
 
 ## 1. MVP 质量边界
 
@@ -21,7 +21,7 @@ MVP 必须退出的质量范围只有：
 3. OpenAI Responses 三阶段请求、严格一次总重试、错误分类、离线审核和在线本地降级；
 4. MCP stdio 四工具、结构化输出/等价 TextContent、PNG 联系表/四视角图片和 stdout 纯净；
 5. WebUI loopback、任务 pause/resume/recover、普通/高优审核、声明式覆盖、publish/rollback/cleanup；
-6. Windows 11 与 Linux x86_64 的源码锁依赖可复现运行；
+6. Windows 11 x86_64 与 Linux x86_64（`manylinux_2_17` / glibc `>=2.17`）的源码锁依赖可复现运行；
 7. 原子 `current.json` 切换、回滚只切指针、release 不可变和最小安全/分发检查。
 
 MVP **MUST NOT** 把黄金查询集、Top-5 指标、硬约束统计目标、排序权重调优、安装包、容器、系统服务或自动更新作为 roadmap 必做退出条件。它们可以在 MVP 后开展真实质量工作，但不得用目标数字冒充已测结果。
@@ -35,12 +35,12 @@ Minecraft Java       26.2
 Java                  25
 Fabric Loader         0.19.3
 Fabric API            0.157.0+26.2
-Loom                  1.17
+Loom                  1.17.19
 Gradle                9.5.1
-Mappings              Mojang mappings
+Mappings              Minecraft 26.2 native Mojang names/unobfuscated; no external mappings artifact
 ```
 
-正式平台仅为 Windows 11 和 Linux x86_64。R0 验证后 Python、FastAPI、SQLite 构建、OpenAI SDK、Schema engine、模板和测试依赖必须精确锁定，并记录 hash 或等价完整锁定信息；不得使用浮动版本、范围、`latest` 或未锁传递依赖。等价技术替换必须先按 [`decisions.md`](decisions.md) 留下影响与批准记录。
+正式平台仅为 Windows 11 x86_64 和 Linux x86_64（Linux `manylinux_2_17` / glibc `>=2.17`）；Python 基线为 CPython `3.14.7`。R0 只锁定实际引入的 Python tooling 依赖及 hashes；后续依赖在使用前必须精确/hash 锁定并重跑两个目标验证，不预锁未实现的 R2-R4 栈。等价技术替换必须先按 [`decisions.md`](decisions.md) 留下影响与批准记录。
 
 测试仓库只允许原创程序生成的 fixture 生成器源码：运行时可在临时目录生成最小 PNG 色块/几何/透明样例、人工构造 JSONL/Schema、空 SQLite、模拟 release/current 和不含原版内容的伪 metadata；不得提交生成后的 PNG、非空 SQLite、Minecraft JAR、资源包、纹理、模型、字体、声音、粒子、动画、截图或真实导出数据；详见 [`security-and-distribution.md`](security-and-distribution.md)。
 
@@ -102,8 +102,8 @@ Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixtur
 5. `refusal`、`incomplete`、认证、权限、能力缺失和不可修复请求错误不重试；
 6. 离线最终失败创建 high `needs_review`；在线最终失败保留本地结果、warning 和 `reranked_by_llm=false`；
 7. usage、完整 response、图片、Authorization、key、绝对路径不进入返回对象、SQLite 或日志；只留脱敏 request ID；
-8. cache key 缺任一字段即失败：`image_hash`、`machine_metadata_hash`、`prompt_version`、`model_id`、`schema_version`、`vocabulary_version`、`base_url_stable_id`、`stage`；
-9. artifact 与 profile/model/prompt/wire schema/vocabulary/search/base URL stable ID/secret reference、input hash 和 cache key 在 release freeze 中可复核；不出现 Token usage、费用或预算字段；Keyring/env 无法解析时在线只本地降级并 warning，不写状态。
+8. cache key 缺任一字段即失败：`image_hash`、`machine_metadata_hash`、`prompt_version`、`model_id`、`schema_version`、`base_url_stable_id`、`stage`；
+9. artifact 与 profile/model/prompt/wire schema/search/base URL stable ID/secret reference、input hash 和 cache key 在 release freeze 中可复核；不出现 Token usage、费用或预算字段；Keyring/env 无法解析时在线只本地降级并 warning，不写状态。
 
 ## 6. 搜索和排序 contract tests
 
@@ -174,7 +174,7 @@ Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixtur
 | `IMAGE_READABLE_AND_HASHED` | 发布 PNG 可读、PNG、512×512、四视角、hash 匹配，无缺纹理/全透明 blocker | image report |
 | `LEGAL_STATE_VALID` | recommended/canonical/represented state 属于同 block 合法集合 | state report |
 | `MACHINE_SCHEMA_VALID` | machine facts strict Schema 全部通过 | Schema report |
-| `AI_SCHEMA_VALID` | AI artifact strict Schema、词表、候选边界和版本 hash 全通过 | artifact report |
+| `AI_SCHEMA_VALID` | AI artifact strict Schema、bounded semantic fields、候选边界和版本 hash 全通过 | artifact report |
 | `OVERRIDE_REFERENCES_VALID` | active override target 存在，可按序 replay，不越权机器层 | replay report |
 | `NO_FALSE_IDS` | block/variant/state/tile/image refs 虚假 ID 为 0 | reference report |
 | `HIGH_REVIEW_ZERO` | 未解决 high review 为 0 | review snapshot |
@@ -188,7 +188,7 @@ Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixtur
 
 ## 10. 跨平台精确命令
 
-实现交付时必须在 Windows 11 和 Linux x86_64 各执行以下命令，完整 stdout/stderr、退出码和环境/lock hash 保存到项目规定的测试报告路径。每份报告必须记录 OS version、CPU architecture、GPU、driver、render backend、Python/Java/Gradle/Fabric 版本和 lock/verification metadata hash。跨平台比较只要求 canonical machine fields、Schema、几何/构图逻辑和排序逻辑一致；PNG 字节 hash 只有在同一完整渲染环境重复运行时才要求一致，不得把不同 GPU/driver/backend 的 PNG 字节差异判为失败：
+实现交付时必须在 Windows 11 x86_64 与 Linux x86_64（`manylinux_2_17` / glibc `>=2.17`）各执行以下命令，完整 stdout/stderr、退出码和环境/lock hash 保存到项目规定的测试报告路径。每份报告必须记录 OS version、CPU architecture、GPU、driver、render backend、Python/Java/Gradle/Fabric 版本和 lock/verification metadata hash。跨平台比较只要求 canonical machine fields、Schema、几何/构图逻辑和排序逻辑一致；PNG 字节 hash 只有在同一完整渲染环境重复运行时才要求一致，不得把不同 GPU/driver/backend 的 PNG 字节差异判为失败：
 
 ```text
 python -m pip install --require-hashes -r requirements.lock
@@ -205,9 +205,9 @@ Windows: gradlew.bat --offline build
 Linux:   ./gradlew --offline build
 ```
 
-Gradle wrapper properties、wrapper JAR checksum、dependency lock 和 dependency verification metadata 必须进入可审计路径；Python `requirements.lock` 必须包含直接和传递依赖的精确版本及 hashes。MCP/R4 和 candidate/activation gate 测试必须使用测试框架生成的临时 data-root/current fixture，不得依赖生产 current；测试结束只清理临时测试目录，产品 MCP 仍零写。
+Gradle wrapper properties、wrapper JAR checksum、dependency lock 和 dependency verification metadata 必须进入可审计路径；R0 tooling Python lock 必须包含实际引入依赖的精确版本及 hashes，不能预锁未实现的 R2-R4 栈。MCP/R4 和 candidate/activation gate 测试必须使用测试框架生成的临时 data-root/current fixture，不得依赖生产 current；测试结束只清理临时测试目录，产品 MCP 仍零写。
 
-若实现采用不同的锁定入口，必须先按 [`decisions.md`](decisions.md) 记录受控替换、影响证明和项目所有者批准，再以同等精确且带 hash 的命令替换；不得以未锁定安装命令声明复现。当前尚无这些实现路径和报告，不能填写通过证据。
+若实现采用不同的锁定入口，必须先按 [`decisions.md`](decisions.md) 记录受控替换、影响证明和项目所有者批准，再以同等精确且带 hash 的命令替换；不得以未锁定安装命令声明复现。各阶段只在实际引入对应实现后执行一次所需验证。
 
 ## 11. 后置黄金查询质量工作（非 MVP 退出门）
 

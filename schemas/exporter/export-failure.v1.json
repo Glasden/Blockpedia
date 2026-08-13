@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:exporter:export-failure.v1",
+  "title": "Blockpedia Export Failure v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "export-failure.v1" },
+    "export_id": { "$ref": "#/$defs/opaqueId" },
+    "minecraft_version": { "const": "26.2" },
+    "failure_id": { "$ref": "#/$defs/opaqueId" },
+    "kind": { "enum": ["failure", "skip"] },
+    "stage": { "enum": ["EXPORT_REGISTRY", "SELECT_VARIANTS", "RENDER_VARIANTS"] },
+    "scope": { "enum": ["export", "block", "state", "variant", "render"] },
+    "block_id": { "$ref": "#/$defs/blockId" },
+    "state_id": { "$ref": "#/$defs/stateId" },
+    "variant_id": { "$ref": "#/$defs/opaqueId" },
+    "render_signature": { "$ref": "#/$defs/hash" },
+    "logical_key": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "reason_code": { "$ref": "#/$defs/failureReason" },
+    "severity": { "enum": ["low", "normal", "high"] },
+    "retry_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+    "action": { "enum": ["fail_export", "needs_review", "skipped"] },
+    "review_status": { "enum": ["not_required", "pending", "resolved", "rejected"] },
+    "message": { "type": "string", "minLength": 2, "maxLength": 500 },
+    "evidence": { "$ref": "#/$defs/evidence" },
+    "input_signature": { "$ref": "#/$defs/hash" },
+    "created_at": { "$ref": "#/$defs/timestamp" }
+  },
+  "required": [
+    "schema_version",
+    "export_id",
+    "minecraft_version",
+    "failure_id",
+    "kind",
+    "stage",
+    "scope",
+    "logical_key",
+    "reason_code",
+    "severity",
+    "retry_count",
+    "action",
+    "review_status",
+    "message",
+    "evidence",
+    "input_signature",
+    "created_at"
+  ],
+  "oneOf": [
+    { "properties": { "scope": { "const": "export" } } },
+    {
+      "properties": { "scope": { "const": "block" } },
+      "required": ["block_id"]
+    },
+    {
+      "properties": { "scope": { "const": "state" } },
+      "required": ["block_id", "state_id"]
+    },
+    {
+      "properties": { "scope": { "const": "variant" } },
+      "required": ["block_id", "variant_id"]
+    },
+    {
+      "properties": { "scope": { "const": "render" } },
+      "required": ["block_id", "variant_id", "render_signature"]
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "opaqueId": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+    },
+    "blockId": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+$"
+    },
+    "stateId": {
+      "type": "string",
+      "maxLength": 8192,
+      "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "failureReason": {
+      "enum": [
+        "REGISTRY_INCOMPLETE",
+        "INVALID_STATE",
+        "MISSING_TRANSLATION",
+        "MISSING_TEXTURE",
+        "EMPTY_RENDER",
+        "BACKGROUND_ONLY_RENDER",
+        "OBJECT_OFF_CANVAS",
+        "OBJECT_TOO_SMALL",
+        "FRAME_INCONSISTENT",
+        "ANIMATED_FIXTURE_UNSUPPORTED",
+        "FLUID_FIXTURE_UNSUPPORTED",
+        "BLOCK_ENTITY_FIXTURE_UNSUPPORTED",
+        "IO_ERROR",
+        "SCHEMA_INVALID",
+        "CHECKSUM_MISMATCH",
+        "IDEMPOTENCY_CONFLICT",
+        "EXPORTER_EXCEPTION"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["artifact_refs", "runtime_exception", "none"] },
+        "paths": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+          "uniqueItems": true,
+          "maxItems": 64
+        },
+        "hashes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/hash" },
+          "uniqueItems": true,
+          "maxItems": 64
+        },
+        "frame_hashes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/hash" },
+          "uniqueItems": true,
+          "maxItems": 64
+        }
+      },
+      "required": ["kind", "paths", "hashes", "frame_hashes"]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": "mcp-error.v1",
+  "request_id": "mcp_01J",
+  "error_code": "VERSION_NOT_AVAILABLE",
+  "message": "目标版本未发布。",
+  "retryable": false,
+  "minecraft_version": null,
+  "details": {"release_id": null, "available_versions": ["26.2"], "invalid_block_ids": [], "field_errors": [], "provider_error_code": null, "integrity_component": null},
+  "warnings": [],
+  "images": [],
+  "unexpected": true
+}

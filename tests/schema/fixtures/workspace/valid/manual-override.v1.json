@@ -1,0 +1,17 @@
+{
+  "schema_version": "manual-override.v1",
+  "override_id": "ov_01",
+  "minecraft_version": "26.2",
+  "scope": {
+    "level": "variant",
+    "variant_id": "vv_01"
+  },
+  "operations": {
+    "set_summary_en": "A dependable gray building block."
+  },
+  "reason": "Human review refined the description.",
+  "author": "local-user",
+  "approved_by": "local-user",
+  "created_at": "2026-08-13T12:00:00Z",
+  "input_signature": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

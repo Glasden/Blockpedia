@@ -11,11 +11,20 @@
 
 ## 冻结技术基线与替换控制
 
-- 正式支持平台 **MUST** 是 Windows 11 和 Linux x86_64。
-- Minecraft 基线 **MUST** 固定为：Minecraft Java `26.2`、Java `25`、Fabric Loader `0.19.3`、Fabric API `0.157.0+26.2`、Loom `1.17`、Gradle `9.5.1`、Mojang mappings。
+- 正式支持平台 **MUST** 是 Windows 11 x86_64 和 Linux x86_64，Linux wheel/ABI 基线为 `manylinux_2_17` / glibc `>=2.17`。
+- Minecraft 基线 **MUST** 固定为：Minecraft Java `26.2`、Java `25`、Fabric Loader `0.19.3`、Fabric API `0.157.0+26.2`、Loom `1.17.19`、Gradle `9.5.1`；Minecraft 26.2 使用 native Mojang names/unobfuscated，不解析外部 mappings artifact。
+- Python 基线 **MUST** 固定为 CPython `3.14.7`。
 - Fabric 导出模组 **MUST** 仅使用上述固定基线；导出包 **MUST** 记录完整运行时清单。
-- R0 验证完成后，其他直接和间接依赖 **MUST** 锁定为精确版本，并记录可复现安装所需的哈希或等价完整锁定信息；依赖 **MUST NOT** 使用浮动版本、范围、`latest` 或未锁定的传递依赖。
+- R0 退出前只要求为 R0 tooling 实际引入的 Python 依赖锁定精确版本和 hashes；后续任何依赖在使用前 **MUST** 精确/hash 锁定，并在 Windows 11 x86_64 与 Linux x86_64 目标上重新验证。
 - 任何等价技术替换在编码前 **MUST** 在 [`docs/decisions.md`](docs/decisions.md) 写入影响记录，逐项证明不破坏本地单机运行、可复现构建、无额外服务、MCP 只读边界和既有数据契约，并获得项目所有者明确书面批准。没有这两项证据 **MUST NOT** 替换。
+
+## 本地工具链选择与最小实现纪律
+
+- 在 Windows 执行 Fabric/Gradle 命令前，代理 **MUST** 先使用已安装的 Azul/Zulu Java 25。当前可用安装为 `C:\Users\Glasden\.jdks\azul-25.0.2`；若该精确目录变化，应先在 `C:\Users\Glasden\.jdks\azul-25*` 中定位现有 Java 25，再为命令设置 `JAVA_HOME` 和 `PATH`。**MUST NOT** 因系统默认 `java` 指向 Java 17 就反复运行已知会失败的 Gradle 命令、降低 Java 基线或修改工程配置；Java 17 最多只可用于一次环境诊断。
+- 实现 **MUST** 选择满足当前阶段验收的最小方案。**MUST NOT** 为未开始的后续阶段预建通用框架、扩展点、冗余字段、重复契约、通用规则引擎或多层验证体系；同一事实不得同时在 Markdown、Schema 和实现中维护三份逐字段定义。只有当前需求、已观察失败或明确验收项需要时，才允许增加抽象或校验。
+- 审查发现非阻断性的命名、数组上限、内部视图或未来扩展细节时，**MUST NOT** 阻塞当前阶段或开启反复设计轮次；优先采用现有最简单一致实现，并用测试覆盖当前可观察行为。
+- **NO Over-Engineering, NO Over-Testing**：已有可复核文件、哈希、测试或成功构建已经证明的事实 **MUST** 直接复用；相关输入未变化且没有失败时，**MUST NOT** 重复派发代理、重复评审、重复执行同类验证，或仅为“更完整”而新增报告、证据层、平台矩阵和阻断门。每个阶段只保留证明该阶段交付物所需的最小一次验收。
+- R0 只冻结契约、最小 Schema/fixture 验收、依赖锁和可构建工具链骨架。真实 Minecraft 运行/导出属于 R1，Python 产品运行时属于 R2，双平台端到端复现属于对应实现阶段和 R5；这些后续事实 **MUST NOT** 倒灌为 R0 blocker。R0 已有最小验收证据后必须关闭并进入下一阶段，不得继续加固设计。
 
 ## MVP 边界与组件职责
 

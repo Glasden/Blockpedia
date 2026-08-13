@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:workspace:visual-variant-record.v1",
+  "title": "Blockpedia visual variant record",
+  "type": "object",
+  "$defs": {
+    "TriState": {
+      "oneOf": [
+        {"type": "boolean"},
+        {"const": "unknown"}
+      ]
+    },
+    "Box": {
+      "type": "object",
+      "properties": {
+        "min_x": {"type": "number"},
+        "min_y": {"type": "number"},
+        "min_z": {"type": "number"},
+        "max_x": {"type": "number"},
+        "max_y": {"type": "number"},
+        "max_z": {"type": "number"}
+      },
+      "required": ["min_x", "min_y", "min_z", "max_x", "max_y", "max_z"],
+      "additionalProperties": false
+    },
+    "ShapeFacts": {
+      "type": "object",
+      "properties": {
+        "boxes": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {"$ref": "#/$defs/Box"}
+        },
+        "signature": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "required": ["boxes", "signature"],
+      "additionalProperties": false
+    },
+    "SupportFacts": {
+      "type": "object",
+      "properties": {
+        "above": {"$ref": "#/$defs/TriState"},
+        "below": {"$ref": "#/$defs/TriState"},
+        "east": {"$ref": "#/$defs/TriState"},
+        "north": {"$ref": "#/$defs/TriState"},
+        "south": {"$ref": "#/$defs/TriState"},
+        "west": {"$ref": "#/$defs/TriState"},
+        "none": {"$ref": "#/$defs/TriState"}
+      },
+      "required": ["above", "below", "east", "north", "south", "west", "none"],
+      "additionalProperties": false
+    },
+    "BehaviorFacts": {
+      "type": "object",
+      "properties": {
+        "transparent": {"$ref": "#/$defs/TriState"},
+        "emissive": {"$ref": "#/$defs/TriState"},
+        "emission_level": {
+          "oneOf": [
+            {"type": "integer", "minimum": 0, "maximum": 15},
+            {"const": "unknown"}
+          ]
+        },
+        "passable": {"$ref": "#/$defs/TriState"},
+        "waterloggable": {"$ref": "#/$defs/TriState"},
+        "requires_support": {"$ref": "#/$defs/TriState"},
+        "redstone_related": {"$ref": "#/$defs/TriState"},
+        "support": {"$ref": "#/$defs/SupportFacts"}
+      },
+      "required": [
+        "transparent",
+        "emissive",
+        "emission_level",
+        "passable",
+        "waterloggable",
+        "requires_support",
+        "redstone_related",
+        "support"
+      ],
+      "additionalProperties": false
+    },
+    "GeometrySummary": {
+      "type": "object",
+      "properties": {
+        "geometry_signature": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "collision_signature": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "shape": {"$ref": "#/$defs/ShapeFacts"},
+        "collision": {"$ref": "#/$defs/ShapeFacts"},
+        "width": {"type": "number", "minimum": 0},
+        "height": {"type": "number", "minimum": 0},
+        "depth": {"type": "number", "minimum": 0},
+        "occupied_volume": {"type": "number", "minimum": 0},
+        "is_full_cube": {"type": "boolean"},
+        "is_horizontal_sheet": {"type": "boolean"},
+        "geometry_classes": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        },
+        "feature_extractor_version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "feature_input_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "required": [
+        "geometry_signature",
+        "collision_signature",
+        "shape",
+        "collision",
+        "width",
+        "height",
+        "depth",
+        "occupied_volume",
+        "is_full_cube",
+        "is_horizontal_sheet",
+        "geometry_classes",
+        "feature_extractor_version",
+        "feature_input_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "Context": {
+      "type": "object",
+      "properties": {
+        "fixture_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "fixture_version": {"const": "fixture.v1"},
+        "rotatable": {"type": "boolean"},
+        "canonical_orientation": {"type": ["string", "null"], "maxLength": 64}
+      },
+      "required": ["fixture_id", "fixture_version", "rotatable", "canonical_orientation"],
+      "additionalProperties": false
+    },
+    "Selection": {
+      "type": "object",
+      "properties": {
+        "state_policy_version": {"const": "state-policy.v1"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 500},
+        "protected_dimensions": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"type": "string", "maxLength": 64}
+        },
+        "folded_state_ids": {
+          "type": "array",
+          "maxItems": 65536,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$",
+            "maxLength": 8192
+          }
+        },
+        "policy_override_id": {"type": ["string", "null"], "maxLength": 128}
+      },
+      "required": [
+        "state_policy_version",
+        "reason",
+        "protected_dimensions",
+        "folded_state_ids",
+        "policy_override_id"
+      ],
+      "additionalProperties": false
+    },
+    "MachineFacts": {
+      "type": "object",
+      "properties": {
+        "geometry": {"$ref": "#/$defs/GeometrySummary"},
+        "behavior_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "behavior_by_state": {
+          "type": "object",
+          "patternProperties": {
+            "^minecraft:.+$": {"$ref": "#/$defs/BehaviorFacts"}
+          },
+          "additionalProperties": false
+        },
+        "machine_tags": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      },
+      "required": ["geometry", "behavior_fingerprint", "behavior_by_state", "machine_tags"],
+      "additionalProperties": false
+    },
+    "Render": {
+      "type": "object",
+      "properties": {
+        "render_policy_version": {"const": "render.v1"},
+        "render_signature": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "render_input_signature": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "preview_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "mask_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "render_metadata_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "image_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "mask_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "render_metadata_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "required": [
+        "render_policy_version",
+        "render_signature",
+        "render_input_signature",
+        "preview_path",
+        "mask_path",
+        "render_metadata_path",
+        "image_sha256",
+        "mask_sha256",
+        "render_metadata_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "MachineSource": {
+      "type": "object",
+      "properties": {
+        "type": {"const": "machine"},
+        "minecraft_version": {"const": "26.2"},
+        "export_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "producer_version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "stage": {"enum": ["SELECT_VARIANTS", "RENDER_VARIANTS", "EXTRACT_FEATURES"]}
+      },
+      "required": ["type", "minecraft_version", "export_id", "producer_version", "stage"],
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "visual-variant-record.v1"},
+    "export_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "minecraft_version": {"const": "26.2"},
+    "variant_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "block_id": {"type": "string", "pattern": "^minecraft:[a-z0-9_./-]+$", "maxLength": 256},
+    "canonical_state_id": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$",
+      "maxLength": 8192
+    },
+    "represented_state_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 65536,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$",
+        "maxLength": 8192
+      }
+    },
+    "context": {"$ref": "#/$defs/Context"},
+    "selection": {"$ref": "#/$defs/Selection"},
+    "machine_facts": {"$ref": "#/$defs/MachineFacts"},
+    "render": {"$ref": "#/$defs/Render"},
+    "annotation_refs": {
+      "type": "array",
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 128}
+    },
+    "override_refs": {
+      "type": "array",
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 128}
+    },
+    "qualification_review_refs": {
+      "type": "array",
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 128}
+    },
+    "candidate_qualification": {"enum": ["eligible", "conditional", "excluded"]},
+    "warnings": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 128}
+    },
+    "source": {"$ref": "#/$defs/MachineSource"}
+  },
+  "required": [
+    "schema_version",
+    "export_id",
+    "minecraft_version",
+    "variant_id",
+    "block_id",
+    "canonical_state_id",
+    "represented_state_ids",
+    "context",
+    "selection",
+    "machine_facts",
+    "render",
+    "annotation_refs",
+    "override_refs",
+    "qualification_review_refs",
+    "candidate_qualification",
+    "warnings",
+    "source"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {"candidate_qualification": {"const": "conditional"}},
+        "required": ["candidate_qualification"]
+      },
+      "then": {"properties": {"warnings": {"minItems": 1}}}
+    },
+    {
+      "if": {
+        "properties": {"candidate_qualification": {"enum": ["eligible", "excluded"]}},
+        "required": ["candidate_qualification"]
+      },
+      "then": {"properties": {"warnings": {"maxItems": 0}}}
+    }
+  ],
+  "additionalProperties": false
+}

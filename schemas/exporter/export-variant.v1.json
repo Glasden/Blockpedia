@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:exporter:export-variant.v1",
+  "title": "Blockpedia Export Variant v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "export-variant.v1" },
+    "export_id": { "$ref": "#/$defs/opaqueId" },
+    "minecraft_version": { "const": "26.2" },
+    "variant_id": { "$ref": "#/$defs/opaqueId" },
+    "block_id": { "$ref": "#/$defs/blockId" },
+    "canonical_state_id": { "$ref": "#/$defs/stateId" },
+    "represented_state_ids": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stateId" },
+      "minItems": 1,
+      "uniqueItems": true,
+      "maxItems": 65536
+    },
+    "context": { "$ref": "#/$defs/variantContext" },
+    "selection": { "$ref": "#/$defs/selectionFacts" },
+    "status": { "enum": ["selected", "skipped"] },
+    "candidate_qualification": { "enum": ["eligible", "conditional", "excluded"] },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+      "uniqueItems": true,
+      "maxItems": 64
+    },
+    "machine_facts": { "$ref": "#/$defs/machineFacts" },
+    "render": { "$ref": "#/$defs/renderReference" },
+    "skip_reason_code": { "$ref": "#/$defs/failureReason" },
+    "skip_reason": { "type": "string", "minLength": 2, "maxLength": 500 },
+    "source": { "$ref": "#/$defs/machineSource" }
+  },
+  "required": [
+    "schema_version",
+    "export_id",
+    "minecraft_version",
+    "variant_id",
+    "block_id",
+    "status",
+    "candidate_qualification",
+    "warnings",
+    "source"
+  ],
+  "oneOf": [
+    {
+      "properties": { "status": { "const": "selected" } },
+      "required": [
+        "canonical_state_id",
+        "represented_state_ids",
+        "context",
+        "selection",
+        "machine_facts",
+        "render"
+      ]
+    },
+    {
+      "properties": { "status": { "const": "skipped" } },
+      "required": ["skip_reason_code", "skip_reason"]
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "opaqueId": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+    },
+    "blockId": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+$"
+    },
+    "stateId": {
+      "type": "string",
+      "maxLength": 8192,
+      "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$"
+    },
+    "triState": {
+      "oneOf": [
+        { "type": "boolean" },
+        { "const": "unknown" }
+      ]
+    },
+    "supportFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "above": { "$ref": "#/$defs/triState" },
+        "below": { "$ref": "#/$defs/triState" },
+        "east": { "$ref": "#/$defs/triState" },
+        "north": { "$ref": "#/$defs/triState" },
+        "south": { "$ref": "#/$defs/triState" },
+        "west": { "$ref": "#/$defs/triState" },
+        "none": { "$ref": "#/$defs/triState" }
+      },
+      "required": ["above", "below", "east", "north", "south", "west", "none"]
+    },
+    "behaviorFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "transparent": { "$ref": "#/$defs/triState" },
+        "emissive": { "$ref": "#/$defs/triState" },
+        "passable": { "$ref": "#/$defs/triState" },
+        "waterloggable": { "$ref": "#/$defs/triState" },
+        "redstone_related": { "$ref": "#/$defs/triState" },
+        "requires_support": { "$ref": "#/$defs/triState" },
+        "support": { "$ref": "#/$defs/supportFacts" },
+        "emission_level": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 15 },
+            { "const": "unknown" }
+          ]
+        }
+      },
+      "required": [
+        "transparent",
+        "emissive",
+        "passable",
+        "waterloggable",
+        "redstone_related",
+        "requires_support",
+        "support",
+        "emission_level"
+      ]
+    },
+    "box": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_x": { "type": "number" },
+        "min_y": { "type": "number" },
+        "min_z": { "type": "number" },
+        "max_x": { "type": "number" },
+        "max_y": { "type": "number" },
+        "max_z": { "type": "number" }
+      },
+      "required": ["min_x", "min_y", "min_z", "max_x", "max_y", "max_z"]
+    },
+    "shapeFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "boxes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/box" },
+          "maxItems": 4096
+        },
+        "signature": { "$ref": "#/$defs/hash" }
+      },
+      "required": ["boxes", "signature"]
+    },
+    "machineFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "geometry_signature": { "$ref": "#/$defs/hash" },
+        "collision_signature": { "$ref": "#/$defs/hash" },
+        "shape": { "$ref": "#/$defs/shapeFacts" },
+        "collision": { "$ref": "#/$defs/shapeFacts" },
+        "behavior_fingerprint": { "$ref": "#/$defs/hash" },
+        "behavior_by_state": {
+          "type": "object",
+          "patternProperties": {
+            "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$": {
+              "$ref": "#/$defs/behaviorFacts"
+            }
+          },
+          "additionalProperties": false,
+          "minProperties": 1
+        }
+      },
+      "required": [
+        "geometry_signature",
+        "collision_signature",
+        "shape",
+        "collision",
+        "behavior_fingerprint",
+        "behavior_by_state"
+      ]
+    },
+    "variantContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fixture_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
+        "fixture_version": { "const": "fixture.v1" },
+        "rotatable": { "type": "boolean" },
+        "canonical_orientation": { "type": ["string", "null"], "maxLength": 64 },
+        "adjacency": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "direction": { "enum": ["above", "below", "east", "north", "south", "west"] },
+              "block_id": { "$ref": "#/$defs/blockId" },
+              "state_id": { "type": ["string", "null"], "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$" }
+            },
+            "required": ["direction", "block_id", "state_id"]
+          },
+          "maxItems": 64
+        }
+      },
+      "required": ["fixture_id", "fixture_version", "rotatable", "canonical_orientation", "adjacency"]
+    },
+    "selectionFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state_policy_version": { "const": "state-policy.v1" },
+        "reason": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "protected_dimensions": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+          "uniqueItems": true,
+          "maxItems": 64
+        },
+        "folded_state_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stateId" },
+          "uniqueItems": true,
+          "maxItems": 65536
+        },
+        "policy_override_id": { "type": ["string", "null"], "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$" }
+      },
+      "required": ["state_policy_version", "reason", "protected_dimensions", "folded_state_ids", "policy_override_id"]
+    },
+    "renderReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "render_policy_version": { "const": "render.v1" },
+        "render_signature": { "$ref": "#/$defs/hash" },
+        "render_input_signature": { "$ref": "#/$defs/hash" },
+        "preview_path": { "$ref": "#/$defs/relativePath" },
+        "mask_path": { "$ref": "#/$defs/relativePath" },
+        "render_metadata_path": { "$ref": "#/$defs/relativePath" },
+        "image_sha256": { "$ref": "#/$defs/hash" },
+        "mask_sha256": { "$ref": "#/$defs/hash" },
+        "render_metadata_sha256": { "$ref": "#/$defs/hash" }
+      },
+      "required": [
+        "render_policy_version",
+        "render_signature",
+        "render_input_signature",
+        "preview_path",
+        "mask_path",
+        "render_metadata_path",
+        "image_sha256",
+        "mask_sha256",
+        "render_metadata_sha256"
+      ]
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+    },
+    "failureReason": {
+      "enum": [
+        "REGISTRY_INCOMPLETE",
+        "INVALID_STATE",
+        "MISSING_TRANSLATION",
+        "MISSING_TEXTURE",
+        "EMPTY_RENDER",
+        "BACKGROUND_ONLY_RENDER",
+        "OBJECT_OFF_CANVAS",
+        "OBJECT_TOO_SMALL",
+        "FRAME_INCONSISTENT",
+        "ANIMATED_FIXTURE_UNSUPPORTED",
+        "FLUID_FIXTURE_UNSUPPORTED",
+        "BLOCK_ENTITY_FIXTURE_UNSUPPORTED",
+        "IO_ERROR",
+        "SCHEMA_INVALID",
+        "CHECKSUM_MISMATCH",
+        "IDEMPOTENCY_CONFLICT",
+        "EXPORTER_EXCEPTION"
+      ]
+    },
+    "machineSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "machine" },
+        "minecraft_version": { "const": "26.2" },
+        "export_id": { "$ref": "#/$defs/opaqueId" },
+        "producer_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "stage": { "const": "RENDER_VARIANTS" }
+      },
+      "required": ["type", "minecraft_version", "export_id", "producer_version", "stage"]
+    }
+  }
+}

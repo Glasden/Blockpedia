@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:exporter:export-block.v1",
+  "title": "Blockpedia Export Block v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "export-block.v1" },
+    "export_id": { "$ref": "#/$defs/opaqueId" },
+    "minecraft_version": { "const": "26.2" },
+    "block_id": { "$ref": "#/$defs/blockId" },
+    "translation_key": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "name_zh_cn": { "type": ["string", "null"], "maxLength": 255 },
+    "name_en_us": { "type": ["string", "null"], "maxLength": 255 },
+    "default_state_id": { "$ref": "#/$defs/stateId" },
+    "properties": { "$ref": "#/$defs/propertyDefinitions" },
+    "has_item": { "$ref": "#/$defs/triState" },
+    "has_block_entity": { "$ref": "#/$defs/triState" },
+    "tags": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/blockId" },
+      "uniqueItems": true,
+      "maxItems": 256
+    },
+    "behavior": { "$ref": "#/$defs/behaviorFacts" },
+    "source": { "$ref": "#/$defs/runtimeSource" }
+  },
+  "required": [
+    "schema_version",
+    "export_id",
+    "minecraft_version",
+    "block_id",
+    "translation_key",
+    "name_zh_cn",
+    "name_en_us",
+    "default_state_id",
+    "properties",
+    "has_item",
+    "has_block_entity",
+    "tags",
+    "behavior",
+    "source"
+  ],
+  "$defs": {
+    "opaqueId": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+    },
+    "blockId": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+$"
+    },
+    "stateId": {
+      "type": "string",
+      "maxLength": 8192,
+      "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$"
+    },
+    "triState": {
+      "oneOf": [
+        { "type": "boolean" },
+        { "const": "unknown" }
+      ]
+    },
+    "propertyDefinitions": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z0-9_]+$": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9_.-]+$" },
+          "minItems": 1,
+          "uniqueItems": true,
+          "maxItems": 256
+        }
+      },
+      "additionalProperties": false
+    },
+    "supportFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "above": { "$ref": "#/$defs/triState" },
+        "below": { "$ref": "#/$defs/triState" },
+        "east": { "$ref": "#/$defs/triState" },
+        "north": { "$ref": "#/$defs/triState" },
+        "south": { "$ref": "#/$defs/triState" },
+        "west": { "$ref": "#/$defs/triState" },
+        "none": { "$ref": "#/$defs/triState" }
+      },
+      "required": ["above", "below", "east", "north", "south", "west", "none"]
+    },
+    "behaviorFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "transparent": { "$ref": "#/$defs/triState" },
+        "emissive": { "$ref": "#/$defs/triState" },
+        "passable": { "$ref": "#/$defs/triState" },
+        "waterloggable": { "$ref": "#/$defs/triState" },
+        "redstone_related": { "$ref": "#/$defs/triState" },
+        "requires_support": { "$ref": "#/$defs/triState" },
+        "support": { "$ref": "#/$defs/supportFacts" },
+        "emission_level": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 15 },
+            { "const": "unknown" }
+          ]
+        }
+      },
+      "required": [
+        "transparent",
+        "emissive",
+        "passable",
+        "waterloggable",
+        "redstone_related",
+        "requires_support",
+        "support",
+        "emission_level"
+      ]
+    },
+    "runtimeSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "runtime" },
+        "minecraft_version": { "const": "26.2" },
+        "export_id": { "$ref": "#/$defs/opaqueId" },
+        "exporter_version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "stage": { "const": "EXPORT_REGISTRY" }
+      },
+      "required": ["type", "minecraft_version", "export_id", "exporter_version", "stage"]
+    }
+  }
+}

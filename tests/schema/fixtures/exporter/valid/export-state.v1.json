@@ -1,0 +1,45 @@
+{
+  "schema_version": "export-state.v1",
+  "export_id": "exp_fixture",
+  "minecraft_version": "26.2",
+  "state_id": "minecraft:yellow_carpet",
+  "block_id": "minecraft:yellow_carpet",
+  "properties": {},
+  "is_default": true,
+  "legal_state": true,
+  "shape": {
+    "boxes": [{ "min_x": 0, "min_y": 0, "min_z": 0, "max_x": 1, "max_y": 0.0625, "max_z": 1 }],
+    "signature": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "collision": {
+    "boxes": [{ "min_x": 0, "min_y": 0, "min_z": 0, "max_x": 1, "max_y": 0.0625, "max_z": 1 }],
+    "signature": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "behavior": {
+    "transparent": false,
+    "emissive": false,
+    "passable": false,
+    "waterloggable": false,
+    "redstone_related": false,
+    "requires_support": true,
+    "support": {
+      "above": "unknown",
+      "below": true,
+      "east": "unknown",
+      "north": "unknown",
+      "south": "unknown",
+      "west": "unknown",
+      "none": false
+    },
+    "emission_level": 0
+  },
+  "variant_ids": ["vv_fixture"],
+  "mapping_status": "mapped",
+  "source": {
+    "type": "runtime",
+    "minecraft_version": "26.2",
+    "export_id": "exp_fixture",
+    "exporter_version": "1.0.0",
+    "stage": "EXPORT_REGISTRY"
+  }
+}

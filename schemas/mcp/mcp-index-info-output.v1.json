@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:mcp:mcp-index-info-output.v1",
+  "title": "Blockpedia MCP index info output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "minecraft_version",
+    "resolved_release_id",
+    "manifest_sha256",
+    "warnings",
+    "data"
+  ],
+  "properties": {
+    "schema_version": {"const": "mcp-index-info-output.v1"},
+    "request_id": {"$ref": "#/$defs/opaque_id"},
+    "minecraft_version": {"$ref": "#/$defs/minecraft_version"},
+    "resolved_release_id": {"$ref": "#/$defs/opaque_id"},
+    "manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "warnings": {"$ref": "#/$defs/warnings"},
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product",
+        "official_disclaimer",
+        "release_id",
+        "built_at",
+        "counts",
+        "quality_gate"
+      ],
+      "properties": {
+        "product": {"const": "Blockpedia"},
+        "official_disclaimer": {
+          "const": "NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT."
+        },
+        "release_id": {"$ref": "#/$defs/opaque_id"},
+        "built_at": {"$ref": "#/$defs/timestamp"},
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["blocks", "visual_variants", "audited_skips"],
+          "properties": {
+            "blocks": {"type": "integer", "minimum": 0},
+            "visual_variants": {"type": "integer", "minimum": 0},
+            "audited_skips": {"type": "integer", "minimum": 0}
+          }
+        },
+        "quality_gate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["passed", "quality_report_sha256"],
+          "properties": {
+            "passed": {"type": "boolean"},
+            "quality_report_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "opaque_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+    },
+    "minecraft_version": {
+      "type": "string",
+      "pattern": "^[0-9]{1,3}\\.[0-9]{1,3}(?:\\.[0-9]{1,3})?$",
+      "minLength": 3,
+      "maxLength": 11
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    }
+  }
+}

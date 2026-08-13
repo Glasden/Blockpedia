@@ -1,0 +1,33 @@
+{
+  "schema_version": "release-manifest.v1",
+  "release_id": "rel_01",
+  "minecraft_version": "26.2",
+  "source_export_id": "exp_01",
+  "source_export_manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "toolchain_lock_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "schemas_inventory_path": "schemas.sha256",
+  "provider_snapshot": {
+    "adapter": "openai_responses",
+    "profile_id": "default",
+    "model_id": "example-model",
+    "base_url_stable_id": "https://api.openai.com/v1",
+    "secret_reference": "keyring:blockpedia/default",
+    "prompt_version": "prompt.v1",
+    "request_envelope_schema_id": "provider-batch-envelope.v1",
+    "wire_schema_ids": {
+      "offline_annotation": "annotation-batch-output.v1",
+      "query_spec": "query-spec-output.v1",
+      "visual_rerank": "rerank-output.v1"
+    },
+    "search_ranking_version": "search-ranking.v1"
+  },
+  "functional_inputs": {
+    "source-export": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "functional_artifacts": {
+    "index.sqlite3": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "quality_report_path": "quality_report.json",
+  "quality_report_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "fts_mode": "trigram"
+}

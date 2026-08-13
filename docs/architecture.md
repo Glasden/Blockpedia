@@ -1,6 +1,6 @@
 # Blockpedia MVP 总体架构
 
-本架构服从 [`../AGENTS.md`](../AGENTS.md) 和 [`decisions.md`](decisions.md)，阶段执行见 [`roadmap.md`](roadmap.md)，产品边界见 [`product-scope.md`](product-scope.md)。移入的 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 是历史背景和最低优先级原始参考；本文件明确收缩后的可执行实现边界，冲突内容禁止实现。
+本架构服从 [`../AGENTS.md`](../AGENTS.md) 和 [`decisions.md`](decisions.md)，阶段执行见 [`roadmap.md`](roadmap.md)，产品边界见 [`product-scope.md`](product-scope.md)。精确数据字段形状唯一由 `schemas/{exporter,workspace,provider,mcp}` 下的 26 个 Schema 文件拥有；本文件只描述拓扑、职责和边界，示例不构成重复的完整字段规范。移入的 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 是历史背景和最低优先级原始参考；本文件明确收缩后的可执行实现边界，冲突内容禁止实现。
 
 ## 1. 固定运行拓扑
 
@@ -22,7 +22,7 @@ OpenAI Responses（Studio 新写任务使用唯一 active profile；MCP 使用 r
 
 不部署 Redis、Celery、Kafka、消息队列、对象存储、向量数据库、独立搜索服务或其他常驻服务。WebUI 和 MCP 读取同一数据根目录，但 MCP 不读取可变 workspace 数据作为查询源，只读取经过门禁的不可变 release。MCP 不写数据库、文件、cache、logs 或 current。
 
-正式平台为 Windows 11 和 Linux x86_64。路径必须使用跨平台路径 API；不能依赖 Unix-only shell、Windows-only 绝对路径或未锁定系统组件。
+正式平台为 Windows 11 x86_64 和 Linux x86_64（Linux `manylinux_2_17` / glibc `>=2.17`）；Python 基线为 CPython `3.14.7`。路径必须使用跨平台路径 API；不能依赖 Unix-only shell、Windows-only 绝对路径或未锁定系统组件。
 
 ## 2. 技术基线与锁定证据
 
@@ -32,9 +32,9 @@ OpenAI Responses（Studio 新写任务使用唯一 active profile；MCP 使用 r
 | Java | `25` |
 | Fabric Loader | `0.19.3` |
 | Fabric API | `0.157.0+26.2` |
-| Loom | `1.17` |
+| Loom | `1.17.19` |
 | Gradle | `9.5.1` |
-| mappings | Mojang mappings |
+| mappings | Minecraft 26.2 native Mojang names/unobfuscated; no external mappings artifact |
 | Web backend | Python + FastAPI |
 | HTML/交互 | Jinja2 + HTMX，少量原生 JavaScript |
 | storage | SQLite + 本地文件 |
@@ -42,13 +42,13 @@ OpenAI Responses（Studio 新写任务使用唯一 active profile；MCP 使用 r
 | LLM | OpenAI Responses，单一 `OpenAIResponsesProvider` adapter；Studio 使用 active model，release-bound MCP 使用冻结 snapshot；strict JSON Schema，实际 `store=false` |
 | MCP transport | stdio |
 
-R0 工具链验证完成后，Python、Java、Gradle/Fabric 及其他依赖必须写入精确版本和完整锁定信息。架构复现证据必须明确指向：
+R0 退出前只锁定 R0 tooling 实际引入的 Python 依赖；后续依赖在使用前必须精确/hash 锁定并在两个目标平台重跑验证，不预锁未实现的 R2-R4 栈。架构复现证据必须明确指向：
 
 - `gradle/wrapper/gradle-wrapper.properties`、wrapper JAR checksum、Gradle dependency locking 和 `gradle/verification-metadata.xml`；
-- Python `requirements.lock`，包含全部传递依赖和 hashes，以及生成锁文件的输入/命令；
+- R0 tooling 的 Python lock 输入、精确版本和 hashes，以及生成锁文件的输入/命令；不预锁未实现的 R2-R4 栈；
 - Windows 11 与 Linux x86_64 的 offline install/build 精确命令、完整 stdout/stderr、退出码、环境/锁 hash 和报告路径。
 
-当前这些实现路径和报告尚不存在，不能把构建或运行标为可复现，也不能勾选 R0 依赖锁退出项。
+上述 R0 路径、锁和 Windows offline skeleton build 已存在，足以关闭 R0。真实 Minecraft runtime/export、Python 产品运行和双平台端到端复现分别在 R1、R2 和 R5 验证，不倒灌为 R0 blocker。
 
 ## 3. 组件职责和命令边界
 
@@ -343,7 +343,7 @@ provider 层只有一个 `OpenAIResponsesProvider`。它读取 Keyring 中服务
 
 ## 11. 复现、安全和公开白名单
 
-- 构建必须使用冻结的 Java/Gradle/Fabric 基线和 R0 后的完整依赖锁；锁证据必须包含 wrapper/JAR checksum、Gradle locking/verification metadata、Python `requirements.lock` 全传递 hashes、锁输入和 Windows/Linux offline install/build 报告。
+- 构建必须使用冻结的 Java/Gradle/Fabric 基线和已使用依赖的精确/hash lock；R0 tooling 锁证据必须包含输入、版本、hash 和 Windows/Linux offline install/build 报告，后续依赖在使用前更新 lock 并重跑两个目标验证。
 - 导出 manifest 必须记录版本、loader、API、mappings、资源包、语言、渲染设置和 exporter/schema 版本。
 - 真实原版资产、导出包、预览、release、非空数据库、生成 PNG 和 Key 只能在本地数据目录；公开仓库只放源码、文档、真实 JSON Schema、空数据库和 fixture 生成器源码。
 - WebUI 不做账号、CORS、CSRF，安全边界是 `127.0.0.1:8765` 和本机访问控制；绝不能提供 host/port 远程绑定选项。

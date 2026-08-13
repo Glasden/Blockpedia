@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "blockpedia-exporter",
+  "version": "${version}",
+  "name": "Blockpedia Exporter",
+  "description": "Minimal client-only Fabric skeleton for the frozen R0 toolchain.",
+  "authors": [
+    "Blockpedia"
+  ],
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.blockpedia.exporter.BlockpediaExporterClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": "0.19.3",
+    "minecraft": "26.2",
+    "java": "25",
+    "fabric-api": "0.157.0+26.2"
+  }
+}

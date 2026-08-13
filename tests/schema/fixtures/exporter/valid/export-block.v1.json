@@ -1,0 +1,39 @@
+{
+  "schema_version": "export-block.v1",
+  "export_id": "exp_fixture",
+  "minecraft_version": "26.2",
+  "block_id": "minecraft:yellow_carpet",
+  "translation_key": "block.minecraft.yellow_carpet",
+  "name_zh_cn": "黄色地毯",
+  "name_en_us": "Yellow Carpet",
+  "default_state_id": "minecraft:yellow_carpet",
+  "properties": {},
+  "has_item": true,
+  "has_block_entity": false,
+  "tags": [],
+  "behavior": {
+    "transparent": false,
+    "emissive": false,
+    "passable": false,
+    "waterloggable": false,
+    "redstone_related": false,
+    "requires_support": true,
+    "support": {
+      "above": "unknown",
+      "below": true,
+      "east": "unknown",
+      "north": "unknown",
+      "south": "unknown",
+      "west": "unknown",
+      "none": false
+    },
+    "emission_level": 0
+  },
+  "source": {
+    "type": "runtime",
+    "minecraft_version": "26.2",
+    "export_id": "exp_fixture",
+    "exporter_version": "1.0.0",
+    "stage": "EXPORT_REGISTRY"
+  }
+}

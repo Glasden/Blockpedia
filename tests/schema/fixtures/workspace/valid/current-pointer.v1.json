@@ -1,0 +1,13 @@
+{
+  "schema_version": "current-pointer.v1",
+  "versions": {
+    "26.2": {
+      "release_id": "rel_01",
+      "minecraft_version": "26.2",
+      "relative_path": "releases/26.2/rel_01",
+      "manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "default_minecraft_version": "26.2",
+  "updated_at": "2026-08-13T12:00:00Z"
+}

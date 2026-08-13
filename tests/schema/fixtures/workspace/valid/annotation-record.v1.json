@@ -1,0 +1,26 @@
+{
+  "schema_version": "annotation-record.v1",
+  "annotation_id": "ann_01",
+  "subject_type": "visual_variant",
+  "subject_id": "vv_01",
+  "minecraft_version": "26.2",
+  "synonyms_zh": ["石块"],
+  "synonyms_en": ["stone block"],
+  "summary_zh": "灰色的完整方块。",
+  "summary_en": "A gray full cube.",
+  "color_terms": ["gray"],
+  "shape_terms": ["full_cube"],
+  "material_impressions": ["stone_like"],
+  "building_roles": ["foundation"],
+  "style_tags": ["simple"],
+  "avoid_for": [],
+  "confidence": 0.9,
+  "reason": "机器几何与图像一致。",
+  "source": {
+    "type": "llm",
+    "model_id": "example-model",
+    "prompt_version": "prompt.v1",
+    "wire_schema_id": "annotation-batch-output.v1",
+    "verified": false
+  }
+}

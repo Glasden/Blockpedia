@@ -1,0 +1,32 @@
+{
+  "schema_version": "provider-batch-envelope.v1",
+  "request_id": "req_01",
+  "stage": "offline_annotation",
+  "profile_id": "default",
+  "model_id": "model-1",
+  "base_url_stable_id": "https://api.openai.com/v1",
+  "secret_reference": "keyring:blockpedia/default",
+  "prompt_version": "prompt.v1",
+  "wire_schema_id": "annotation-batch-output.v1",
+  "wire_format_name": "annotation_batch_output_v1",
+  "minecraft_version": "26.2",
+  "export_id": "exp_01",
+  "release_id": null,
+  "resolved_release_manifest_sha256": null,
+  "vocabulary_version": "vocab.v1",
+  "vocabulary_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+  "search_ranking_version": "search-ranking.v1",
+  "store": false,
+  "created_at": "2026-08-13T12:00:00Z",
+  "input_summary": {
+    "tile_variant_map": [
+      {
+        "tile_id": "tile_01",
+        "variant_id": "vv_01",
+        "image_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+        "machine_metadata_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+      }
+    ]
+  },
+  "unexpected": true
+}

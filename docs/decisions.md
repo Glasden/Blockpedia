@@ -12,10 +12,10 @@
 | 编号 | 冻结决定 | 直接后果 |
 |---|---|---|
 | D-001 | MVP 必须走通 R0、R1、R2、R3、R4、R5 的端到端闭环 | 每阶段有依赖和退出门；不得先做 MCP 或跳过发布完整性门 |
-| D-002 | 正式平台为 Windows 11 与 Linux x86_64 | 路径、进程、Keyring 和构建复现必须在两平台验证；不承诺其他平台 |
-| D-003 | Minecraft 基线冻结为 Java 26.2、Java 25、Fabric Loader 0.19.3、Fabric API 0.157.0+26.2、Loom 1.17、Gradle 9.5.1、Mojang mappings | 导出包必须绑定完整环境清单；版本变化必须生成新索引，不得覆盖旧版本 |
+| D-002 | 正式平台为 Windows 11 x86_64 与 Linux x86_64；Linux wheel/ABI 基线为 `manylinux_2_17` / glibc `>=2.17` | 路径、进程、Keyring 和构建复现必须在两平台验证；不承诺其他平台 |
+| D-003 | Minecraft 基线为 Java 26.2、Java 25、Fabric Loader 0.19.3、Fabric API 0.157.0+26.2、Loom 1.17.19、Gradle 9.5.1；26.2 使用 native Mojang names/unobfuscated，不解析外部 mappings artifact；Python 基线为 CPython 3.14.7 | 导出包必须绑定完整环境清单；版本变化必须生成新索引，不得覆盖旧版本 |
 | D-004 | 默认架构为 Fabric + Python/FastAPI/Jinja2/HTMX + SQLite + 本地文件 + 进程内 Worker | 保持单机、可恢复和可复现；不引入额外服务或大型前端工程 |
-| D-005 | R0 验证后所有其他依赖必须精确锁定 | 必须提供 wrapper/JAR checksum、Gradle dependency locking、verification metadata、Python 全传递依赖 hashes、锁输入及 Windows/Linux offline install/build 报告；禁止浮动版本、未锁传递依赖和以最新版代替锁文件 |
+| D-005 | R0 退出前只 hash-lock R0 tooling 实际引入的 Python 依赖；后续依赖使用前必须精确/hash 锁定并重跑双平台验证 | 不预锁未实现的 R2-R4 栈；禁止浮动版本、未锁传递依赖和以最新版代替锁文件 |
 | D-006 | 只实现 OpenAI Responses、一个 `OpenAIResponsesProvider` adapter 和 strict JSON Schema | 可以保存多个 provider profile，但不实现 Chat Completions、Anthropic、其他 provider adapter、provider fallback 或多模型投票；每次请求最多一次总重试 |
 | D-007 | 兼容 Responses 语义的 `base_url` 是同一 provider 的用户批准配置 | 仍只实现 `OpenAIResponsesProvider`；兼容 endpoint 必须通过同一协议能力门并实际使用 `store=false`，不能借此引入其他 API/provider |
 | D-008 | `store=false` 是硬能力门 | 能力探测必须证明 endpoint 支持并实际接受/使用 `store=false`；无法证明即探测失败并禁止 enable，warning/ack 不得绕过 |
@@ -46,6 +46,7 @@
 | D-033 | 黄金查询集、Top-5 和排序调优后置 | 不作为路线图必做项、MVP 退出门或已达成的质量声明 |
 | D-034 | 不制作安装包、容器、服务或自动更新 | 交付为源码锁依赖和本地运行说明；不增加部署层 |
 | D-035 | 等价技术替换必须先记录影响并获项目所有者明确批准 | 记录必须证明单机、复现、无额外服务、MCP 只读和数据契约不受破坏；未经批准不得编码 |
+| D-036 | R0 物化采用最小闭合：精确字段形状唯一由 `schemas/{exporter,workspace,provider,mcp}` 下的 26 个真实 Schema 文件拥有；Markdown 只拥有核心产品、组件和安全行为，示例仅为说明 | 不重复穷举字段形状；R0 只做轻量 inventory/fixture/provider wire 基础验证，不引入通用规则引擎、额外 Schema ID、词汇 artifact、服务或 R2-R4 内部视图设计；项目 owner 已于 2026-08-13 在本会话批准该简化 |
 
 ## 关键边界的执行解释
 
@@ -98,4 +99,6 @@ candidate-build gate 不包含 MCP smoke、双 release 或 current 切换。R3 �
 
 ## 等价替换影响记录
 
-截至本记录日期，没有已批准的等价技术替换。任何后续替换必须在这里新增一条带日期、替换前后技术、影响证明、验证证据和项目所有者明确批准记录的条目；不得只在提交说明或口头沟通中批准。
+### 2026-08-13 — Loom、mappings 与 R0 简化影响记录
+
+Loom `1.17` 替换为精确 `1.17.19`，并将 Minecraft 26.2 mappings 澄清为 native Mojang names/unobfuscated、无外部 mappings artifact；同时批准 CPython `3.14.7` 与 Windows 11 x86_64 / Linux x86_64 `manylinux_2_17` / glibc `>=2.17`。该记录和 D-036 不改变本地单机运行、可复现构建目标、无额外服务、MCP stdio 只读边界、不可变 release/current 语义或既有数据契约；也不新增 Schema ID、词汇 artifact、服务、框架或能力。项目 owner 已于 2026-08-13 在本会话明确批准。实际工具链、Schema、锁和双平台运行报告仍需验证，未据此宣称通过。

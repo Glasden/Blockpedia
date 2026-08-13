@@ -1,0 +1,7 @@
+.slim/deepwork/
+.ignore
+.gradle/
+build/
+.pytest_cache/
+__pycache__/
+*.pyc

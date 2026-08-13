@@ -1,0 +1,14 @@
+{
+  "schema_version": "skip-review.v1",
+  "review_id": "skip_01",
+  "target_type": "visual_variant",
+  "target_id": "vv_01",
+  "minecraft_version": "26.2",
+  "reviewer": "local-user",
+  "reviewed_at": "2026-08-13T12:00:00Z",
+  "reason_code": "MISSING_TEXTURE",
+  "note": "The render has no readable texture.",
+  "evidence": ["evidence/render-failure.json"],
+  "source_version": "export-contract.v1",
+  "machine_failure_ref": "fail_01"
+}

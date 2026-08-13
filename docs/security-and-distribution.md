@@ -39,7 +39,7 @@ fixture generator source
 
 真实图片、机器事实、索引和 release 必须由用户在本地合法安装的 Minecraft Java `26.2` 环境和自制 Fabric exporter 生成。测试只使用原创程序生成的 fixture，不能复制/裁剪原版资产“伪造”测试。
 
-源码必须支持 Windows 11 和 Linux x86_64 的可复现本地运行，Python/SDK/其他依赖使用精确锁和 hash。MVP **MUST NOT** 制作安装包、容器、系统服务或自动更新，也不得引入额外运行服务；默认数据根必须在源码之外。
+源码必须支持 Windows 11 x86_64 和 Linux x86_64（Linux `manylinux_2_17` / glibc `>=2.17`）的可复现本地运行；Python 基线为 CPython `3.14.7`。R0 只锁定实际引入的 tooling 依赖及 hashes，后续依赖在使用前精确/hash 锁定并重跑两个目标验证。MVP **MUST NOT** 制作安装包、容器、系统服务或自动更新，也不得引入额外运行服务；默认数据根必须在源码之外。
 
 ## 3. 网络边界和威胁模型
 
@@ -96,7 +96,7 @@ MVP 只实现 [`openai-provider.md`](openai-provider.md) 的 `OpenAI Responses`�
 1. 当前任务所需的裁剪 PNG/联系表；
 2. 已验证的公开 Minecraft metadata 和确定性机器事实；
 3. 内部短编号（`variant_id`、`candidate_id`）及当前用户 query；
-4. 当前阶段所需受控词表、Schema 和规则摘要。
+4. 当前阶段所需 Schema 和 bounded semantic rules 摘要。
 
 不得发送本机绝对路径、文件名中的秘密、API key、Authorization、SQLite、日志、完整导出包、整库数据、无关方块、无关用户查询、字体/纹理/模型源文件或未审核人工秘密。AI cache key、模型版本和 base URL stable ID 不能成为披露本机路径/秘密的通道。
 
@@ -104,7 +104,7 @@ MVP 只实现 [`openai-provider.md`](openai-provider.md) 的 `OpenAI Responses`�
 
 - 放在独立数据区（例如 `<untrusted_user_query>`），不能与系统指令混写；
 - 不得改变 Schema、model、候选集合、release selector、hard constraints、工具名或安全规则；
-- 输出必须经 strict Schema、词表、ID 集合、来源和机器冲突校验；
+- 输出必须经 strict Schema、bounded semantic fields、ID 集合、来源和机器冲突校验；
 - LLM 不得创建/改写 `block_id`、合法状态、状态字符串、几何、collision、透明度、发光、支撑、行为、发布状态或资格事实；
 - visual rerank 只能排列本地已召回候选，不能增候选、删 hard constraint 或让新 ID 成为事实。
 
@@ -139,9 +139,9 @@ WebUI 每次发送前必须展示待发送的文本、图片和 machine metadata
   checksums.sha256
 ```
 
-生成并写入完整 hash manifest 后，release **MUST NOT** 原地修改。candidate release 使用 `built_at`；激活时间只写 `current.json` 和 workspace activation audit，不写回 release metadata。模型、prompt、Schema、词表、图片、人工覆盖或任何语义变化都必须产生新的 build/release；不能改旧 SQLite、图片、override 或 quality report。每个精确 Minecraft version 首发前至少有两个独立、完整性通过、带 hash 的不可变 release。
+生成并写入完整 hash manifest 后，release **MUST NOT** 原地修改。candidate release 使用 `built_at`；激活时间只写 `current.json` 和 workspace activation audit，不写回 release metadata。模型、prompt、Schema、semantic constraints、图片、人工覆盖或任何语义变化都必须产生新的 build/release；不能改旧 SQLite、图片、override 或 quality report。每个精确 Minecraft version 首发前至少有两个独立、完整性通过、带 hash 的不可变 release。
 
-release manifest 必须记录精确 `minecraft_version`、`release_id`、来源 export、工具链 lock hash、Schema/prompt/vocabulary/search 版本、provider `profile_id`、`model_id`、`base_url_stable_id`（非秘密）、`secret_reference`、AI artifact/cache hash、覆盖审计和 quality report hash；manifest 只哈希功能输入/产物，`checksums.sha256` 另行覆盖 release 内其它普通文件。JSON、Schema 字段、metadata、manifest、current 和 release 中的 hash 字符串必须使用 `sha256:<64 lowercase hex>`；`checksums.sha256`/`schemas.sha256` 的行首 digest 不带前缀。`checksums.sha256` 格式为 `<64hex><two ASCII spaces><release-relative-posix-path>\n`，排除自身并按路径排序；`schemas.sha256` 格式为 `<64hex><two ASCII spaces><schema-id><two ASCII spaces><canonical-repository-relative-posix-path>\n`，按 schema ID UTF-8 bytes 排序，路径不声称位于 release。AI 产物冻结字段见 [`openai-provider.md`](openai-provider.md)。
+release manifest 必须记录精确 `minecraft_version`、`release_id`、来源 export、工具链 lock hash、Schema/prompt/search 版本、provider `profile_id`、`model_id`、`base_url_stable_id`（非秘密）、`secret_reference`、AI artifact/cache hash、覆盖审计和 quality report hash；manifest 只哈希功能输入/产物，`checksums.sha256` 另行覆盖 release 内其它普通文件。JSON、Schema 字段、metadata、manifest、current 和 release 中的 hash 字符串必须使用 `sha256:<64 lowercase hex>`；`checksums.sha256`/`schemas.sha256` 的行首 digest 不带前缀。`checksums.sha256` 格式为 `<64hex><two ASCII spaces><release-relative-posix-path>\n`，排除自身并按路径排序；`schemas.sha256` 格式为 `<64hex><two ASCII spaces><schema-id><two ASCII spaces><canonical-repository-relative-posix-path>\n`，按 schema ID UTF-8 bytes 排序，路径不声称位于 release。AI 产物冻结字段见 [`openai-provider.md`](openai-provider.md)。
 
 ### 7.2 `current.json` 唯一指针
 
@@ -178,15 +178,15 @@ release manifest 必须记录精确 `minecraft_version`、`release_id`、来源 
 索引永远分三层：
 
 1. **不可变机器事实**：runtime registry、legal state、state string、geometry、collision、transparency、emission、support、render hash 等，WebUI 只读；
-2. **AI 语义建议**：strict Schema 内的 synonym、颜色/形状词、材质观感、用途、风格和候选理由，保存 model/prompt/schema/vocabulary/base URL stable ID、输入/产物 hash；
+2. **AI 语义建议**：strict Schema 内的 synonym、颜色/形状词、材质观感、用途、风格和候选理由，保存 model/prompt/schema/base URL stable ID、输入/产物 hash；
 3. **人工覆盖**：独立声明式记录，含 operator、time、reason、source version、target ID，可按固定顺序 replay。
 
 资格只能是 `eligible`、`conditional`、`excluded`；`conditional` 必须带 warning。skip 审计使用 `skip-review.v1`，qualification 审计使用 `qualification-review.v1`；二者都必须包含 `target_id`、`minecraft_version`、`reviewer`、`reviewed_at`、`reason_code`、`note`、`evidence`、`source_version`，skip 另含 `machine_failure_ref`。人工可以编辑 AI 语义、qualification 和 skip，但不能把值写回机器层；发现机器事实错误必须修复 exporter/重新导出，不能 override 隐藏。
 
 ## 9. 依赖、运行和变更控制
 
-- 支持平台仅 Windows 11/Linux x86_64；依赖必须精确锁定并带 hash；
-- Minecraft/Java/Fabric/Gradle/Loom/mappings 使用 [`AGENTS.md`](../AGENTS.md) 固定基线；
+- 支持平台仅 Windows 11 x86_64/Linux x86_64（Linux `manylinux_2_17` / glibc `>=2.17`）；Python 基线为 CPython `3.14.7`；R0 只锁定实际引入的 tooling 依赖，后续依赖使用前必须精确/hash 锁定并重跑双平台验证；
+- Minecraft/Java/Fabric/Gradle/Loom/mappings 使用 [`AGENTS.md`](../AGENTS.md) 固定基线；精确字段形状由真实 Schema 文件拥有；
 - 默认数据根在源码外；真实数据和合法运行时生成本地保存；
 - 不制作安装包、容器、系统服务、自动更新或额外服务；
 - 不使用通用 SQLite migration framework；schema 变化先更新高优先级契约并重建数据库；
@@ -206,4 +206,4 @@ release manifest 必须记录精确 `minecraft_version`、`release_id`、来源 
 7. 公开包只含代码、文档、Schema、空库和 fixture 生成器源码；真实图片/索引只存在用户本地 data root；
 8. 每个目标 Minecraft version 在首发检查中有至少两个独立完整 release，且发布门记录 `TWO_INDEPENDENT_RELEASES`；candidate-build gate 的 `excluded` qualification 审计已通过，activation gate 只复核其报告和 hash。
 
-详细测试命令和报告要求见 [`quality-and-testing.md`](quality-and-testing.md)；当前没有实现或报告时必须保持未完成状态。
+详细测试命令和报告要求见 [`quality-and-testing.md`](quality-and-testing.md)；R1–R5 项只在对应实现和最小验收证据存在后标记完成，不提前建设额外证据层。
