@@ -15,7 +15,7 @@
 - Minecraft 基线 **MUST** 固定为：Minecraft Java `26.2`、Java `25`、Fabric Loader `0.19.3`、Fabric API `0.157.0+26.2`、Loom `1.17.19`、Gradle `9.5.1`；Minecraft 26.2 使用 native Mojang names/unobfuscated，不解析外部 mappings artifact。
 - Python 基线 **MUST** 固定为 CPython `3.14.7`。
 - Fabric 导出模组 **MUST** 仅使用上述固定基线；导出包 **MUST** 记录完整运行时清单。
-- R0 退出前只要求为 R0 tooling 实际引入的 Python 依赖锁定精确版本和 hashes；后续任何依赖在使用前 **MUST** 精确/hash 锁定，并在 Windows 11 x86_64 与 Linux x86_64 目标上重新验证。
+- R0 退出前只要求为 R0 tooling 实际引入的 Python 依赖锁定精确版本和 hashes；后续任何依赖在使用前 **MUST** 精确/hash 锁定；对应阶段必须先完成 Windows 11 x86_64 验证，Linux wheel/ABI、安装、实际运行、平台行为和最终双平台复现统一归 R5 验证。R0-R4 **MUST NOT** 以缺少 Linux 证据阻塞阶段退出。
 - 任何等价技术替换在编码前 **MUST** 在 [`docs/decisions.md`](docs/decisions.md) 写入影响记录，逐项证明不破坏本地单机运行、可复现构建、无额外服务、MCP 只读边界和既有数据契约，并获得项目所有者明确书面批准。没有这两项证据 **MUST NOT** 替换。
 
 ## 本地工具链选择与最小实现纪律
@@ -26,7 +26,7 @@
 - 审查发现非阻断性的命名、数组上限、内部视图或未来扩展细节时，**MUST NOT** 阻塞当前阶段或开启反复设计轮次；优先采用现有最简单一致实现，并用测试覆盖当前可观察行为。
 - **NO Over-Engineering, NO Over-Testing**：已有可复核文件、哈希、测试或成功构建已经证明的事实 **MUST** 直接复用；相关输入未变化且没有失败时，**MUST NOT** 重复派发代理、重复评审、重复执行同类验证，或仅为“更完整”而新增报告、证据层、平台矩阵和阻断门。每个阶段只保留证明该阶段交付物所需的最小一次验收。
 - 哈希使用原则: **MUST NOT** 频繁使用哈希锁定字段等信息, 即使在无任何必要的情况下, 这属于**Over-Engineering**
-- R0 只冻结契约、最小 Schema/fixture 验收、依赖锁和可构建工具链骨架。真实 Minecraft 运行/导出属于 R1，Python 产品运行时属于 R2，双平台端到端复现属于对应实现阶段和 R5；这些后续事实 **MUST NOT** 倒灌为 R0 blocker。R0 已有最小验收证据后必须关闭并进入下一阶段，不得继续加固设计。
+- R0 只冻结契约、最小 Schema/fixture 验收、依赖锁和可构建工具链骨架；R0 只需完成对应 Windows 骨架证据。真实 Minecraft 运行/导出属于 R1，Windows Python 产品运行时属于 R2，Windows MCP/功能验证属于 R4，Linux wheel/ABI、实际安装/运行、平台行为和最终双平台复现统一属于 R5；这些后续事实 **MUST NOT** 倒灌为 R0-R4 blocker。R0 已有最小验收证据后必须关闭并进入下一阶段，不得继续加固设计。
 
 ## MVP 边界与组件职责
 

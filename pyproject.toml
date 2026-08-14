@@ -1,9 +1,29 @@
 [project]
 name = "blockpedia"
 version = "0.0.0"
-description = "Blockpedia R0 contract tooling"
+description = "Blockpedia R2 Index Studio and persistence core"
 requires-python = "==3.14.7"
-dependencies = []
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn==0.52.3",
+    "Jinja2==3.1.6",
+    "jsonschema==4.26.0",
+]
+
+[project.scripts]
+block-index = "blockpedia.cli:main"
+
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["blockpedia*"]
+
+[tool.setuptools.package-data]
+blockpedia = ["sql/*.sql", "sql/*.sha256", "templates/**/*.html", "static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src", "."]

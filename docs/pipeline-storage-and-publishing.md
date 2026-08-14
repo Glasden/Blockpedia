@@ -75,7 +75,7 @@ MCP                   → 只读根 current.json 与指定版本 release
 
 ## 4. Python/SDK 锁定和 `PREPARE`
 
-Fabric/Gradle 工具链由导出契约固定为 Minecraft Java `26.2`、Java `25`、Fabric Loader `0.19.3`、Fabric API `0.157.0+26.2`、Loom `1.17.19`、Gradle `9.5.1`；Minecraft 26.2 使用 native Mojang names/unobfuscated，不解析外部 mappings artifact。R0 只锁定实际引入的 Python tooling 依赖；不预锁未实现的 R2-R4 栈。后续依赖在使用前必须精确/hash 锁定并在 Windows 11 x86_64 与 Linux x86_64 `manylinux_2_17` / glibc `>=2.17` 上重新验证。candidate check/build 的前置只要求 R0-R3 和 candidate-build gate；activation-check/apply 的前置才要求 R0-R4、activation gate 和用户确认。
+Fabric/Gradle 工具链由导出契约固定为 Minecraft Java `26.2`、Java `25`、Fabric Loader `0.19.3`、Fabric API `0.157.0+26.2`、Loom `1.17.19`、Gradle `9.5.1`；Minecraft 26.2 使用 native Mojang names/unobfuscated，不解析外部 mappings artifact。R0 只锁定实际引入的 Python tooling 依赖；不预锁未实现的 R2-R4 栈。后续依赖在使用前必须精确/hash 锁定，Windows 在对应阶段验证，Linux `manylinux_2_17` / glibc `>=2.17` 的安装、运行、wheel/ABI 和最终双平台复现统一在 R5 验证。candidate check/build 的前置只要求 R0-R3 和 candidate-build gate；activation-check/apply 的前置才要求 R0-R4、activation gate 和用户确认。
 
 `PREPARE` 在任何外部模型请求或写入成功产物前必须检查：
 

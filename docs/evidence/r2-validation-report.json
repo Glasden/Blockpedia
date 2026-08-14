@@ -1,0 +1,64 @@
+{
+  "checks": {
+    "cli": {
+      "status": "passed"
+    },
+    "dependency_lock": {
+      "details": {
+        "direct_count": 6
+      },
+      "status": "passed"
+    },
+    "local_assets_and_templates": {
+      "status": "passed"
+    },
+    "public_surface": {
+      "details": {
+        "file_count": 66
+      },
+      "status": "passed"
+    },
+    "pyproject": {
+      "status": "passed"
+    },
+    "stages": {
+      "status": "passed"
+    },
+    "web": {
+      "status": "passed"
+    },
+    "workspace_sql": {
+      "status": "passed"
+    }
+  },
+  "commands": {
+    "executed": [
+      "python -m tools.validate_r2 --repo-root . --report docs/evidence/r2-validation-report.json"
+    ],
+    "recommended": [
+      "PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider",
+      "python -m pip check",
+      "git diff --check"
+    ]
+  },
+  "deferred": [
+    "LINUX_R2_PYTHON_RUNTIME_AND_WEB_R5",
+    "LINUX_R4_MCP_STDIO_R5",
+    "LINUX_WHEEL_ABI_R5",
+    "LINUX_JAVA_RUNTIME_EXPORTER_R5",
+    "FINAL_DUAL_PLATFORM_REPRODUCTION_R5"
+  ],
+  "environment": {
+    "architecture": "AMD64",
+    "linux_r2_evidence": false,
+    "linux_validation_stage": "R5",
+    "os": "Windows",
+    "python_baseline": "3.14.7",
+    "python_baseline_passed": true,
+    "python_implementation": "CPython",
+    "python_version": "3.14.7"
+  },
+  "generated_at": "2026-08-14T10:07:50Z",
+  "issues": [],
+  "status": "passed"
+}

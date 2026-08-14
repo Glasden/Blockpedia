@@ -1,0 +1,10 @@
+<article class="stale-item stale-item--recovered" role="status" tabindex="-1" data-autofocus>
+  <div class="stale-item__signal" aria-hidden="true">✓</div>
+  <div>
+    <b>恢复命令已记录</b>
+    <code>{{ run.run_id }}</code>
+    <small>当前状态：{{ status_labels.get(run.status, run.status) }}</small>
+  </div>
+  <a class="text-button" href="/runs/{{ run.run_id }}">查看</a>
+</article>
+<span id="startup-stale-count" hx-swap-oob="innerHTML">{{ remaining_stale }}</span>

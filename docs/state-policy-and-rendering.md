@@ -97,7 +97,7 @@ biome: minecraft:plains
 entities/particles/UI: disabled
 ```
 
-摄影棚坐标、观察对象中心、背景平面、背板材质、支撑块、光源方向/强度、阴影和曝光固定为 isolated context 的最小实现。实现不得读取用户当前世界的天气、时间、资源包或随机邻接来改变结果。资源 snapshot、相机、光照、背景/背板和支撑规则的哈希只写入 manifest；`render.json` 只写最小图片、视角、policy、fixture、tint 和 mask 语义，不重复环境或内容哈希。manifest/input signature 必须记录 OS、GPU、驱动、渲染后端和分辨率等完整环境；同一完整环境重复运行必须得到相同 PNG byte hash。Windows 11 与 Linux x86_64 分别验证 canonical 机器字段、Schema、逻辑排序和构图规则；不同 GPU/驱动之间只要求 canonical 机器字段一致，不承诺 PNG byte hash 一致。
+摄影棚坐标、观察对象中心、背景平面、背板材质、支撑块、光源方向/强度、阴影和曝光固定为 isolated context 的最小实现。实现不得读取用户当前世界的天气、时间、资源包或随机邻接来改变结果。资源 snapshot、相机、光照、背景/背板和支撑规则的哈希只写入 manifest；`render.json` 只写最小图片、视角、policy、fixture、tint 和 mask 语义，不重复环境或内容哈希。manifest/input signature 必须记录 OS、GPU、驱动、渲染后端和分辨率等完整环境；同一完整环境重复运行必须得到相同 PNG byte hash。Windows 对应阶段验证 canonical 机器字段、Schema、逻辑排序和构图规则；Linux 这些实际运行时/平台验证统一 deferred 到 R5，不声称 Linux 已通过；不同 GPU/驱动之间只要求 canonical 机器字段一致，不承诺 PNG byte hash 一致。
 
 ### 7.2 四视角和构图
 

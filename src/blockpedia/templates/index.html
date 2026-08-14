@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero page-shell" aria-labelledby="page-heading">
+  <div class="hero__copy reveal reveal--1">
+    <p class="eyebrow"><span>R2</span> LOCAL INDEX PIPELINE</p>
+    <h1 id="page-heading">把已验证的导出，<br><em>变成可查询的工作索引。</em></h1>
+    <p class="hero__lede">这里只接收 exporter 已选择、已渲染的产物。Studio 负责导入、核对与离线特征提取，不会重选方块状态，也不会重新渲染图片。</p>
+  </div>
+
+  <aside class="hero-console reveal reveal--2" aria-label="Studio 概览">
+    <div class="hero-console__top">
+      <span>STUDIO / LOCAL</span>
+      <span class="live-label"><i aria-hidden="true"></i> LOOPBACK</span>
+    </div>
+    <dl class="metric-grid">
+      <div><dt>运行记录</dt><dd>{{ counts.all }}</dd></div>
+      <div><dt>正在处理</dt><dd>{{ counts.active }}</dd></div>
+      <div><dt>需要关注</dt><dd>{{ counts.attention }}</dd></div>
+      <div><dt>启动时过期项</dt><dd id="startup-stale-count">{{ startup_stale|length }}</dd></div>
+    </dl>
+    <p class="console-note"><span aria-hidden="true">↳</span> 数据只保存在已配置的本地目录中。</p>
+  </aside>
+</section>
+
+<div class="page-shell workspace-grid">
+  <section class="work-card work-card--import reveal reveal--3" aria-labelledby="import-heading">
+    <div class="section-heading">
+      <div>
+        <p class="section-index">01 / IMPORT</p>
+        <h2 id="import-heading">导入工作台</h2>
+      </div>
+      <span class="readonly-chip">显式版本</span>
+    </div>
+
+    <form
+      class="import-form"
+      hx-post="/ui/imports/check"
+      hx-target="#import-result"
+      hx-swap="innerHTML"
+      hx-indicator="#import-spinner"
+      autocomplete="off"
+    >
+      <div class="field-group field-group--wide">
+        <label for="source-directory">本地导出目录</label>
+        <input
+          id="source-directory"
+          name="source_directory"
+          type="text"
+          required
+          maxlength="4096"
+          spellcheck="false"
+          aria-describedby="source-help source-privacy"
+          placeholder="选择 data-root/exports/版本/export_id 目录"
+        >
+        <small id="source-help">必须是所选版本下、已完成 R1 校验的非 staging 导出目录。</small>
+        <small id="source-privacy" class="privacy-note"><span aria-hidden="true">◆</span> 路径仅用于本次本地检查，页面和响应不会回显绝对路径。</small>
+      </div>
+
+      <div class="field-group">
+        <label for="minecraft-version">Minecraft 版本</label>
+        <input
+          id="minecraft-version"
+          name="minecraft_version"
+          type="text"
+          value="26.2"
+          required
+          inputmode="decimal"
+          pattern="[0-9]+\.[0-9]+(\.[0-9]+)?"
+          aria-describedby="version-help"
+        >
+        <small id="version-help">必须与导出 manifest 精确一致。</small>
+      </div>
+
+      <div class="form-action">
+        <button class="button button--primary" type="submit">
+          <span>检查完整性</span><span aria-hidden="true">→</span>
+        </button>
+        <span id="import-spinner" class="htmx-indicator activity-label" role="status">正在建立安全快照并检查…</span>
+      </div>
+    </form>
+
+    <div id="import-result" class="result-slot" aria-live="polite">
+      <div class="empty-state empty-state--compact">
+        <span class="empty-state__symbol" aria-hidden="true">⌁</span>
+        <p>检查结果会显示在这里。通过检查后，才会出现导入操作。</p>
+      </div>
+    </div>
+  </section>
+
+  <aside class="rail reveal reveal--4">
+    <section class="work-card stale-card" aria-labelledby="stale-heading">
+      <div class="section-heading section-heading--small">
+        <div>
+          <p class="section-index">02 / RECOVERY</p>
+          <h2 id="stale-heading">启动恢复</h2>
+        </div>
+        <span class="count-badge">{{ startup_stale|length }}</span>
+      </div>
+
+      <p class="supporting-copy">启动时只读取心跳超时项，不会自动修改数据库。恢复必须由你明确触发。</p>
+      <div class="stale-list">
+        {% if startup_stale %}
+          {% for marker in startup_stale %}
+          <article class="stale-item">
+            <div class="stale-item__signal" aria-hidden="true">!</div>
+            <div>
+              <b>{{ marker.stage }}</b>
+              <code>{{ marker.run_id }}</code>
+              {% if marker.logical_key %}<small>{{ marker.logical_key }}</small>{% endif %}
+            </div>
+            <form
+              hx-post="/ui/runs/{{ marker.run_id }}/recover"
+              hx-target="closest .stale-item"
+              hx-swap="outerHTML"
+            >
+              {% if marker.job_id %}<input type="hidden" name="job_id" value="{{ marker.job_id }}">{% endif %}
+              <input type="hidden" name="stage" value="{{ marker.stage }}">
+              <input type="hidden" name="return_view" value="stale">
+              <button class="text-button" type="submit">恢复</button>
+            </form>
+          </article>
+          {% endfor %}
+        {% else %}
+          <div class="quiet-success"><span aria-hidden="true">✓</span><p><b>没有 stale 项</b><br>启动检测未发现需要人工恢复的运行。</p></div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="boundary-card" aria-labelledby="boundary-heading">
+      <p class="section-index">PHASE BOUNDARY</p>
+      <h2 id="boundary-heading">当前功能止于 R2。</h2>
+      <p>AI provider、语义审核、candidate release、MCP 与激活均属于后续 R3–R5，当前页面不提供这些操作。</p>
+      <div class="boundary-track" aria-label="阶段边界">
+        <span class="is-current">R2</span><span>R3</span><span>R4</span><span>R5</span>
+      </div>
+    </section>
+  </aside>
+</div>
+
+<section class="page-shell recent-section reveal reveal--5" aria-labelledby="recent-heading">
+  <div class="section-heading">
+    <div>
+      <p class="section-index">03 / RUNS</p>
+      <h2 id="recent-heading">最近运行</h2>
+    </div>
+    <a class="arrow-link" href="/runs">查看全部 <span aria-hidden="true">↗</span></a>
+  </div>
+  {% include "partials/run_list.html" %}
+</section>
+{% endblock %}

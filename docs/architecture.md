@@ -42,13 +42,13 @@ OpenAI Responses（Studio 新写任务使用唯一 active profile；MCP 使用 r
 | LLM | OpenAI Responses，单一 `OpenAIResponsesProvider` adapter；Studio 使用 active model，release-bound MCP 使用冻结 snapshot；strict JSON Schema，实际 `store=false` |
 | MCP transport | stdio |
 
-R0 退出前只锁定 R0 tooling 实际引入的 Python 依赖；后续依赖在使用前必须精确/hash 锁定并在两个目标平台重跑验证，不预锁未实现的 R2-R4 栈。架构复现证据必须明确指向：
+R0 退出前只锁定 R0 tooling 实际引入的 Python 依赖；后续依赖在使用前必须精确/hash 锁定，Windows 在对应阶段验证，Linux 安装/运行、wheel/ABI 和最终双平台复现统一在 R5 验证，不预锁未实现的 R2-R4 栈。架构复现证据必须明确指向：
 
 - `gradle/wrapper/gradle-wrapper.properties`、wrapper JAR checksum、Gradle dependency locking 和 `gradle/verification-metadata.xml`；
 - R0 tooling 的 Python lock 输入、精确版本和 hashes，以及生成锁文件的输入/命令；不预锁未实现的 R2-R4 栈；
-- Windows 11 与 Linux x86_64 的 offline install/build 精确命令、完整 stdout/stderr、退出码、环境/锁 hash 和报告路径。
+- 对应阶段 Windows 11 的 offline install/build 精确命令、完整 stdout/stderr、退出码、环境/锁 hash 和报告路径；R5 另行提供 Linux 与最终双平台证据。
 
-上述 R0 路径、锁和 Windows offline skeleton build 已存在，足以关闭 R0。Windows 的真实 Minecraft runtime/export 在 R1 已有证据；Python 产品运行在 R2 验证；Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台端到端复现在 R5 验证，不倒灌为 R0 或 R1 blocker。
+上述 R0 路径、锁和 Windows offline skeleton build 已存在，足以关闭 R0。Windows 的真实 Minecraft runtime/export 在 R1、Windows Python 产品运行在 R2、Windows MCP/功能门在 R4 验证；Linux CPython/Web、Linux MCP、Linux Java 25/runtime/exporter、Linux wheel/ABI 和最终双平台端到端复现在 R5 验证，不倒灌为 R0-R4 blocker。
 
 ## 3. 组件职责和命令边界
 
@@ -340,7 +340,7 @@ provider 层只有一个 `OpenAIResponsesProvider`。它读取 Keyring 中服务
 
 ## 11. 复现、安全和公开白名单
 
-- 构建必须使用冻结的 Java/Gradle/Fabric 基线和已使用依赖的精确/hash lock；R0 tooling 锁证据必须包含输入、版本、hash 和 Windows/Linux offline install/build 报告，后续依赖在使用前更新 lock 并重跑两个目标验证。
+- 构建必须使用冻结的 Java/Gradle/Fabric 基线和已使用依赖的精确/hash lock；R0 tooling 锁证据必须包含输入、版本、hash 和对应阶段 Windows offline install/build 报告，Linux wheel/ABI、安装/运行和最终双平台报告统一由 R5 提供；后续依赖在使用前更新 lock 并按阶段验证。
 - 导出 manifest 必须记录版本、loader、API、mappings、资源包、语言、渲染设置和 exporter/schema 版本。
 - 真实原版资产、导出包、预览、release、非空数据库、生成 PNG 和 Key 只能在本地数据目录；公开仓库只放源码、文档、真实 JSON Schema、空数据库和 fixture 生成器源码。
 - WebUI 不做账号、CORS、CSRF，安全边界是 `127.0.0.1:8765` 和本机访问控制；绝不能提供 host/port 远程绑定选项。

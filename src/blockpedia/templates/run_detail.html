@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="run-hero page-shell reveal reveal--1">
+  <div>
+    <a class="back-link" href="/runs"><span aria-hidden="true">←</span> 返回运行记录</a>
+    <p class="eyebrow"><span>{{ run.minecraft_version }}</span> WORKSPACE RUN</p>
+    <h1>运行详情</h1>
+    <code class="run-identity">{{ run.run_id }}</code>
+  </div>
+  <div class="fact-lock" role="note">
+    <span class="fact-lock__icon" aria-hidden="true">◇</span>
+    <p><b>机器事实为只读</b><br>方块 ID、合法状态、几何与渲染引用来自 exporter；Studio 不改写这些事实。</p>
+  </div>
+</section>
+
+<div class="page-shell run-layout reveal reveal--2">
+  <div id="run-panel">
+    {% include "partials/run_panel.html" %}
+  </div>
+
+  <aside class="run-side">
+    <section class="work-card search-card" aria-labelledby="search-heading">
+      <p class="section-index">WORKSPACE FTS</p>
+      <h2 id="search-heading">工作区搜索</h2>
+      <p>查询已完成离线特征的候选。这里只读当前 workspace，不是 MCP release 查询。</p>
+      <form
+        class="search-form"
+        hx-get="/ui/runs/{{ run.run_id }}/search"
+        hx-target="#search-results"
+        hx-swap="innerHTML"
+        hx-indicator="#search-spinner"
+      >
+        <label for="workspace-query">名称或机器标签</label>
+        <div>
+          <input id="workspace-query" name="query" type="search" required maxlength="240" placeholder="例如 stone / full_cube">
+          <input type="hidden" name="limit" value="12">
+          <button class="button button--primary" type="submit" aria-label="搜索"><span aria-hidden="true">→</span></button>
+        </div>
+        <span id="search-spinner" class="htmx-indicator activity-label" role="status">正在查询本地索引…</span>
+      </form>
+      <div id="search-results" class="search-results" aria-live="polite">
+        <div class="empty-state empty-state--compact"><p>输入名称或标签开始查询。</p></div>
+      </div>
+    </section>
+
+    <section class="future-card" aria-labelledby="future-heading">
+      <span>R3–R5</span>
+      <h2 id="future-heading">后续阶段</h2>
+      <p>Provider、AI 审核处理、candidate build、MCP 与 release/current 激活尚未实现，当前页面不提供这些操作。</p>
+    </section>
+  </aside>
+</div>
+{% endblock %}

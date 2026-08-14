@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>{{ page_title }} · Blockpedia Index Studio</title>
+    <link rel="stylesheet" href="{{ request.url_for('static', path='studio.css') }}">
+    <script defer src="{{ request.url_for('static', path='vendor/htmx.min.js') }}"></script>
+    <script defer src="{{ request.url_for('static', path='studio.js') }}"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+    <div class="legal-banner" role="note" aria-label="非官方产品声明">
+      <span class="legal-banner__mark" aria-hidden="true"></span>
+      <strong>{{ unofficial_notice }}</strong>
+    </div>
+
+    <header class="site-header">
+      <a class="wordmark" href="/" aria-label="Blockpedia Index Studio 首页">
+        <span class="wordmark__glyph" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span>
+          <b>Blockpedia</b>
+          <small>INDEX STUDIO / R2</small>
+        </span>
+      </a>
+
+      <nav class="primary-nav" aria-label="主要导航">
+        <a href="/" {% if current_page == 'home' %}aria-current="page"{% endif %}>导入工作台</a>
+        <a href="/runs" {% if current_page == 'runs' %}aria-current="page"{% endif %}>运行记录</a>
+      </nav>
+
+      <div class="local-state" aria-label="本地运行状态">
+        <span class="signal-dot {% if not worker_available %}signal-dot--warn{% endif %}" aria-hidden="true"></span>
+        <span>{% if worker_available %}本地 Worker 就绪{% else %}Worker 未启动{% endif %}</span>
+      </div>
+    </header>
+
+    <main id="main-content" tabindex="-1">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+      <div>
+        <b>Blockpedia Index Studio</b>
+        <span>本地数据目录已配置 · 不显示本机路径</span>
+      </div>
+      <p>{{ unofficial_notice }}</p>
+    </footer>
+
+    <div id="studio-live-region" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>

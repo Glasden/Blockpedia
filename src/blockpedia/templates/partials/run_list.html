@@ -1,0 +1,24 @@
+{% if runs %}
+<div class="run-list">
+  {% for run in runs %}
+  <a class="run-row" href="/runs/{{ run.run_id }}">
+    <span class="run-row__status status-dot status-dot--{{ run.status }}" aria-hidden="true"></span>
+    <span class="run-row__main">
+      <b>{{ run.run_id }}</b>
+      <small>{{ run.current_stage or 'PREPARE' }}</small>
+    </span>
+    <span class="run-row__version">MC {{ run.minecraft_version }}</span>
+    <span class="status-badge status-badge--{{ run.status }}">{{ status_labels.get(run.status, run.status) }}</span>
+    <time>{{ run.created_at or '时间未记录' }}</time>
+    <span class="run-row__arrow" aria-hidden="true">↗</span>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+  <span class="empty-state__symbol" aria-hidden="true">＋</span>
+  <h3>还没有运行记录</h3>
+  <p>先在导入工作台检查一个本地导出包。</p>
+  <a class="arrow-link" href="/">前往导入 <span aria-hidden="true">→</span></a>
+</div>
+{% endif %}

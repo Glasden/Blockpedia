@@ -2,7 +2,7 @@
 
 ## 文档状态与导航
 
-本文定义 Blockpedia MVP 的质量范围、确定性完整性、strict Schema、provider/MCP/WebUI 测试、Windows 11/Linux x86_64 运行验收、降级和原子发布门。正文使用简体中文；测试文件、字段、Schema、状态、错误码和命令保持英文。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 为规范性关键字。各项测试按 R1–R5 阶段归属执行，不把后续阶段命令倒灌为 R1 blocker。
+本文定义 Blockpedia MVP 的质量范围、确定性完整性、strict Schema、provider/MCP/WebUI 测试、Windows 11/Linux x86_64 运行验收、降级和原子发布门。Linux 实际安装/运行/平台行为统一归 R5；正文使用简体中文；测试文件、字段、Schema、状态、错误码和命令保持英文。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 为规范性关键字。各项测试按 R1–R5 阶段归属执行，不把后续阶段命令倒灌为 R1-R4 blocker。
 
 本文服从 [`../AGENTS.md`](../AGENTS.md)、[`roadmap.md`](roadmap.md)、[`decisions.md`](decisions.md)、[`product-scope.md`](product-scope.md) 和 [`architecture.md`](architecture.md)。原始设计稿 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 仅作历史背景和最低优先级参考，不与本契约一起执行；冲突内容禁止实现。具体契约链接如下：
 
@@ -10,7 +10,7 @@
 - [`openai-provider.md`](openai-provider.md)、[`search-and-ranking.md`](search-and-ranking.md)、[`mcp-api.md`](mcp-api.md)、[`webui-and-operations.md`](webui-and-operations.md)；
 - [`security-and-distribution.md`](security-and-distribution.md)。
 
-当前仓库已完成 R0 契约、Schema/fixture 轻量验收、依赖锁和工具链骨架；R1 已有当前 v1 命名/路径契约下的 Windows Java 25 构建、实际 Minecraft 26.2 导出和优化后的 validator 通过证据。Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现保留至 R5；产品索引或 release 尚未开始。本文件后续验收只在对应实现阶段执行，不作为未开始阶段的提前 blocker。
+当前仓库已完成 R0 契约、Schema/fixture 轻量验收、依赖锁和工具链骨架；R1、R2 已有 Windows 证据关闭。Linux CPython/Web、Linux MCP、Linux Java 25/runtime/exporter、Linux wheel/ABI 和最终双平台源码/运行时复现统一保留至 R5；产品 release 尚未开始。本文件后续验收只在对应实现阶段执行，不作为 R0-R4 的提前 blocker。
 
 ## 1. MVP 质量边界
 
@@ -21,7 +21,7 @@ MVP 必须退出的质量范围只有：
 3. OpenAI Responses 三阶段请求、严格一次总重试、错误分类、离线审核和在线本地降级；
 4. MCP stdio 四工具、结构化输出/等价 TextContent、PNG 联系表/四视角图片和 stdout 纯净；
 5. WebUI loopback、任务 pause/resume/recover、普通/高优审核、声明式覆盖、publish/rollback/cleanup；
-6. Windows 11 x86_64 与 Linux x86_64（`manylinux_2_17` / glibc `>=2.17`）的源码锁依赖可复现运行；
+6. Windows 11 x86_64 与 Linux x86_64（`manylinux_2_17` / glibc `>=2.17`）的源码锁依赖可复现运行；其中 Linux 安装、运行和平台行为统一由 R5 验证。
 7. 原子 `current.json` 切换、回滚只切指针、release 不可变和最小安全/分发检查。
 
 MVP **MUST NOT** 把黄金查询集、Top-5 指标、硬约束统计目标、排序权重调优、安装包、容器、系统服务或自动更新作为 roadmap 必做退出条件。它们可以在 MVP 后开展真实质量工作，但不得用目标数字冒充已测结果。
@@ -32,7 +32,7 @@ MVP **MUST NOT** 把黄金查询集、Top-5 指标、硬约束统计目标、排
 - **R2**：验收 Index Studio、导入验证、SQLite、任务状态、WebUI loopback 和进程内 Worker。
 - **R3**：验收 OpenAI Responses、`store=false` 能力门、strict wire Schema、人工审核/覆盖和 candidate-build gate。
 - **R4**：验收临时 candidate/current fixture 上的 MCP stdio 四工具、搜索/排序和本地降级；不激活生产 current。
-- **R5**：验收 Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码锁依赖/运行时复现，以及双 release、activation gate、current 原子切换、回滚和首发清单。
+- **R5**：统一验收 Linux CPython `3.14.7` hash-lock 安装/`pip check`/Web 和平台行为、Linux MCP stdio、Linux wheel/ABI、Linux Java 25/runtime/exporter 独立重跑和最终双平台源码锁依赖/运行时复现，以及双 release、activation gate、current 原子切换、回滚和首发清单。
 
 R2–R5 的契约继续保留在本文后续章节，但其实现、命令和证据只在对应阶段开始后建立；它们不是 R1 blocker。
 
@@ -50,7 +50,7 @@ Gradle                9.5.1
 Mappings              Minecraft 26.2 native Mojang names/unobfuscated; no external mappings artifact
 ```
 
-正式平台仅为 Windows 11 x86_64 和 Linux x86_64（Linux `manylinux_2_17` / glibc `>=2.17`）；Python 基线为 CPython `3.14.7`。R0 只锁定实际引入的 Python tooling 依赖及 hashes；后续依赖在使用前必须精确/hash 锁定并重跑两个目标验证，不预锁未实现的 R2-R4 栈。等价技术替换必须先按 [`decisions.md`](decisions.md) 留下影响与批准记录。
+正式平台仅为 Windows 11 x86_64 和 Linux x86_64（Linux `manylinux_2_17` / glibc `>=2.17`）；Python 基线为 CPython `3.14.7`。R0 只锁定实际引入的 Python tooling 依赖及 hashes；后续依赖在使用前必须精确/hash 锁定，Windows 在对应阶段验证，Linux 依赖安装/运行和最终双平台验证统一在 R5，不预锁未实现的 R2-R4 栈。等价技术替换必须先按 [`decisions.md`](decisions.md) 留下影响与批准记录。
 
 测试仓库只允许原创程序生成的 fixture 生成器源码：运行时可在临时目录生成最小 PNG 色块/几何/透明样例、人工构造 JSONL/Schema、空 SQLite、模拟 release/current 和不含原版内容的伪 metadata；不得提交生成后的 PNG、非空 SQLite、Minecraft JAR、资源包、纹理、模型、字体、声音、粒子、动画、截图或真实导出数据；详见 [`security-and-distribution.md`](security-and-distribution.md)。
 
@@ -204,11 +204,11 @@ Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixtur
 
 ## 10. 各阶段跨平台验证
 
-R1 已由现有 Windows Java 25 构建、实际 Minecraft 26.2 exporter 导出和优化后的外部 validator 证据关闭；Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现由 R5 验证。正式支持平台仍为 Windows 11 x86_64 与 Linux x86_64；R1 不宣称 Linux 已通过。跨平台验收仍只比较 canonical 机器字段、Schema、逻辑排序和构图规则；PNG byte hash 只有在完整渲染环境一致时才要求相同。R2–R5 仅在对应实现存在后执行其契约测试。
+R1 已由现有 Windows Java 25 构建、实际 Minecraft 26.2 exporter 导出和优化后的外部 validator 证据关闭；R2/R4 的 Windows 产品/功能证据按对应阶段执行。Linux CPython/Web、Linux MCP、Linux Java 25/runtime、Linux exporter、Linux wheel/ABI 和最终双平台源码/运行时复现统一由 R5 验证。正式支持平台仍为 Windows 11 x86_64 与 Linux x86_64；不宣称 Linux 已通过。跨平台验收仍只比较 canonical 机器字段、Schema、逻辑排序和构图规则；PNG byte hash 只有在完整渲染环境一致时才要求相同。各阶段仅在对应实现存在后执行其契约测试。
 
 R0 已有的 tooling/schema 验收命令仍由路线图证据区记录；本节不把当前不存在的 R1–R5 精确命令伪装成现行命令。后续阶段应在实际实现后分别记录对应 provider、MCP、WebUI/release 和跨平台命令的路径、退出码、报告与锁哈希。
 
-Gradle wrapper properties、wrapper JAR checksum、dependency lock 和 dependency verification metadata 必须进入可审计路径；R0 tooling Python lock 必须包含实际引入依赖的精确版本及 hashes，不能预锁未实现的 R2-R4 栈。MCP/R4 和 candidate/activation gate 测试必须使用测试框架生成的临时 data-root/current fixture，不得依赖生产 current；测试结束只清理临时测试目录，产品 MCP 仍零写。
+Gradle wrapper properties、wrapper JAR checksum、dependency lock 和 dependency verification metadata 必须进入可审计路径；R0 tooling Python lock 必须包含实际引入依赖的精确版本及 hashes，不能预锁未实现的 R2-R4 栈。MCP/R4 功能 gate 使用测试框架生成的临时 data-root/current fixture，不得依赖生产 current；Linux MCP stdio 和实际平台验证统一由 R5 执行，测试结束只清理临时测试目录，产品 MCP 仍零写。
 
 若实现采用不同的锁定入口，必须先按 [`decisions.md`](decisions.md) 记录受控替换、影响证明和项目所有者批准，再以同等精确且带 hash 的命令替换；不得以未锁定安装命令声明复现。各阶段只在实际引入对应实现后执行一次所需验证。
 

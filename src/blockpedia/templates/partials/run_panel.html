@@ -1,0 +1,102 @@
+<section class="run-panel" aria-labelledby="pipeline-heading">
+  <div class="run-overview">
+    <div>
+      <p class="section-index">PIPELINE STATUS</p>
+      <div class="run-state-line">
+        <h2 id="pipeline-heading">{{ status_labels.get(run.status, run.status) }}</h2>
+        <span class="status-badge status-badge--{{ run.status }}">{{ run.status }}</span>
+      </div>
+      <p>当前阶段 <code>{{ run.current_stage }}</code></p>
+    </div>
+    <div class="progress-dial" style="--progress: {{ run.progress.r2_percent }}" aria-label="R2 进度 {{ run.progress.r2_percent }}%">
+      <span><b>{{ run.progress.r2_completed_stages }}</b>/{{ run.progress.r2_total_stages }}<small>R2 阶段</small></span>
+    </div>
+  </div>
+
+  {% if run.warnings %}
+  <div class="warning-stack">
+    {% for warning in run.warnings %}<p><span aria-hidden="true">!</span>{{ warning }}</p>{% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="run-actions" aria-label="运行操作">
+    {% if run.status == 'running' %}
+    <form hx-post="/ui/runs/{{ run.run_id }}/pause" hx-target="#run-panel" hx-swap="innerHTML">
+      <button class="button button--quiet" type="submit">暂停</button>
+    </form>
+    <form hx-post="/ui/runs/{{ run.run_id }}/cancel" hx-target="#run-panel" hx-swap="innerHTML" hx-confirm="取消后不能恢复此运行。确认取消吗？">
+      <button class="button button--danger" type="submit">取消运行</button>
+    </form>
+    {% elif run.status == 'paused' and not run.boundary_event %}
+    <form hx-post="/ui/runs/{{ run.run_id }}/resume" hx-target="#run-panel" hx-swap="innerHTML">
+      <button class="button button--primary" type="submit">继续运行 <span aria-hidden="true">→</span></button>
+    </form>
+    {% elif run.status == 'failed' %}
+    <form hx-post="/ui/runs/{{ run.run_id }}/retry-failed" hx-target="#run-panel" hx-swap="innerHTML">
+      <button class="button button--primary" type="submit">重试失败阶段 <span aria-hidden="true">↻</span></button>
+    </form>
+    {% elif run.boundary_event %}
+    <p class="boundary-inline"><span aria-hidden="true">◆</span> 已停在 R3 边界；当前版本不会继续执行 AI 标注。</p>
+    {% else %}
+    <p class="boundary-inline">当前状态没有可执行操作。</p>
+    {% endif %}
+  </div>
+
+  {% if run.stale %}
+  <section class="detail-stale" aria-labelledby="detail-stale-heading">
+    <div>
+      <p class="section-index">STALE DETECTED</p>
+      <h3 id="detail-stale-heading">需要显式恢复</h3>
+    </div>
+    {% for marker in run.stale %}
+    <form hx-post="/ui/runs/{{ run.run_id }}/recover" hx-target="#run-panel" hx-swap="innerHTML">
+      {% if marker.job_id %}<input type="hidden" name="job_id" value="{{ marker.job_id }}">{% endif %}
+      <input type="hidden" name="stage" value="{{ marker.stage }}">
+      <input type="hidden" name="return_view" value="detail">
+      <span><b>{{ marker.stage }}</b>{% if marker.logical_key %}<code>{{ marker.logical_key }}</code>{% endif %}</span>
+      <button class="button button--danger" type="submit">恢复此项</button>
+    </form>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <ol class="stage-timeline" aria-label="Studio 完整阶段时间线">
+    {% for stage in run.stages %}
+    {% set meta = stage_meta[stage.stage] %}
+    <li class="stage-item stage-item--{{ stage.status }} {% if meta.future %}stage-item--future{% endif %}" {% if run.current_stage == stage.stage %}aria-current="step"{% endif %}>
+      <div class="stage-item__rail">
+        <span class="stage-number">{{ "%02d"|format(loop.index) }}</span>
+        <span class="stage-line" aria-hidden="true"></span>
+      </div>
+      <div class="stage-item__body">
+        <div>
+          <span class="stage-phase">{{ meta.phase }}{% if meta.future %} · 后续阶段{% endif %}</span>
+          <h3>{{ meta.label }}</h3>
+          <code>{{ stage.stage }}</code>
+          <p>{{ meta.detail }}</p>
+        </div>
+        <span class="status-badge status-badge--{{ stage.status }}">{{ status_labels.get(stage.status, stage.status) }}</span>
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+
+  {% if run.jobs %}
+  <section class="job-ledger" aria-labelledby="job-heading">
+    <div class="section-heading section-heading--small">
+      <div><p class="section-index">ITEM LEDGER</p><h3 id="job-heading">离线特征条目</h3></div>
+      <span class="count-badge">{{ run.jobs|length }}</span>
+    </div>
+    <div class="job-table" role="table" aria-label="特征任务状态">
+      {% for job in run.jobs %}
+      <div class="job-row" role="row">
+        <code role="cell">{{ job.logical_key }}</code>
+        <span role="cell" class="status-badge status-badge--{{ job.status }}">{{ status_labels.get(job.status, job.status) }}</span>
+        <span role="cell">尝试 {{ job.auto_attempt }}</span>
+        {% if job.error_code %}<p role="cell"><b>{{ job.error_code }}</b> {{ job.error_message }}</p>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+</section>

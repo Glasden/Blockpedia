@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-intro page-shell">
+  <div class="reveal reveal--1">
+    <p class="eyebrow"><span>RUNS</span> PERSISTED WORKSPACE</p>
+    <h1>运行记录与<br><em>恢复入口。</em></h1>
+  </div>
+  <p class="page-intro__copy reveal reveal--2">每条记录绑定一个精确版本。状态来自本地 workspace；页面不会推断“最新版本”，也不会自动恢复 stale 任务。</p>
+</section>
+
+<section class="page-shell runs-board reveal reveal--3" aria-labelledby="runs-heading">
+  <div class="runs-toolbar">
+    <div>
+      <p class="section-index">WORKSPACE INDEX</p>
+      <h2 id="runs-heading">{{ counts.all }} 条运行</h2>
+    </div>
+    <form class="filter-form" method="get" action="/runs">
+      <label for="run-version-filter">按精确版本筛选</label>
+      <div>
+        <input id="run-version-filter" name="minecraft_version" value="{{ selected_version }}" placeholder="例如 26.2" pattern="[0-9]+\.[0-9]+(\.[0-9]+)?">
+        <button class="button button--quiet" type="submit">筛选</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="runs-summary" aria-label="运行状态统计">
+    <span><b>{{ counts.active }}</b> 正在处理</span>
+    <span><b>{{ counts.attention }}</b> 需要关注</span>
+    <span><b>{{ startup_stale|length }}</b> 启动时过期项</span>
+  </div>
+
+  {% include "partials/run_list.html" %}
+</section>
+{% endblock %}

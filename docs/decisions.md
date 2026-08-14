@@ -12,10 +12,10 @@
 | 编号 | 冻结决定 | 直接后果 |
 |---|---|---|
 | D-001 | MVP 必须走通 R0、R1、R2、R3、R4、R5 的端到端闭环 | 每阶段有依赖和退出门；不得先做 MCP 或跳过发布完整性门 |
-| D-002 | 正式平台为 Windows 11 x86_64 与 Linux x86_64；Linux wheel/ABI 基线为 `manylinux_2_17` / glibc `>=2.17` | 路径、进程、Keyring 和构建复现必须在两平台验证；不承诺其他平台 |
+| D-002 | 正式平台为 Windows 11 x86_64 与 Linux x86_64；Linux wheel/ABI 基线为 `manylinux_2_17` / glibc `>=2.17` | Windows 在对应阶段验证；Linux wheel/ABI、安装、实际运行、平台行为和最终双平台复现统一在 R5 验证；不承诺其他平台 |
 | D-003 | Minecraft 基线为 Java 26.2、Java 25、Fabric Loader 0.19.3、Fabric API 0.157.0+26.2、Loom 1.17.19、Gradle 9.5.1；26.2 使用 native Mojang names/unobfuscated，不解析外部 mappings artifact；Python 基线为 CPython 3.14.7 | 导出包必须绑定完整环境清单；版本变化必须生成新索引，不得覆盖旧版本 |
 | D-004 | 默认架构为 Fabric + Python/FastAPI/Jinja2/HTMX + SQLite + 本地文件 + 进程内 Worker | 保持单机、可恢复和可复现；不引入额外服务或大型前端工程 |
-| D-005 | R0 退出前只 hash-lock R0 tooling 实际引入的 Python 依赖；后续依赖使用前必须精确/hash 锁定并重跑双平台验证 | 不预锁未实现的 R2-R4 栈；禁止浮动版本、未锁传递依赖和以最新版代替锁文件 |
+| D-005 | R0 退出前只 hash-lock R0 tooling 实际引入的 Python 依赖；后续依赖使用前必须精确/hash 锁定 | Windows 在对应阶段验证；Linux 依赖安装/运行、wheel/ABI 和最终双平台复现统一在 R5 验证；不预锁未实现的 R2-R4 栈，禁止浮动版本、未锁传递依赖和以最新版代替锁文件 |
 | D-006 | 只实现 OpenAI Responses、一个 `OpenAIResponsesProvider` adapter 和 strict JSON Schema | 可以保存多个 provider profile，但不实现 Chat Completions、Anthropic、其他 provider adapter、provider fallback 或多模型投票；每次请求最多一次总重试 |
 | D-007 | 兼容 Responses 语义的 `base_url` 是同一 provider 的用户批准配置 | 仍只实现 `OpenAIResponsesProvider`；兼容 endpoint 必须通过同一协议能力门并实际使用 `store=false`，不能借此引入其他 API/provider |
 | D-008 | `store=false` 是硬能力门 | 能力探测必须证明 endpoint 支持并实际接受/使用 `store=false`；无法证明即探测失败并禁止 enable，warning/ack 不得绕过 |
@@ -126,3 +126,9 @@ Loom `1.17` 替换为精确 `1.17.19`，并将 Minecraft 26.2 mappings 澄清为
 ### 2026-08-14 — R1/R5 阶段门重分配记录
 
 项目 owner 于 2026-08-14 在本会话明确批准直接关闭 R1：以当前 Windows 11 x86_64、冻结 Java 25 基线构建证据、实际 Minecraft Java 26.2 exporter 导出和已记录的外部 validator 通过证据作为 R1 退出依据。Linux Java 25/runtime、Linux exporter 独立重跑以及最终双平台源码锁/运行时复现重新归入 R5；R1 不宣称 Linux 已通过。该重分配不移除 Linux 正式支持、不放宽 R5 验证、不新增技术、依赖或服务，也不改变既有数据契约、MCP 只读边界或本地单机运行语义。
+
+### 2026-08-14 — Linux 验证统一归属 R5
+
+项目 owner 于 2026-08-14 在本会话明确批准将路线图中所有 Linux 实际验证统一重分配到 R5：包括 R2 CPython 依赖安装、`pip check`、产品 Web/平台行为，R4 MCP stdio，Linux wheel/ABI（`manylinux_2_17` / glibc `>=2.17`）、Java/runtime/exporter，以及最终双平台源码锁依赖和运行时复现。该记录只改变验证时点和阶段归属，不删除 Windows/Linux 正式支持、不放宽 Linux 基线、不声称 Linux 已通过；R0-R4 只要求其对应 Windows、静态和 fixture/功能证据，不得因缺少 Linux 证据阻塞退出。
+
+该阶段门重分配不改变本地单机运行、可复现构建目标、无额外服务、MCP stdio 只读边界、既有 Schema/数据契约、release/current 语义或秘密安全边界。R5 必须完整承接上述 Linux 义务并在最终双平台门中验证；R0-R4 的报告可以记录 Linux `deferred`，但不得记录 Linux `passed`。

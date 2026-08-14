@@ -1,0 +1,14 @@
+<section class="inline-error" role="alert" tabindex="-1" data-autofocus>
+  <div class="inline-error__top">
+    <span class="inline-error__mark" aria-hidden="true">!</span>
+    <span class="error-code">{{ error_code }}</span>
+  </div>
+  <h3>{{ message }}</h3>
+  {% if field_errors %}
+  <ul>
+    {% for field, detail in field_errors.items() %}<li><code>{{ field }}</code>：{{ detail }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  <p><b>建议动作：</b>{{ repair_hint }}</p>
+  <small>请求编号 <code>{{ request_id }}</code>{% if retryable %} · 可在服务恢复后重试{% endif %}</small>
+</section>

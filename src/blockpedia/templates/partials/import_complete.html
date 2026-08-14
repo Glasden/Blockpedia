@@ -1,0 +1,11 @@
+<section class="import-complete" role="status" tabindex="-1" data-autofocus>
+  <span class="import-complete__mark" aria-hidden="true">✓</span>
+  <p class="section-index">WORKSPACE CREATED</p>
+  <h3>导入已进入本地运行队列。</h3>
+  <p>版本 <code>{{ result.minecraft_version }}</code> · 状态 <b>{{ status_labels.get(result.status, result.status) }}</b></p>
+  <div class="safe-reference">
+    <span>run_id</span><code>{{ result.run_id }}</code>
+  </div>
+  <p class="privacy-note"><span aria-hidden="true">◆</span> 页面仅保留脱敏来源引用，不回显源目录或 data-root 路径。</p>
+  <a class="button button--primary" href="/runs/{{ result.run_id }}">查看阶段进度 <span aria-hidden="true">↗</span></a>
+</section>

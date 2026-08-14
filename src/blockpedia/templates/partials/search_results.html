@@ -1,0 +1,19 @@
+<section class="search-result-set" tabindex="-1" data-autofocus>
+  <div class="search-result-set__head">
+    <b>查询完成</b>
+    <span>{{ hits|length }} 个结果</span>
+  </div>
+  {% if hits %}
+  <ol>
+    {% for hit in hits %}
+    <li>
+      <span class="result-rank">{{ "%02d"|format(loop.index) }}</span>
+      <div><code>{{ hit.block_id }}</code><p>本地机器事实命中</p></div>
+      <span class="result-score" title="本地确定性相关度">{{ "%.2f"|format(hit.score) }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <div class="empty-state empty-state--compact"><p>没有命中。可尝试官方名称或机器标签；搜索不会放宽资格过滤。</p></div>
+  {% endif %}
+</section>

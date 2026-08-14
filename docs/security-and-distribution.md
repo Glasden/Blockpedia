@@ -39,7 +39,7 @@ fixture generator source
 
 真实图片、机器事实、索引和 release 必须由用户在本地合法安装的 Minecraft Java `26.2` 环境和自制 Fabric exporter 生成。测试只使用原创程序生成的 fixture，不能复制/裁剪原版资产“伪造”测试。
 
-源码必须支持 Windows 11 x86_64 和 Linux x86_64（Linux `manylinux_2_17` / glibc `>=2.17`）的可复现本地运行；Python 基线为 CPython `3.14.7`。R0 只锁定实际引入的 tooling 依赖及 hashes，后续依赖在使用前精确/hash 锁定并重跑两个目标验证。MVP **MUST NOT** 制作安装包、容器、系统服务或自动更新，也不得引入额外运行服务；默认数据根必须在源码之外。
+源码必须支持 Windows 11 x86_64 和 Linux x86_64（Linux `manylinux_2_17` / glibc `>=2.17`）的可复现本地运行；Python 基线为 CPython `3.14.7`。R0 只锁定实际引入的 tooling 依赖及 hashes，后续依赖在使用前精确/hash 锁定；Windows 在对应阶段验证，Linux wheel/ABI、安装/实际运行和最终双平台复现统一由 R5 验证。MVP **MUST NOT** 制作安装包、容器、系统服务或自动更新，也不得引入额外运行服务；默认数据根必须在源码之外。
 
 ## 3. 网络边界和威胁模型
 
@@ -185,7 +185,7 @@ release manifest 必须记录精确 `minecraft_version`、`release_id`、来源 
 
 ## 9. 依赖、运行和变更控制
 
-- 支持平台仅 Windows 11 x86_64/Linux x86_64（Linux `manylinux_2_17` / glibc `>=2.17`）；Python 基线为 CPython `3.14.7`；R0 只锁定实际引入的 tooling 依赖，后续依赖使用前必须精确/hash 锁定并重跑双平台验证；
+- 支持平台仅 Windows 11 x86_64/Linux x86_64（Linux `manylinux_2_17` / glibc `>=2.17`）；Python 基线为 CPython `3.14.7`；R0 只锁定实际引入的 tooling 依赖，后续依赖使用前必须精确/hash 锁定，Windows 在对应阶段验证，Linux wheel/ABI、安装/实际运行和最终双平台复现统一由 R5 验证；
 - Minecraft/Java/Fabric/Gradle/Loom/mappings 使用 [`AGENTS.md`](../AGENTS.md) 固定基线；精确字段形状由真实 Schema 文件拥有；
 - 默认数据根在源码外；真实数据和合法运行时生成本地保存；
 - 不制作安装包、容器、系统服务、自动更新或额外服务；

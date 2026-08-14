@@ -3,13 +3,13 @@
 - **版本**：MVP 冻结版
 - **日期**：2026-08-14
 - **目标**：在 Windows 11 x86_64 和 Linux x86_64（`manylinux_2_17` / glibc `>=2.17`）上完成原版 Minecraft Java 26.2 的本地单机端到端闭环
-- **当前状态**：R0 契约冻结与 R1 确定性导出均已完成；R1 以当前 v1 命名/路径契约下的 Windows Java 25 构建、实际 Minecraft 26.2 导出和外部 validator 通过证据关闭。Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现保留至 R5；R2–R5 的产品实现、索引和 release 尚未开始，R2 可以开始。
+- **当前状态**：R0 契约冻结、R1 确定性导出和 R2 Index Studio/存储/任务均已按 Windows、静态与 fixture 证据关闭；R3 可以开始。Linux CPython/Web、Linux MCP stdio、Linux wheel/ABI、Linux Java/runtime/exporter 和最终双平台复现统一 deferred 到 R5；正式支持平台与 Linux 基线不变，当前不声称 Linux 已通过。
 
 规范优先级和硬限制见 [`../AGENTS.md`](../AGENTS.md)；冻结决定集中见 [`decisions.md`](decisions.md)。冲突必须先更新高优先级文档，不能在实现中静默偏离。移入的原始设计稿仅是历史背景和最低优先级参考，不能与新文档一起作为执行规范；其中冲突内容禁止实现。
 
 ## 路线图文档索引
 
-当前仓库已完成最小 R0 物化和验收，并已按现有 Windows 证据关闭 R1。R1 的当前 v1 身份、路径、哈希删留和 exporter/外部 validator 职责已冻结；Linux 与最终双平台复现义务保留在 R5。R2 可以开始；后续阶段只在实际实现需要时增加测试与平台证据，不重复设计或为未来阶段预建验证体系。
+当前仓库已完成最小 R0 物化和验收，并已按 Windows 证据关闭 R1、R2。R1 的当前 v1 身份、路径、哈希删留和 exporter/外部 validator 职责已冻结；所有 Linux 实际运行/安装/平台行为与最终双平台复现义务统一保留在 R5。R2 退出门已关闭，R3 可以开始；后续阶段只在实际实现需要时增加测试与平台证据，不重复设计或为未来阶段预建验证体系。
 
 所有链接均相对于本文件所在的 `docs/` 目录。
 
@@ -35,7 +35,7 @@
 
 ## 阶段依赖与退出门
 
-依赖链为 `R0 → R1 → R2 → R3 → R4 → R5`。每一阶段只以该阶段已经定义的最小交付物和验收为退出条件；后续阶段的平台、运行时、数据和发布证据不得倒灌阻塞前一阶段。R0 与 R1 已退出，R2 可以开始；R2–R5 未完成项保持未勾选。
+依赖链为 `R0 → R1 → R2 → R3 → R4 → R5`。每一阶段只以该阶段已经定义的最小交付物和验收为退出条件；后续阶段的平台、运行时、数据和发布证据不得倒灌阻塞前一阶段。R0、R1、R2 已退出，R3 可以开始；Linux 实际验证统一由 R5 承接，R3-R5 其余未完成项保持未勾选。
 
 ### R0：契约冻结
 
@@ -62,14 +62,14 @@
 #### 验证与退出条件
 
 - [x] Fabric 骨架声明 Minecraft Java `26.2`、Java `25`、Fabric Loader `0.19.3`、Fabric API `0.157.0+26.2`、Loom `1.17.19`、Gradle `9.5.1` 和 native Mojang names/unobfuscated（无外部 mappings artifact），并完成 Windows offline build；Minecraft runtime/export 验证归 R1。
-- [x] R0 tooling 依赖已精确/hash 锁定并完成当前开发环境安装/一致性检查；CPython `3.14.7` 产品运行和 Linux 验证在实际引入对应实现的阶段执行，不阻塞 R0。
+- [x] R0 tooling 依赖已精确/hash 锁定并完成当前 Windows 开发环境安装/一致性检查；CPython `3.14.7` 产品运行和 Linux 验证不阻塞 R0，Linux 实际验证统一留到 R5。
 - [x] 恰好 26 个 Schema 已物化，52 个 fixtures 和轻量 inventory/provider-wire 验收通过。
 
 **证据区**
 
 - 契约物化：`schemas/{exporter,workspace,provider,mcp}/` 恰好 26 个 Schema；`tests/schema/fixtures/` 恰好 52 个正反 fixtures。
 - 轻量验收：`python -m tools.validate_r0 --repo-root . --report` 通过，输出 `R0 validation passed: 26 schemas, 52 fixture case(s)`，报告为 `docs/evidence/r0-schema-report.json`；`python -m pytest -q tests/test_r0_schemas.py` 输出 `1 passed`。
-- Python 锁：`requirements.in` 与 `requirements.lock`；`python -m pip install --require-hashes -r requirements.lock` 和 `python -m pip check` 已通过。精确 CPython `3.14.7` 产品运行验证留到 R2。
+- Python 锁：`requirements.in` 与 `requirements.lock`；`python -m pip install --require-hashes -r requirements.lock` 和 `python -m pip check` 已通过。Windows CPython `3.14.7` 产品运行在 R2 验证，Linux 安装/运行验证统一留到 R5。
 - Gradle/Fabric 骨架：`build.gradle`、`settings.gradle`、`gradle.properties`、`gradle/wrapper/`、`gradle/dependency-locks.lockfile`、`gradle/verification-metadata.xml` 和 `src/main/`。wrapper JAR SHA-256 为 `497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7`，与 Gradle 官方 9.5.1 记录一致；Windows 使用 Zulu Java 25 执行 `gradlew.bat --offline build`，结果为 `BUILD SUCCESSFUL`。
 - R0 于 2026-08-13 关闭。Windows 的真实 Minecraft runtime/export 已在 R1 以现有证据完成；Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现保留至 R5，不再作为 R0 或 R1 blocker。
 
@@ -111,29 +111,35 @@
 
 #### 任务
 
-- [ ] 实现 `FastAPI + Jinja2 + HTMX` 的 loopback Index Studio，并只提供 `block-index web` 启动方式。
-- [ ] 冻结 Studio 阶段为 `PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS → VALIDATE_RENDERS → EXTRACT_FEATURES → AI_ANNOTATE → VALIDATE → HUMAN_REVIEW → BUILD_RELEASE → ACTIVATE_RELEASE`。
-- [ ] Studio 只导入/验证 exporter 已产生的 variants/renders、提取离线特征、执行 AI/审核和构建 release；Python **MUST NOT** 重选 variants 或重渲染。
-- [ ] 实现冻结 SQLite schema、本地图片目录、FTS5/规范化字符串降级和数据分层存储。
-- [ ] 实现进程内持久化 Worker、暂停/恢复、失败处理、心跳和逐条状态落盘；启动只检测 stale，状态变化由 WebUI `recover` 触发。
+- [x] 实现 `FastAPI + Jinja2 + HTMX` 的 loopback Index Studio，并只提供 `block-index web` 启动方式。
+- [x] 冻结 Studio 阶段为 `PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS → VALIDATE_RENDERS → EXTRACT_FEATURES → AI_ANNOTATE → VALIDATE → HUMAN_REVIEW → BUILD_RELEASE → ACTIVATE_RELEASE`。
+- [x] Studio 只导入/验证 exporter 已产生的 variants/renders、提取离线特征并完成 R2 的前六阶段边界；Python **MUST NOT** 重选 variants 或重渲染。AI/审核、release 构建与激活属于后续阶段，R2 未实现。
+- [x] 实现冻结 SQLite schema、本地图片目录、FTS5/规范化字符串降级和数据分层存储。
+- [x] 实现进程内持久化 Worker、暂停/恢复、失败处理、心跳和逐条状态落盘；启动只检测 stale，状态变化由 WebUI `recover` 触发。
 
 #### 交付物
 
-- [ ] WebUI 页面、任务队列、SQLite 数据库和本地目录实现。
-- [ ] 机器事实、AI 字段、人工覆盖、任务和审核记录的 Schema。
-- [ ] 导入包完整性报告、任务恢复报告和操作日志。
+- [x] WebUI 页面、任务队列、SQLite 数据库和本地目录实现。
+- [x] 机器事实、AI 字段、人工覆盖、任务和审核记录的 Schema。
+- [x] 导入包完整性报告、任务恢复报告和操作日志。
 
 #### 验证与退出条件
 
-- [ ] 只能通过 WebUI 执行导入、恢复、审核、发布和回滚；Python 只有两个允许的命令。
-- [ ] 应用重启后只展示 stale 检测结果；显式 recover 后任务状态可恢复，成功任务不重跑。
-- [ ] SQLite 读写、图片引用、FTS 查询和跨平台路径检查通过。
-- [ ] WebUI 只监听 `127.0.0.1:8765`，没有 host/port CLI 或环境覆盖，没有账号、CORS 或 CSRF 功能。
+- [x] R2 导入、任务控制和 recover 只能通过 WebUI；产品 CLI 严格只有 `web`/`mcp`。审核、发布和回滚属于后续阶段，R2 未实现且不得新增 CLI。
+- [x] 应用重启后只展示 stale 检测结果；显式 recover 后任务状态可恢复，成功任务不重跑。
+- [x] SQLite 读写、图片引用、FTS 查询和跨平台路径检查通过。
+- [x] WebUI 只监听 `127.0.0.1:8765`，没有 host/port CLI 或环境覆盖，没有账号、CORS 或 CSRF 功能。
 
 **证据区**
 
-- 尚无源码、数据库、任务日志、WebUI 截图或测试报告；本阶段所有项保持未勾选。
-- 退出门未通过，R3 不得开始。
+- 源码与测试：`src/blockpedia/`、`tests/r2/test_phase1_core.py`、`tests/r2/test_phase2_web_cli.py`、`tests/test_r2_acceptance.py`。这些测试覆盖导入快照/单次 R1 validator、SQLite/FTS/路径安全、六阶段边界、Worker/stale/recover、固定 loopback CLI、Web smoke 契约和安全输出。
+- Windows runtime evidence：`docs/evidence/r2-windows-runtime-report.json`，`evidence_type=windows_r2_runtime`、`status=passed`。环境为 Windows 11 build `10.0.26200` AMD64、CPython `3.14.7`；官方 installer SHA-256 为 `sha256:9d9eb2709ef81bf5cd30db3c2096bdbc4ea10087c22e62f27d356b36f6ae9649`。
+- Windows 依赖与测试：`requirements.lock` SHA-256 为 `sha256:6a551bb7be5f0ec1635bf9cfbc518898d8d2194724228a21f251e48e4cd13894`；3.14.7 venv 中 `pip install --no-cache-dir --require-hashes -r requirements.lock` exit `0`，`pip check` 无 broken；全量 `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider` 输出 `55 passed, 2 skipped, 1 warning in 21.28s`。warning 为已接受的 FastAPI 官方 HTTPX 路径 Starlette deprecation；两个 skip 是既有 Windows symlink 权限分支，不切换 `httpx2`。
+- Windows package contents smoke（非 gate）：`docs/evidence/r2-windows-runtime-report.json` 的 `package_contents_smoke` 为 `status=observed`、`gate=false`，仅观察 wheel 包含 `templates/static/vendor/sql`，不证明可复现 build。模块和已安装 `block-index mcp` 均 exit `2`、stdout `0 bytes`、stderr 为稳定 `MCP_NOT_IMPLEMENTED_R4`（仅 Windows CRLF 换行）。
+- Windows Web smoke：执行 `block-index web --data-root %TEMP%/opencode/r2-cpython-3.14.7/web-smoke-data --log-level warning` 后 `GET http://127.0.0.1:8765/` 返回 `200`，精确免责声明存在，stdout/stderr 均为 `0 bytes`；测试主动 terminate 后 process code `1` 是 Windows 终止结果，不是启动失败。
+- Windows 重跑 `tools.validate_r2` 后，`docs/evidence/r2-validation-report.json` 的所有静态 checks 为 `passed`、`python_baseline_passed=true`、`status=passed`、`issues=[]`，`linux_r2_evidence=false` 且 Linux obligation 标记为 `deferred_to_r5_by_owner_decision`；该报告不声称 Linux 已通过。
+- 导入/恢复报告和操作日志的证据来自 runtime 实现与原创临时/fixture 测试；按公开白名单不提交真实导出、非空数据库、真实预览或日志。Linux 实际安装/运行/平台行为未验证且统一 deferred 到 R5；本次不运行 WSL/Linux、不伪造双平台证据。
+- R2 实现、Windows/静态/fixture 验证和退出门已完成，R2 blocker 清零，R3 可以开始。R5 必须承接 R2 Linux CPython hash-lock/Web 义务。
 
 ### R3：OpenAI 标注与审核
 
@@ -193,7 +199,7 @@
 - [ ] 四工具均只能读取不可变 release，不能写数据库、文件、日志、cache 或 `current.json`。
 - [ ] 候选 ID、状态、图片编号和 release 元数据 100% 来自发布数据；模型不能增删改候选事实。
 - [ ] stdout 纯净检查、默认版本、无效版本/ID/未发布版本错误检查和本地降级检查通过。
-- [ ] Windows 11 与 Linux x86_64 的 stdio 启动和关闭检查通过。
+- [ ] Windows 11 x86_64 的 stdio 启动和关闭、四工具功能门通过。
 
 **证据区**
 
@@ -211,6 +217,7 @@
 
 #### 任务
 
+- [ ] 承接并验证全部 deferred Linux 义务：R2 CPython `3.14.7` hash-lock 安装/`pip check`/Web smoke，R4 MCP stdio，Linux wheel/ABI，Linux Java/runtime/exporter，以及最终双平台源码锁依赖和运行时复现。
 - [ ] 执行 candidate-build gate，并为每个目标版本生成至少两个独立且不可变的完整 release，写入 manifest、release metadata 和统一 `sha256:<64 lowercase hex>` 哈希。
 - [ ] 执行 activation gate：四工具 MCP smoke、两个独立 release 和原子 current 均通过。
 - [ ] 通过 WebUI 原子更新 `current.json`，验证默认版本、显式版本选择、切换和回滚不修改历史 release；最后由用户人工激活。
@@ -221,13 +228,14 @@
 - [ ] 通过 candidate-build gate 的 release 目录、manifest、质量报告和未激活 candidate 记录。
 - [ ] activation gate 的四工具 smoke、两个 release、哈希、切换和回滚证据。
 - [ ] 首发前文档、源码锁依赖和空数据库/fixture 生成器分发清单。
+- [ ] Linux deferred obligations、Linux wheel/ABI、Java/runtime/exporter 和最终双平台复现报告。
 
 #### 验证与退出条件
 
 - [ ] 每个目标版本均有两个或以上独立完整 release，且通过 activation gate。
 - [ ] 发布和回滚均为 WebUI 操作，release 内容在操作前后字节不变。
 - [ ] MCP 四工具读取临时/当前 release 的冒烟检查通过，stdout 保持纯净。
-- [ ] Windows 11 与 Linux x86_64 的源码锁依赖、Java 25/runtime 和 exporter 双平台复现运行通过；此项承接 R1 延后的 Linux 与最终双平台验证义务。
+- [ ] R5 完成 Linux x86_64 CPython `3.14.7` hash-lock 安装、`pip check`、Web smoke 和实际平台行为验证；完成 Linux wheel/ABI（`manylinux_2_17` / glibc `>=2.17`）验证、Linux MCP stdio 启动/关闭、Linux Java 25/runtime/exporter 独立重跑，并完成 Windows/Linux 最终双平台源码锁依赖和运行时复现；此项统一承接 R2/R4 及 R1 延后的 Linux 义务。
 - [ ] 用户完成最终人工激活；在此之前不得把任何 candidate 说成首发。
 - [ ] 未把黄金查询、Top-5 或排序调优结果冒充为本阶段验收；这些质量工作明确后置，不是路线图必做项。
 

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-shell page-error">
+  <p class="eyebrow"><span>ERROR</span> LOCAL REQUEST</p>
+  <div class="error-panel" role="alert">
+    <span class="error-code">{{ error_code }}</span>
+    <h1>{{ message }}</h1>
+    <p>请求编号 <code>{{ request_id }}</code>。页面不会显示本机绝对路径或内部异常详情。</p>
+    <a class="button button--primary" href="/">返回导入工作台</a>
+  </div>
+</section>
+{% endblock %}

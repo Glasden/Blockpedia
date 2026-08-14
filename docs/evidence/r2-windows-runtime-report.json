@@ -1,0 +1,115 @@
+{
+  "evidence_type": "windows_r2_runtime",
+  "status": "passed",
+  "generated_at": "2026-08-14T09:38:20Z",
+  "summary": "Windows 11 CPython 3.14.7 R2 runtime, dependency, CLI, and loopback Web smoke evidence passed; Linux obligations are deferred to R5 and are not claimed as passed.",
+  "environment": {
+    "os": "Windows 11",
+    "build": "10.0.26200",
+    "architecture": "AMD64",
+    "python_implementation": "CPython",
+    "python_version": "3.14.7"
+  },
+  "artifacts": {
+    "python_installer": {
+      "version": "3.14.7",
+      "sha256": "sha256:9d9eb2709ef81bf5cd30db3c2096bdbc4ea10087c22e62f27d356b36f6ae9649"
+    },
+    "requirements_lock": {
+      "path": "requirements.lock",
+      "sha256": "sha256:6a551bb7be5f0ec1635bf9cfbc518898d8d2194724228a21f251e48e4cd13894"
+    },
+    "package_contents_smoke": {
+      "output_ref": "%TEMP%/opencode/r2-cpython-3.14.7/wheel/*.whl",
+      "contains": [
+        "templates",
+        "static",
+        "vendor",
+        "sql"
+      ]
+    }
+  },
+  "checks": {
+    "hash_locked_install": {
+      "status": "passed",
+      "command": "python -m pip install --no-cache-dir --require-hashes -r requirements.lock",
+      "exit_code": 0,
+      "summary": "CPython 3.14.7 venv installation completed successfully."
+    },
+    "pip_check": {
+      "status": "passed",
+      "command": "python -m pip check",
+      "exit_code": 0,
+      "summary": "No broken requirements found."
+    },
+    "full_pytest": {
+      "status": "passed",
+      "command": "PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider",
+      "exit_code": 0,
+      "summary": "55 passed, 2 skipped, 1 warning in 21.28s; warning accepted as the FastAPI official HTTPX path Starlette deprecation; skips are existing Windows symlink-permission branches."
+    },
+    "package_contents_smoke": {
+      "status": "observed",
+      "gate": false,
+      "command": "python -m build --wheel --outdir %TEMP%/opencode/r2-cpython-3.14.7/wheel",
+      "exit_code": 0,
+      "summary": "Observed installed wheel contains templates, static, vendor, and sql package assets; build frontend was not hash-locked, so this does not prove a reproducible wheel build."
+    },
+    "mcp_module_entrypoint": {
+      "status": "passed",
+      "command": "python -m blockpedia mcp",
+      "exit_code": 2,
+      "stdout_bytes": 0,
+      "stderr_text": "MCP_NOT_IMPLEMENTED_R4",
+      "stderr_line_ending": "CRLF"
+    },
+    "mcp_installed_entrypoint": {
+      "status": "passed",
+      "command": "block-index mcp",
+      "exit_code": 2,
+      "stdout_bytes": 0,
+      "stderr_text": "MCP_NOT_IMPLEMENTED_R4",
+      "stderr_line_ending": "CRLF"
+    },
+    "web_smoke": {
+      "status": "passed",
+      "command": "block-index web --data-root %TEMP%/opencode/r2-cpython-3.14.7/web-smoke-data --log-level warning; GET http://127.0.0.1:8765/",
+      "http_status": 200,
+      "disclaimer_exact": true,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "termination_process_code": 1,
+      "termination_summary": "The test actively terminated the process; Windows termination result, not startup failure."
+    },
+    "r2_static_validation": {
+      "status": "passed",
+      "command": "python -m tools.validate_r2 --repo-root . --report docs/evidence/r2-validation-report.json",
+      "report_ref": "docs/evidence/r2-validation-report.json",
+      "summary": "All static checks passed, python_baseline_passed=true, status=passed, and issues=[]; Linux obligations are deferred to R5."
+    }
+  },
+  "safety": {
+    "absolute_paths": false,
+    "usernames": false,
+    "temp_payloads": false,
+    "secrets": false,
+    "real_exports": false,
+    "non_empty_databases": false,
+    "runtime_logs": false
+  },
+  "linux_status": "deferred_to_r5_by_owner_decision",
+  "linux_validation_stage": "R5",
+  "deferred_obligations": [
+    "R2_CPTHON_RUNTIME_AND_WEB",
+    "R4_MCP_STDIO",
+    "LINUX_WHEEL_ABI",
+    "LINUX_JAVA_RUNTIME_EXPORTER",
+    "FINAL_DUAL_PLATFORM_REPRODUCTION"
+  ],
+  "remaining_issue": {
+    "code": "LINUX_VALIDATION_DEFERRED_TO_R5",
+    "status": "deferred",
+    "blocking": false,
+    "detail": "Linux actual installation, runtime, platform behavior, wheel/ABI, MCP stdio, Java/runtime/exporter, and final dual-platform reproduction remain R5 obligations. Linux is not claimed as passed."
+  }
+}
