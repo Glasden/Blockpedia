@@ -2,7 +2,7 @@
   "schema_version": "skip-review.v1",
   "review_id": "skip_01",
   "target_type": "visual_variant",
-  "target_id": "vv_01",
+  "target_id": "minecraft:stone",
   "minecraft_version": "26.2",
   "reviewer": "local-user",
   "reviewed_at": "2026-08-13T12:00:00Z",

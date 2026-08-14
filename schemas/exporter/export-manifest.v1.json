@@ -7,8 +7,10 @@
   "properties": {
     "schema_version": { "const": "export-manifest.v1" },
     "export_contract_version": { "const": "export-contract.v1" },
-    "export_id": { "$ref": "#/$defs/opaqueId" },
-    "export_key": { "$ref": "#/$defs/hash" },
+    "export_id": {
+      "type": "string",
+      "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"
+    },
     "logical_input_signature": { "$ref": "#/$defs/hash" },
     "render_input_signature": { "$ref": "#/$defs/hash" },
     "status": { "enum": ["succeeded", "needs_review", "failed"] },
@@ -102,7 +104,6 @@
     "schema_version",
     "export_contract_version",
     "export_id",
-    "export_key",
     "logical_input_signature",
     "render_input_signature",
     "status",

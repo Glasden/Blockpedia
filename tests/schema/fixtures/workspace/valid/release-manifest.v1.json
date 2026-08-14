@@ -2,7 +2,7 @@
   "schema_version": "release-manifest.v1",
   "release_id": "rel_01",
   "minecraft_version": "26.2",
-  "source_export_id": "exp_01",
+  "source_export_id": "export_20260814T165501Z",
   "source_export_manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "toolchain_lock_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "schemas_inventory_path": "schemas.sha256",

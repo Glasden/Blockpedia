@@ -9,8 +9,7 @@
     },
     "export_id": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 128
+      "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"
     },
     "minecraft_version": {
       "type": "string",
@@ -123,8 +122,7 @@
         },
         "export_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 128
+          "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"
         },
         "exporter_version": {
           "type": "string",

@@ -28,8 +28,8 @@ gradlew.bat --offline build
 ./gradlew --offline build
 ```
 
-Windows 已使用 `C:\Users\Glasden\.jdks\azul-25.0.2` 的 Java 25 执行 `gradlew.bat --offline build` 并得到 `BUILD SUCCESSFUL`；Schema validator 报告 26 个 Schema、52 个 fixture case，通过报告位于 [`evidence/r0-schema-report.json`](evidence/r0-schema-report.json)，pytest 为 `1 passed`。Linux、真实 Minecraft runtime/export 和 CPython `3.14.7` 产品运行分别在实际进入 R1、R2 和最终跨平台发布验证时执行，不重复作为 R0 门禁。
+Windows 已使用 `C:\Users\Glasden\.jdks\azul-25.0.2` 的 Java 25 执行 `gradlew.bat --offline build` 并得到 `BUILD SUCCESSFUL`；Schema validator 报告 26 个 Schema、52 个 fixture case，通过报告位于 [`evidence/r0-schema-report.json`](evidence/r0-schema-report.json)，pytest 为 `1 passed`。Windows 的真实 Minecraft runtime/export 已由 R1 现有证据覆盖；Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现保留至 R5，CPython `3.14.7` 产品运行在 R2 执行，不重复作为 R0 门禁。
 
 ## 证据边界
 
-R0 已按最小范围完成并关闭：26 个真实 Schema、52 个 fixtures、轻量 validator/pytest、R0 Python hash lock、Gradle dependency lock/verification metadata 和 Windows offline skeleton build 均存在。该结论不声称 R1 exporter 已运行、不声称已有真实数据或 release，也不提前声称双平台端到端复现；这些结论只在对应后续阶段产生一次必要证据。
+R0 已按最小范围完成并关闭：26 个真实 Schema、52 个 fixtures、轻量 validator/pytest、R0 Python hash lock、Gradle dependency lock/verification metadata 和 Windows offline skeleton build 均存在。该结论不声称已有产品索引或 release，也不提前声称 Linux 或双平台端到端复现；Windows R1 exporter 证据、Linux/R5 义务和后续 release 证据分别按路线图阶段记录。

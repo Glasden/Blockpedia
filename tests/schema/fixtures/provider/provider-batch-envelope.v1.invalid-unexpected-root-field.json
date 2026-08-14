@@ -10,7 +10,7 @@
   "wire_schema_id": "annotation-batch-output.v1",
   "wire_format_name": "annotation_batch_output_v1",
   "minecraft_version": "26.2",
-  "export_id": "exp_01",
+  "export_id": "export_20260814T165501Z",
   "release_id": null,
   "resolved_release_manifest_sha256": null,
   "vocabulary_version": "vocab.v1",
@@ -22,7 +22,7 @@
     "tile_variant_map": [
       {
         "tile_id": "tile_01",
-        "variant_id": "vv_01",
+        "variant_id": "minecraft:stone",
         "image_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000001",
         "machine_metadata_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
       }

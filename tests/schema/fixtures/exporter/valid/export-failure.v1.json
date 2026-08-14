@@ -1,14 +1,14 @@
 {
   "schema_version": "export-failure.v1",
-  "export_id": "exp_fixture",
+  "export_id": "export_20260814T165501Z",
   "minecraft_version": "26.2",
   "failure_id": "fail_fixture",
   "kind": "skip",
   "stage": "RENDER_VARIANTS",
   "scope": "variant",
   "block_id": "minecraft:yellow_carpet",
-  "variant_id": "vv_fixture",
-  "logical_key": "variant:vv_fixture",
+  "variant_id": "minecraft:yellow_carpet",
+  "logical_key": "variant:minecraft:yellow_carpet",
   "reason_code": "MISSING_TEXTURE",
   "severity": "high",
   "retry_count": 1,
@@ -17,7 +17,7 @@
   "message": "Fixture render is missing a texture.",
   "evidence": {
     "kind": "artifact_refs",
-    "paths": ["renders/vv_fixture/render.json"],
+    "paths": ["renders/minecraft/yellow_carpet/render.json"],
     "hashes": ["sha256:0000000000000000000000000000000000000000000000000000000000000000"],
     "frame_hashes": []
   },

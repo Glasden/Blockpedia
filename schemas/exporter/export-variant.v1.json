@@ -6,9 +6,12 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": { "const": "export-variant.v1" },
-    "export_id": { "$ref": "#/$defs/opaqueId" },
+    "export_id": {
+      "type": "string",
+      "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"
+    },
     "minecraft_version": { "const": "26.2" },
-    "variant_id": { "$ref": "#/$defs/opaqueId" },
+    "variant_id": { "$ref": "#/$defs/blockId" },
     "block_id": { "$ref": "#/$defs/blockId" },
     "canonical_state_id": { "$ref": "#/$defs/stateId" },
     "represented_state_ids": {
@@ -236,19 +239,27 @@
       "additionalProperties": false,
       "properties": {
         "render_policy_version": { "const": "render.v1" },
-        "render_signature": { "$ref": "#/$defs/hash" },
-        "render_input_signature": { "$ref": "#/$defs/hash" },
-        "preview_path": { "$ref": "#/$defs/relativePath" },
-        "mask_path": { "$ref": "#/$defs/relativePath" },
-        "render_metadata_path": { "$ref": "#/$defs/relativePath" },
+        "preview_path": {
+          "type": "string",
+          "maxLength": 512,
+          "pattern": "^renders/minecraft/[a-z0-9_./-]+/preview\\.png$"
+        },
+        "mask_path": {
+          "type": "string",
+          "maxLength": 512,
+          "pattern": "^renders/minecraft/[a-z0-9_./-]+/mask\\.png$"
+        },
+        "render_metadata_path": {
+          "type": "string",
+          "maxLength": 512,
+          "pattern": "^renders/minecraft/[a-z0-9_./-]+/render\\.json$"
+        },
         "image_sha256": { "$ref": "#/$defs/hash" },
         "mask_sha256": { "$ref": "#/$defs/hash" },
         "render_metadata_sha256": { "$ref": "#/$defs/hash" }
       },
       "required": [
         "render_policy_version",
-        "render_signature",
-        "render_input_signature",
         "preview_path",
         "mask_path",
         "render_metadata_path",
@@ -290,7 +301,10 @@
       "properties": {
         "type": { "const": "machine" },
         "minecraft_version": { "const": "26.2" },
-        "export_id": { "$ref": "#/$defs/opaqueId" },
+        "export_id": {
+          "type": "string",
+          "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"
+        },
         "producer_version": { "type": "string", "minLength": 1, "maxLength": 128 },
         "stage": { "const": "RENDER_VARIANTS" }
       },

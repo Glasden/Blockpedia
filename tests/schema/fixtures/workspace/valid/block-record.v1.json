@@ -1,6 +1,6 @@
 {
   "schema_version": "block-record.v1",
-  "export_id": "exp_01",
+  "export_id": "export_20260814T165501Z",
   "minecraft_version": "26.2",
   "block_id": "minecraft:stone",
   "translation_key": "block.minecraft.stone",
@@ -18,7 +18,7 @@
   "source": {
     "type": "runtime",
     "minecraft_version": "26.2",
-    "export_id": "exp_01",
+    "export_id": "export_20260814T165501Z",
     "exporter_version": "1.0.0",
     "stage": "EXPORT_REGISTRY"
   }

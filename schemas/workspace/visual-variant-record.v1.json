@@ -187,19 +187,15 @@
       "type": "object",
       "properties": {
         "render_policy_version": {"const": "render.v1"},
-        "render_signature": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-        "render_input_signature": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-        "preview_path": {"type": "string", "minLength": 1, "maxLength": 512},
-        "mask_path": {"type": "string", "minLength": 1, "maxLength": 512},
-        "render_metadata_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "preview_path": {"type": "string", "pattern": "^renders/minecraft/[a-z0-9_./-]+/preview\\.png$", "maxLength": 512},
+        "mask_path": {"type": "string", "pattern": "^renders/minecraft/[a-z0-9_./-]+/mask\\.png$", "maxLength": 512},
+        "render_metadata_path": {"type": "string", "pattern": "^renders/minecraft/[a-z0-9_./-]+/render\\.json$", "maxLength": 512},
         "image_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
         "mask_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
         "render_metadata_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
       },
       "required": [
         "render_policy_version",
-        "render_signature",
-        "render_input_signature",
         "preview_path",
         "mask_path",
         "render_metadata_path",
@@ -214,7 +210,7 @@
       "properties": {
         "type": {"const": "machine"},
         "minecraft_version": {"const": "26.2"},
-        "export_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "export_id": {"type": "string", "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"},
         "producer_version": {"type": "string", "minLength": 1, "maxLength": 128},
         "stage": {"enum": ["SELECT_VARIANTS", "RENDER_VARIANTS", "EXTRACT_FEATURES"]}
       },
@@ -224,9 +220,9 @@
   },
   "properties": {
     "schema_version": {"const": "visual-variant-record.v1"},
-    "export_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "export_id": {"type": "string", "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"},
     "minecraft_version": {"const": "26.2"},
-    "variant_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "variant_id": {"type": "string", "pattern": "^minecraft:[a-z0-9_./-]+$"},
     "block_id": {"type": "string", "pattern": "^minecraft:[a-z0-9_./-]+$", "maxLength": 256},
     "canonical_state_id": {
       "type": "string",

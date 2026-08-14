@@ -2,7 +2,7 @@
   "schema_id": "annotation-batch-output.v1",
   "items": [
     {
-      "variant_id": "vv_01",
+      "variant_id": "minecraft:stone",
       "synonyms_zh": ["黄色薄层"],
       "synonyms_en": ["yellow thin layer"],
       "summary_zh": "黄色且非常薄。",

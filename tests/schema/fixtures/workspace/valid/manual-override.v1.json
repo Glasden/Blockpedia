@@ -4,7 +4,7 @@
   "minecraft_version": "26.2",
   "scope": {
     "level": "variant",
-    "variant_id": "vv_01"
+    "variant_id": "minecraft:stone"
   },
   "operations": {
     "set_summary_en": "A dependable gray building block."

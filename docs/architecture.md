@@ -48,7 +48,7 @@ R0 退出前只锁定 R0 tooling 实际引入的 Python 依赖；后续依赖在
 - R0 tooling 的 Python lock 输入、精确版本和 hashes，以及生成锁文件的输入/命令；不预锁未实现的 R2-R4 栈；
 - Windows 11 与 Linux x86_64 的 offline install/build 精确命令、完整 stdout/stderr、退出码、环境/锁 hash 和报告路径。
 
-上述 R0 路径、锁和 Windows offline skeleton build 已存在，足以关闭 R0。真实 Minecraft runtime/export、Python 产品运行和双平台端到端复现分别在 R1、R2 和 R5 验证，不倒灌为 R0 blocker。
+上述 R0 路径、锁和 Windows offline skeleton build 已存在，足以关闭 R0。Windows 的真实 Minecraft runtime/export 在 R1 已有证据；Python 产品运行在 R2 验证；Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台端到端复现在 R5 验证，不倒灌为 R0 或 R1 blocker。
 
 ## 3. 组件职责和命令边界
 
@@ -64,8 +64,8 @@ EXPORT_REGISTRY → SELECT_VARIANTS → RENDER_VARIANTS
 
 1. 枚举 `minecraft` 命名空间全部方块和合法 BlockState；
 2. 导出名称、属性、行为、几何和标准渲染事实；
-3. 根据冻结状态策略选择视觉变体、建立邻接上下文并去重；
-4. 在 Minecraft 内渲染并写出 JSONL、PNG、蒙版、失败记录和环境清单。
+3. 为每个 block 选择唯一 runtime default BlockState 作为代表，使用固定 isolated context，不做组合邻接或图像去重；完整合法状态仍全部导出；`variant_id` 等于 `block_id`，render 路径由 block ID 直接推导；
+4. 在 Minecraft 内渲染并写出 JSONL、PNG、蒙版、失败记录和环境清单；无法普通 model 渲染时保留 Block/State，写机器 skip 并保持 pending review。旧导出身份和路径不迁移，按当前契约重导。
 
 它不能调用 LLM、写 SQLite、提供 WebUI 或 MCP。游戏内导出命令仍为 `/blockindex export`；这不是 Python CLI。
 
@@ -87,7 +87,7 @@ PREPARE
   → ACTIVATE_RELEASE
 ```
 
-`PREPARE`/import 只接受 exporter 的导出产物；`VALIDATE_VARIANTS` 和 `VALIDATE_RENDERS` 只检查选择与渲染结果，不重新执行选择/渲染；`EXTRACT_FEATURES` 是确定性离线提取；后续阶段负责语义、审核、candidate-build 和 activation。
+`PREPARE`/import 只接受 exporter 的非 staging 导出产物；`VALIDATE_VARIANTS` 和 `VALIDATE_RENDERS` 只检查选择与渲染结果，不重新执行选择/渲染；`EXTRACT_FEATURES` 是确定性离线提取；后续阶段负责语义、审核、candidate-build 和 activation。
 
 ### 3.3 Python CLI
 
@@ -176,10 +176,7 @@ properties_json
 legal_states
 geometry_json
 behavior_json
-render_context
-preview_path
-mask_path
-image_hash
+render_reference（preview/mask/render metadata 的路径和 SHA-256）
 state_signature
 feature_extractor_version
 ```

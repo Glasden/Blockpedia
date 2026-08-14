@@ -1,8 +1,7 @@
 {
   "schema_version": "export-manifest.v1",
   "export_contract_version": "export-contract.v1",
-  "export_id": "exp_fixture",
-  "export_key": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "export_id": "export_20260814T165501Z",
   "logical_input_signature": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "render_input_signature": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "status": "succeeded",

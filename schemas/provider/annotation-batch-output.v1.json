@@ -34,7 +34,7 @@
         "properties": {
           "variant_id": {
             "type": "string",
-            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+            "pattern": "^minecraft:[a-z0-9_./-]+$"
           },
           "synonyms_zh": {
             "type": "array",

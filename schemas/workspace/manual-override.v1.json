@@ -11,7 +11,7 @@
       "type": "object",
       "properties": {
         "level": {"const": "variant"},
-        "variant_id": {"type": "string", "minLength": 1, "maxLength": 128}
+        "variant_id": {"type": "string", "pattern": "^minecraft:[a-z0-9_./-]+$"}
       },
       "required": ["level", "variant_id"],
       "additionalProperties": false

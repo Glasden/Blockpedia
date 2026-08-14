@@ -6,7 +6,10 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": { "const": "export-failure.v1" },
-    "export_id": { "$ref": "#/$defs/opaqueId" },
+    "export_id": {
+      "type": "string",
+      "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"
+    },
     "minecraft_version": { "const": "26.2" },
     "failure_id": { "$ref": "#/$defs/opaqueId" },
     "kind": { "enum": ["failure", "skip"] },
@@ -14,8 +17,7 @@
     "scope": { "enum": ["export", "block", "state", "variant", "render"] },
     "block_id": { "$ref": "#/$defs/blockId" },
     "state_id": { "$ref": "#/$defs/stateId" },
-    "variant_id": { "$ref": "#/$defs/opaqueId" },
-    "render_signature": { "$ref": "#/$defs/hash" },
+    "variant_id": { "$ref": "#/$defs/blockId" },
     "logical_key": { "type": "string", "minLength": 1, "maxLength": 512 },
     "reason_code": { "$ref": "#/$defs/failureReason" },
     "severity": { "enum": ["low", "normal", "high"] },
@@ -62,7 +64,7 @@
     },
     {
       "properties": { "scope": { "const": "render" } },
-      "required": ["block_id", "variant_id", "render_signature"]
+      "required": ["block_id", "variant_id"]
     }
   ],
   "$defs": {

@@ -6,7 +6,10 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": { "const": "export-state.v1" },
-    "export_id": { "$ref": "#/$defs/opaqueId" },
+    "export_id": {
+      "type": "string",
+      "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"
+    },
     "minecraft_version": { "const": "26.2" },
     "state_id": { "$ref": "#/$defs/stateId" },
     "block_id": { "$ref": "#/$defs/blockId" },
@@ -18,7 +21,7 @@
     "behavior": { "$ref": "#/$defs/behaviorFacts" },
     "variant_ids": {
       "type": "array",
-      "items": { "$ref": "#/$defs/opaqueId" },
+      "items": { "$ref": "#/$defs/blockId" },
       "uniqueItems": true,
       "maxItems": 65536
     },
@@ -164,7 +167,10 @@
       "properties": {
         "type": { "const": "runtime" },
         "minecraft_version": { "const": "26.2" },
-        "export_id": { "$ref": "#/$defs/opaqueId" },
+        "export_id": {
+          "type": "string",
+          "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"
+        },
         "exporter_version": { "type": "string", "minLength": 1, "maxLength": 128 },
         "stage": { "const": "EXPORT_REGISTRY" }
       },

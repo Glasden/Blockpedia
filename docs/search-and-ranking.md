@@ -207,9 +207,9 @@ behavior       0.05
   "tiles": [
     {
       "candidate_id": "A1",
-      "variant_id": "vv_7c5e",
+      "variant_id": "minecraft:yellow_carpet",
       "block_id": "minecraft:yellow_carpet",
-      "image_ref": "previews/vv_7c5e/preview.png",
+      "image_ref": "previews/minecraft/yellow_carpet/preview.png",
       "image_sha256": "sha256:<64 lowercase hex>",
       "position": {"row": 0, "column": 0}
     }

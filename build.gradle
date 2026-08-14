@@ -38,6 +38,11 @@ java {
 processResources {
     inputs.property 'version', project.version
 
+    from(rootProject.file('schemas/exporter')) {
+        into 'schemas/exporter'
+        include '*.json'
+    }
+
     filesMatching('fabric.mod.json') {
         expand version: project.version
     }

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": { "const": "render-metadata.v1" },
-    "variant_id": { "$ref": "#/$defs/opaqueId" },
+    "variant_id": { "$ref": "#/$defs/blockId" },
     "width": { "const": 512 },
     "height": { "const": 512 },
     "format": { "const": "PNG-RGBA" },
@@ -22,22 +22,11 @@
       "minItems": 4,
       "maxItems": 4
     },
-    "camera_policy_version": { "const": "camera.v1" },
-    "camera_sha256": { "$ref": "#/$defs/hash" },
-    "lighting_policy_version": { "const": "lighting.v1" },
-    "lighting_sha256": { "$ref": "#/$defs/hash" },
-    "background_sha256": { "$ref": "#/$defs/hash" },
-    "backboard_sha256": { "$ref": "#/$defs/hash" },
-    "support_fixture_sha256": { "$ref": "#/$defs/hash" },
     "fixture_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
     "fixture_version": { "const": "fixture.v1" },
-    "render_environment_sha256": { "$ref": "#/$defs/hash" },
-    "render_input_signature": { "$ref": "#/$defs/hash" },
-    "resource_pack_sha256": { "$ref": "#/$defs/hash" },
     "tint_sensitive": { "type": "boolean" },
     "baseline_biome": { "type": ["string", "null"], "pattern": "^minecraft:[a-z0-9_./-]+$" },
-    "mask": { "$ref": "#/$defs/mask" },
-    "image_sha256": { "$ref": "#/$defs/hash" }
+    "mask": { "$ref": "#/$defs/mask" }
   },
   "required": [
     "schema_version",
@@ -46,22 +35,11 @@
     "height",
     "format",
     "views",
-    "camera_policy_version",
-    "camera_sha256",
-    "lighting_policy_version",
-    "lighting_sha256",
-    "background_sha256",
-    "backboard_sha256",
-    "support_fixture_sha256",
     "fixture_id",
     "fixture_version",
-    "render_environment_sha256",
-    "render_input_signature",
-    "resource_pack_sha256",
     "tint_sensitive",
     "baseline_biome",
-    "mask",
-    "image_sha256"
+    "mask"
   ],
   "allOf": [
     {
@@ -78,9 +56,9 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
-    "opaqueId": {
+    "blockId": {
       "type": "string",
-      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+      "pattern": "^minecraft:[a-z0-9_./-]+$"
     },
     "mask": {
       "type": "object",
@@ -89,10 +67,9 @@
         "present": { "const": true },
         "format": { "enum": ["PNG-GRAY8", "PNG-RGBA"] },
         "channel": { "enum": ["gray", "red", "green", "blue", "alpha"] },
-        "threshold": { "type": "integer", "minimum": 0, "maximum": 255 },
-        "sha256": { "$ref": "#/$defs/hash" }
+        "threshold": { "type": "integer", "minimum": 0, "maximum": 255 }
       },
-      "required": ["present", "format", "channel", "threshold", "sha256"]
+      "required": ["present", "format", "channel", "threshold"]
     }
   }
 }

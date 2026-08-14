@@ -1,6 +1,6 @@
 {
   "schema_version": "export-state.v1",
-  "export_id": "exp_fixture",
+  "export_id": "export_20260814T165501Z",
   "minecraft_version": "26.2",
   "state_id": "minecraft:yellow_carpet",
   "block_id": "minecraft:yellow_carpet",
@@ -33,12 +33,12 @@
     },
     "emission_level": 0
   },
-  "variant_ids": ["vv_fixture"],
+  "variant_ids": ["minecraft:yellow_carpet"],
   "mapping_status": "mapped",
   "source": {
     "type": "runtime",
     "minecraft_version": "26.2",
-    "export_id": "exp_fixture",
+    "export_id": "export_20260814T165501Z",
     "exporter_version": "1.0.0",
     "stage": "EXPORT_REGISTRY"
   },

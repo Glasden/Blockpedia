@@ -78,8 +78,8 @@ Schema 变更时，旧 release 只读不改；工作库以新版本从导出包�
 - `minecraft_version` 必须是精确字符串 `26.2`，不得写范围或别名。
 - `block_id` 必须匹配 `^minecraft:[a-z0-9_./-]+$`，且存在于运行时注册表。
 - `state_id` 就是 canonical state string；`properties` 必须逐项匹配该 block 的合法属性值。不能在某些记录使用 hash、在另一些记录使用字符串。
-- `variant_id` 是稳定哈希 ID，同一 `block_id` 内唯一，不是连续数组下标。
-- `export_id` 绑定一次导出包；不同导出包的数据不得混写。
+- R1 的 `variant_id` 等于其 `block_id`；它不是连续数组下标，也不再使用哈希身份。
+- `export_id` 绑定一次导出包且等于导出目录名；不同导出包的数据不得混写。
 - `release_id` 绑定一份不可变发布物；发布后记录、图片、索引和 manifest 不得原地修改。
 
 引用不存在、版本不匹配、跨 block ID 引用或引用 skipped 变体的搜索条目必须被拒绝。
@@ -97,7 +97,7 @@ Schema 变更时，旧 release 只读不改；工作库以新版本从导出包�
 ```json
 {
   "schema_version": "block-record.v1",
-  "export_id": "exp_01J...",
+  "export_id": "export_20260814T165501Z",
   "minecraft_version": "26.2",
   "block_id": "minecraft:yellow_carpet",
   "translation_key": "block.minecraft.yellow_carpet",
@@ -127,14 +127,14 @@ Schema 变更时，旧 release 只读不改；工作库以新版本从导出包�
 
 ### 3.2 `VisualVariant` 层
 
-`VisualVariant` 是一个 block 内的稳定视觉/用途实体。它引用合法 `canonical_state_id`，列出全部 `represented_state_ids`、标准邻接上下文、渲染资产和机器特征。机器部分只能由导出器和确定性特征提取器写入：
+`VisualVariant` 是一个 block 内的稳定视觉/用途实体。R1 中它引用合法 `canonical_state_id`，列出全部 `represented_state_ids`、固定 isolated context、渲染资产和机器特征。机器部分只能由导出器和确定性特征提取器写入：
 
 ```json
 {
   "schema_version": "visual-variant-record.v1",
-  "export_id": "exp_01J...",
+  "export_id": "export_20260814T165501Z",
   "minecraft_version": "26.2",
-  "variant_id": "vv_7c5e...",
+  "variant_id": "minecraft:yellow_carpet",
   "block_id": "minecraft:yellow_carpet",
   "canonical_state_id": "minecraft:yellow_carpet",
   "represented_state_ids": ["minecraft:yellow_carpet"],
@@ -154,8 +154,12 @@ Schema 变更时，旧 release 只读不改；工作库以新版本从导出包�
     "machine_tags": ["shape:horizontal_thin_sheet", "support:below"]
   },
   "render": {
-    "preview_path": "renders/vv_7c5e.../preview.png",
-    "image_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    "preview_path": "renders/minecraft/yellow_carpet/preview.png",
+    "mask_path": "renders/minecraft/yellow_carpet/mask.png",
+    "render_metadata_path": "renders/minecraft/yellow_carpet/render.json",
+    "image_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "mask_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "render_metadata_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   },
   "annotation_refs": ["ann_..."],
   "override_refs": [],
@@ -175,7 +179,7 @@ Schema 变更时，旧 release 只读不改；工作库以新版本从导出包�
   "schema_version": "annotation-record.v1",
   "annotation_id": "ann_01J...",
   "subject_type": "visual_variant",
-  "subject_id": "vv_7c5e...",
+  "subject_id": "minecraft:yellow_carpet",
   "minecraft_version": "26.2",
   "source": {
     "type": "llm",
@@ -287,7 +291,7 @@ override_id: ov_01J...
 minecraft_version: "26.2"
 scope:
   level: variant
-  variant_id: vv_7c5e...
+  variant_id: minecraft:yellow_carpet
 operations:
   add_building_roles: [roof_detail]
   remove_building_roles: [load_bearing_wall]
@@ -335,7 +339,7 @@ applies_to:
 3. 每个 state 的 `variant_ids` 只引用同 block 的变体；变体的 `represented_state_ids` 反向引用一致。
 4. 每个发布视图中的 VisualVariant 都有可读 512×512 四视角图片和匹配 `image_sha256`。
 5. 机器事实列、AI 语义列和人工覆盖来源可区分、可审计；人工值不能伪装为机器或 AI 来源。
-6. 同一 `variant_id` 不得在不同 `block_id` 下出现；不同 block ID 即使图片签名相同也不能合并实体。
+6. R1 的 `variant_id` 必须等于其 `block_id`；不同 block ID 即使图片内容相同也不能合并实体。
 7. `unknown` 不得被硬约束解释器当成 `true` 或安全的 `false`。
 8. 每个可搜索变体有合规 AI 或人工语义；不可搜索/跳过变体有理由。
 9. release 构建后数据和图片只读，Schema 改变必须产生新 release。

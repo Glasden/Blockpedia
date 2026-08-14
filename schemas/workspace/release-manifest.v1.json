@@ -52,7 +52,7 @@
     "schema_version": {"const": "release-manifest.v1"},
     "release_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "minecraft_version": {"const": "26.2"},
-    "source_export_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "source_export_id": {"type": "string", "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"},
     "source_export_manifest_sha256": {"$ref": "#/$defs/Sha256"},
     "toolchain_lock_sha256": {"$ref": "#/$defs/Sha256"},
     "schemas_inventory_path": {"const": "schemas.sha256"},

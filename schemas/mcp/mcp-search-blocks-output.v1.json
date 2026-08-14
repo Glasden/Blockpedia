@@ -160,7 +160,7 @@
       ],
       "properties": {
         "candidate_id": {"$ref": "#/$defs/opaque_id"},
-        "variant_id": {"$ref": "#/$defs/opaque_id"},
+        "variant_id": {"$ref": "#/$defs/block_id"},
         "block_id": {"$ref": "#/$defs/block_id"},
         "display_name": {"type": "string", "minLength": 1, "maxLength": 200},
         "recommended_state_id": {"$ref": "#/$defs/state_id"},
@@ -183,7 +183,7 @@
       "required": ["candidate_id", "variant_id", "block_id", "row", "column"],
       "properties": {
         "candidate_id": {"$ref": "#/$defs/opaque_id"},
-        "variant_id": {"$ref": "#/$defs/opaque_id"},
+        "variant_id": {"$ref": "#/$defs/block_id"},
         "block_id": {"$ref": "#/$defs/block_id"},
         "row": {"type": "integer", "minimum": 0},
         "column": {"type": "integer", "minimum": 0}
@@ -204,7 +204,7 @@
       "required": ["candidate_id", "variant_id", "block_id"],
       "properties": {
         "candidate_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
-        "variant_id": {"$ref": "#/$defs/opaque_id"},
+        "variant_id": {"$ref": "#/$defs/block_id"},
         "block_id": {"$ref": "#/$defs/block_id"}
       }
     },

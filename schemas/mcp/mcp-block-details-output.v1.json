@@ -124,7 +124,7 @@
         "shape": {"$ref": "#/$defs/shape"},
         "collision": {"$ref": "#/$defs/shape"},
         "behavior": {"$ref": "#/$defs/behavior"},
-        "variant_ids": {"type": "array", "items": {"$ref": "#/$defs/opaque_id"}, "uniqueItems": true},
+        "variant_ids": {"type": "array", "items": {"$ref": "#/$defs/block_id"}, "uniqueItems": true},
         "mapping_status": {"enum": ["mapped", "skipped"]}
       }
     },
@@ -143,7 +143,7 @@
       "additionalProperties": false,
       "required": ["variant_id", "canonical_state_id", "represented_state_ids", "candidate_qualification", "warnings", "variant_facts", "annotation", "image_ids"],
       "properties": {
-        "variant_id": {"$ref": "#/$defs/opaque_id"},
+        "variant_id": {"$ref": "#/$defs/block_id"},
         "canonical_state_id": {"$ref": "#/$defs/state_id"},
         "represented_state_ids": {"type": "array", "items": {"$ref": "#/$defs/state_id"}, "uniqueItems": true},
         "candidate_qualification": {"enum": ["eligible", "conditional", "excluded"]},
@@ -177,7 +177,7 @@
         "height": {"type": "integer", "minimum": 1},
         "sha256": {"$ref": "#/$defs/sha256"},
         "content_index": {"type": "integer", "minimum": 0},
-        "mapping": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["candidate_id", "variant_id", "block_id"], "properties": {"candidate_id": {"type": ["string", "null"]}, "variant_id": {"$ref": "#/$defs/opaque_id"}, "block_id": {"$ref": "#/$defs/block_id"}}}}
+        "mapping": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["candidate_id", "variant_id", "block_id"], "properties": {"candidate_id": {"type": ["string", "null"]}, "variant_id": {"$ref": "#/$defs/block_id"}, "block_id": {"$ref": "#/$defs/block_id"}}}}
       }
     }
   }

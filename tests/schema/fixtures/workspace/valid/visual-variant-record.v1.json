@@ -1,8 +1,8 @@
 {
   "schema_version": "visual-variant-record.v1",
-  "export_id": "exp_01",
+  "export_id": "export_20260814T165501Z",
   "minecraft_version": "26.2",
-  "variant_id": "vv_01",
+  "variant_id": "minecraft:stone",
   "block_id": "minecraft:stone",
   "canonical_state_id": "minecraft:stone",
   "represented_state_ids": ["minecraft:stone"],
@@ -66,11 +66,9 @@
   },
   "render": {
     "render_policy_version": "render.v1",
-    "render_signature": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "render_input_signature": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "preview_path": "previews/vv_01/preview.png",
-    "mask_path": "previews/vv_01/mask.png",
-    "render_metadata_path": "previews/vv_01/render.json",
+    "preview_path": "renders/minecraft/stone/preview.png",
+    "mask_path": "renders/minecraft/stone/mask.png",
+    "render_metadata_path": "renders/minecraft/stone/render.json",
     "image_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
     "mask_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
     "render_metadata_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -83,7 +81,7 @@
   "source": {
     "type": "machine",
     "minecraft_version": "26.2",
-    "export_id": "exp_01",
+    "export_id": "export_20260814T165501Z",
     "producer_version": "1.0.0",
     "stage": "RENDER_VARIANTS"
   }

@@ -89,7 +89,7 @@ compare_blocks
   "sha256": "sha256:<64 lowercase hex>",
   "content_index": 1,
   "mapping": [
-    {"candidate_id": "A1", "variant_id": "vv_7c5e", "block_id": "minecraft:yellow_carpet"}
+    {"candidate_id": "A1", "variant_id": "minecraft:yellow_carpet", "block_id": "minecraft:yellow_carpet"}
   ]
 }
 ```
@@ -209,7 +209,7 @@ compare_blocks
   "candidates": [
     {
       "candidate_id": "A1",
-      "variant_id": "vv_7c5e",
+      "variant_id": "minecraft:yellow_carpet",
       "block_id": "minecraft:yellow_carpet",
       "display_name": "黄色地毯",
       "recommended_state": "minecraft:yellow_carpet",
@@ -224,7 +224,7 @@ compare_blocks
   ],
   "contact_sheet": {
     "image_id": "img_contact",
-    "tile_mapping": [{"candidate_id": "A1", "variant_id": "vv_7c5e", "block_id": "minecraft:yellow_carpet"}]
+    "tile_mapping": [{"candidate_id": "A1", "variant_id": "minecraft:yellow_carpet", "block_id": "minecraft:yellow_carpet"}]
   },
   "images": [],
   "reranked_by_llm": false,
@@ -272,7 +272,7 @@ compare_blocks
   "machine_facts": {},
   "variants": [
     {
-      "variant_id": "vv_7c5e",
+      "variant_id": "minecraft:bamboo_trapdoor",
       "canonical_state": "minecraft:bamboo_trapdoor[...]",
       "represented_states": [],
       "qualification": "conditional",
@@ -280,7 +280,7 @@ compare_blocks
       "machine_facts": {},
       "annotation": {},
       "images": [
-        {"image_id": "img_vv_7c5e", "purpose": "block_variant_views", "view_set": "isometric/front/side/top"}
+        {"image_id": "img_minecraft_bamboo_trapdoor", "purpose": "block_variant_views", "view_set": "isometric/front/side/top"}
       ]
     }
   ],

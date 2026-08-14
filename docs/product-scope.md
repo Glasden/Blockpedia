@@ -50,7 +50,7 @@ Blockpedia **不是** Minecraft 官方产品、百科、资源包或整栋建筑
 
 ### 注册表覆盖
 
-Fabric exporter 必须从目标运行时枚举 `minecraft` 命名空间的完整方块注册表，而不是依赖人工清单。发布前必须满足：
+Fabric exporter 必须从目标运行时枚举 `minecraft` 命名空间的完整方块注册表，而不是依赖人工清单。R1 每个 block 只有一个 `variant_id == block_id` 的 default representative，render 路径由 block ID 直接推导；发布前必须满足：
 
 ```text
 release_block_ids == runtime_minecraft_block_ids
@@ -60,18 +60,21 @@ release_block_ids == runtime_minecraft_block_ids
 
 ### 可审核跳过
 
-方块可以因为渲染不可用、只适合作为技术辅助、没有稳定的代表状态或其他明确原因而跳过，但跳过不能删除注册表记录。跳过记录必须包含：
+方块可以因为渲染不可用、只适合作为技术辅助、没有稳定的代表状态或其他明确原因而跳过，但跳过不能删除注册表记录。R1 exporter 只提供 machine failure/skip pending precursor，不写人工审核字段。R3 candidate-build 前，workspace 必须用独立 `skip-review.v1` 提供并审核以下字段：
 
 ```text
-block_id
-skip_reason_code
-human_reviewer
+target_type
+target_id
+reason_code
+reviewer
 reviewed_at
-review_note
-evidence_paths
+note
+evidence
+source_version
+machine_failure_ref
 ```
 
-没有上述字段的“跳过”不满足覆盖要求。后续重新导入时可以重新打开跳过项，但不能覆盖原审核记录。
+没有上述 R3 workspace 字段的“跳过”不满足 candidate-build 覆盖要求；R1 exporter 的 machine failure/skip 不得伪装成已审核跳过。后续 workspace 处理时可以重新打开跳过项，但不能覆盖原审核记录。
 
 ### 候选资格等级
 

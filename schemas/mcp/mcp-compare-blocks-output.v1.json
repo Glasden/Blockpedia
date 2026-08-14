@@ -47,7 +47,7 @@
       "required": ["candidate_id", "variant_id", "block_id", "row", "column"],
       "properties": {
         "candidate_id": {"$ref": "#/$defs/opaque_id"},
-        "variant_id": {"$ref": "#/$defs/opaque_id"},
+        "variant_id": {"$ref": "#/$defs/block_id"},
         "block_id": {"$ref": "#/$defs/block_id"},
         "row": {"type": "integer", "minimum": 0},
         "column": {"type": "integer", "minimum": 0}
@@ -84,7 +84,7 @@
         "height": {"type": "integer", "minimum": 1},
         "sha256": {"$ref": "#/$defs/sha256"},
         "content_index": {"type": "integer", "minimum": 0},
-        "mapping": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["candidate_id", "variant_id", "block_id"], "properties": {"candidate_id": {"type": ["string", "null"]}, "variant_id": {"$ref": "#/$defs/opaque_id"}, "block_id": {"$ref": "#/$defs/block_id"}}}}
+        "mapping": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["candidate_id", "variant_id", "block_id"], "properties": {"candidate_id": {"type": ["string", "null"]}, "variant_id": {"$ref": "#/$defs/block_id"}, "block_id": {"$ref": "#/$defs/block_id"}}}}
       }
     }
   }

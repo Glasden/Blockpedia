@@ -3,7 +3,7 @@
   "release_id": "rel_01",
   "minecraft_version": "26.2",
   "built_at": "2026-08-13T12:00:00Z",
-  "source_export_id": "exp_01",
+  "source_export_id": "export_20260814T165501Z",
   "manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "record_schema_versions": {
     "block": "block-record.v1",

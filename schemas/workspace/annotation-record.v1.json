@@ -7,7 +7,7 @@
     "schema_version": {"const": "annotation-record.v1"},
     "annotation_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "subject_type": {"enum": ["block", "visual_variant"]},
-    "subject_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "subject_id": {"type": "string", "pattern": "^minecraft:[a-z0-9_./-]+$"},
     "minecraft_version": {"const": "26.2"},
     "synonyms_zh": {
       "type": "array",

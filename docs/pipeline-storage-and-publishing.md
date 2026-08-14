@@ -79,10 +79,10 @@ Fabric/Gradle 工具链由导出契约固定为 Minecraft Java `26.2`、Java `25
 
 `PREPARE` 在任何外部模型请求或写入成功产物前必须检查：
 
-1. 导出包存在、路径在 `<data_root>/exports/` 或经用户明确授权的位置，且通过 [导出契约](export-contract.md) 校验。
+1. 导出包存在、路径在 `<data_root>/exports/` 或经用户明确授权的位置，目录名等于 manifest `export_id` 且不是 `.<export_id>.staging`，并通过 [导出契约](export-contract.md) 校验。
 2. manifest 的 MC/Fabric/Java/Loom/Gradle/mappings 精确值与当前项目 lock 一致；精确字段形状以真实 Schema 文件为准。
 3. R0 tooling 的 Python lock 已存在，运行解释器和实际使用依赖哈希一致；否则报告 `TOOLCHAIN_NOT_LOCKED` 并停止。
-4. exporter 已写入的策略版本和所有真实 JSON Schema 已加载并校验；Studio 只校验 exporter 已写入的策略版本，不执行状态选择或渲染。
+4. exporter 已写入的策略版本和所有真实 JSON Schema 已加载并校验；Studio 只校验 exporter 已写入的策略版本，不执行状态选择或渲染。R1 外部 validator 的全量检查只执行一次。
 5. 资源包只有 vanilla 标识/哈希，没有原始资源副本；导出 scope 是 `minecraft` block registry。
 6. 计算 `run_id`、`input_signature`、工作库 Schema 版本和每阶段幂等键。
 7. 同一输入签名已有成功阶段产物时，验证哈希后复用，不重新执行；不存在 `store=false` 能力证明时停止，不允许 warning/ack 继续 provider 任务。
@@ -93,21 +93,21 @@ PREPARE 输出可恢复的 run spec、导出 manifest 快照、版本锁快照�
 
 ### 5.1 `IMPORT_EXPORT`
 
-Python 导入并验证 exporter 的 `export-manifest.v1`、`export-block.v1`、`export-state.v1`、`export-variant.v1`、`export-failure.v1`、`render-metadata.v1` 和校验文件。Studio 只复制/引用导出结果到 `workspace/{minecraft_version}/{run_id}`，不重新枚举注册表、选择代表状态或渲染图片。
+Python 导入只接受目录名等于 `export_id` 且不是 staging、并已通过 R1 外部 validator 的 exporter 包；Studio 复用该 validator 的一次性 strict Schema、关系、资源、PNG 语义/质量、checksum 和 artifact digest 结果，不重复整包验证。它只复制/引用导出结果到 `workspace/{minecraft_version}/{run_id}`，不重新枚举注册表、选择代表状态或渲染图片。
 
 输出：工作库中的只读机器事实投影、原始导出引用和导入完整性报告。
 
 ### 5.2 `VALIDATE_REGISTRY`
 
-比较 manifest 的 `registry_snapshot_sha256` 与排序后的 block ID，确认 100% 覆盖；检查 Block 记录唯一、所有 block ID 属于 `minecraft`、版本一致且不存在虚假 ID。缺记录、重复主键或校验不一致使阶段 `failed`，不得补造或跳过方块。
+复用 validator 已确认的 `registry_snapshot_sha256` 与排序后的 block ID 覆盖证据，并确认导入投影的版本和引用未改变；不重新对 exporter 全包执行同一 registry/Schema 扫描。缺记录、重复主键或投影不一致使阶段 `failed`，不得补造或跳过方块。
 
 ### 5.3 `VALIDATE_VARIANTS`
 
-验证 exporter 已产生的 canonical state、默认状态、代表状态、状态集合、资格初始值、warnings 和状态映射。验证方向折叠、显著布尔/几何/阶段/邻接规则及同 block 内 dedupe 结果，但不得重新运行选择算法。失败必须绑定导出记录或审核任务。
+验证导入投影中的 canonical/default state、每个 block 唯一 default representative、所有 state 到同 block representative 或 pending skip 的映射、资格初始值、warnings 和引用；复用 validator 的跨记录结果，不重新选择、重新渲染或重复整包扫描。失败必须绑定导出记录或审核任务。
 
 ### 5.4 `VALIDATE_RENDERS`
 
-验证 exporter 已生成的固定 512×512 摄影棚四视角 PNG、蒙版和 `render-metadata.v1`。Studio 不得重新渲染、裁剪、替换或补造图片；缺图、不可读、hash 不符或环境元数据缺失即失败/进入审核。
+验证导入投影仍引用 exporter 已生成的固定 512×512 摄影棚四视角 PNG、蒙版和 `render-metadata.v1`；复用 validator 已完成的单次读取/解码和 artifact digest 结果。Studio 不得重新渲染、裁剪、替换或补造图片；引用改变、缺图或投影不一致即失败/进入审核。
 
 输出：只读图片资产、渲染元数据、图像哈希和失败/审核队列。
 
@@ -291,7 +291,7 @@ recover 不能删除成功产物，也不能把未知结果当作 AI 已返回�
   "release_id": "rel_01J...",
   "minecraft_version": "26.2",
   "built_at": "2026-08-13T12:00:00Z",
-  "source_export_id": "exp_01J...",
+  "source_export_id": "export_20260814T165501Z",
   "provider_snapshot": {
     "profile_id": "default",
     "model_id": "configured-model-id",
@@ -331,7 +331,7 @@ release 创建成功后目录内容和数据库权限/应用层均视为只读�
   "schema_version": "release-manifest.v1",
   "release_id": "rel_01J...",
   "minecraft_version": "26.2",
-  "source_export_id": "exp_01J...",
+  "source_export_id": "export_20260814T165501Z",
   "source_export_manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "toolchain_lock_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "schemas_inventory_path": "schemas.sha256",

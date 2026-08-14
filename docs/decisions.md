@@ -20,9 +20,9 @@
 | D-007 | 兼容 Responses 语义的 `base_url` 是同一 provider 的用户批准配置 | 仍只实现 `OpenAIResponsesProvider`；兼容 endpoint 必须通过同一协议能力门并实际使用 `store=false`，不能借此引入其他 API/provider |
 | D-008 | `store=false` 是硬能力门 | 能力探测必须证明 endpoint 支持并实际接受/使用 `store=false`；无法证明即探测失败并禁止 enable，warning/ack 不得绕过 |
 | D-009 | 机器事实、AI 语义和人工覆盖必须分层 | ID、合法状态、几何、行为和发布事实不可被 AI 改写；人工覆盖必须可追溯、可重放 |
-| D-010 | 必须登记 `minecraft` 命名空间 100% 注册表 | 不得只收录候选方块；没有变体时必须有可审核跳过及原因 |
+| D-010 | 必须登记 `minecraft` 命名空间 100% 注册表 | 不得只收录候选方块；R1 没有变体时先保留 Block/State 并写 exporter machine skip/failure，candidate-build 前必须有独立可审核跳过及原因 |
 | D-011 | 候选资格使用 `eligible`、`conditional`、`excluded`，并允许人工审核跳过 | 资格不能由 LLM 生成；条件候选必须带警告；排除和跳过必须带审核证据 |
-| D-012 | Fabric exporter 是注册表枚举、代表状态选择和 Minecraft 内渲染的唯一执行者 | exporter 内部顺序固定为 `EXPORT_REGISTRY → SELECT_VARIANTS → RENDER_VARIANTS`；Python Studio 只导入/验证 variants/renders、提取离线特征、AI/审核和构建 release，不得重选或重渲染 |
+| D-012 | Fabric exporter 是注册表枚举、代表状态选择和 Minecraft 内渲染的唯一执行者 | R1 exporter 内部顺序固定为 `EXPORT_REGISTRY → SELECT_VARIANTS → RENDER_VARIANTS`；每个 block 只选择唯一 default `BlockState` 作为普通视觉代表，在 isolated context 渲染；Python Studio 只导入/验证 variants/renders、提取离线特征、AI/审核和构建 release，不得重选或重渲染 |
 | D-013 | Studio 阶段顺序固定 | `PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS → VALIDATE_RENDERS → EXTRACT_FEATURES → AI_ANNOTATE → VALIDATE → HUMAN_REVIEW → BUILD_RELEASE → ACTIVATE_RELEASE`；不得重复 exporter 职责 |
 | D-014 | 多 Minecraft 版本可以并存且 WebUI 操作必须显式选择版本 | 数据、导入、任务、构建和发布绑定精确 `minecraft_version`；不得使用隐式“最新版本” |
 | D-015 | 数据根目录树唯一冻结 | 只有 `exports/{minecraft_version}/{export_id}/`、`workspace/{minecraft_version}/{run_id}/`、`cache/`、`releases/{minecraft_version}/{release_id}/`、`logs/` 和根 `current.json`；不得使用高层 `work/` 或 `published/`，MCP 不写 logs 或任何持久化状态 |
@@ -64,7 +64,7 @@ Fabric exporter 在 Minecraft 内唯一执行：
 EXPORT_REGISTRY → SELECT_VARIANTS → RENDER_VARIANTS
 ```
 
-它枚举完整注册表、选择代表状态并渲染 variants/renders。Python Index Studio 不重新选择 variant，不重新渲染图片，只执行：
+它枚举完整注册表、为每个 block 选择唯一 default `BlockState` 并在 isolated context 渲染 variants/renders。Python Index Studio 不重新选择 variant，不重新渲染图片，只执行：
 
 ```text
 PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS
@@ -97,8 +97,32 @@ candidate-build gate 不包含 MCP smoke、双 release 或 current 切换。R3 �
 
 未达到上述条件的想法是未批准的变更，不能进入代码或数据。
 
+## R1 收敛影响记录
+
+### 2026-08-13 — R1 最小化影响记录
+
+按项目 owner 本轮明确要求，R1 采用最小可验收实现和最小测试范围：每个方块只选择唯一 default `BlockState` 作为普通视觉代表；成功渲染时所有合法状态仍完整导出并链接到该 block-level representative，无法稳定普通渲染的项则保留 Block/State，只写 exporter failure/skip 并保持 `pending` review。固定 isolated context 生成 512×512 四视角 preview/mask。R1 不引入外置 `state_policy.yaml`、override DSL、显著属性展开、邻接矩阵、pHash/IoU/alpha dedupe、通用规则引擎、预建 block entity/NBT、任意流体、动画帧、组合邻接或通用 fixture 框架；也不把 workspace `skip-review.v1` 人工审核倒灌到 exporter。
+
+该收敛去除逐逻辑项恢复缓存/游标、复杂幂等冲突体系、release builder 细节、16 类回归矩阵、复杂跨环境图片比较以及尚不存在的 R2–R5 测试命令；R1 只要求 fresh staging、完整校验、checksum 和成功后的原子提交，失败 staging 不得被消费者接受。它不改变本地单机运行、可复现构建、无额外服务、MCP 只读边界或既有 Schema/数据边界，不新增 Schema ID、策略文件、依赖或框架。该项不是技术替换，而是对本轮严格最小实现/最小测试要求的明确落实；用户已于 2026-08-13 明确要求并批准。
+
+### 2026-08-14 — R1 当前 v1 身份、路径、哈希与校验职责收敛记录
+
+这是 owner 批准的**破坏性当前 v1 契约简化**，不是保留兼容的等价替换。`export_id` 就是最终导出目录名，格式为 `export_YYYYMMDDTHHMMSSZ`，同一秒冲突时仅追加 `_01` 至 `_99`；staging 使用 `.<export_id>.staging`，成功后只做一次到最终目录的原子 rename，不再保留第二个 opaque identity、随机 UUID 或 32 位十六进制身份。每个 R1 block 只有一个 default representative，`variant_id` 等于 `block_id`；render 目录由已登记 `block_id` 直接推导，unsafe segment 保留 Block/State 并写 machine skip，不做 sanitizer、slug registry、映射文件或兼容层。旧本地导出直接废弃并重导。
+
+R1 只在 manifest 保留 `logical_input_signature`、`render_input_signature` 以及 registry、resource、Schema 和 render-environment 证据，并保留 `checksums.sha256`。变体 render reference 只保留 preview、mask、render metadata 三个文件的 SHA-256，用于内容完整性而不参与身份或路径；`render.json` 只保留最小图片、视角、policy、fixture、tint 和 mask 语义 metadata，不重复环境或内容哈希。release 阶段由 [`AGENTS.md`](../AGENTS.md) 强制的 checksum/hash 语义不受本次 R1 简化影响。
+
+本记录中的“已删除”字段仅用于冻结删留边界：manifest 的 `export_key`；variant render reference 的 `render_signature` 和重复的 `render_input_signature`；failure 的 `render_signature`；render.json 中重复的 camera、lighting、background、backboard、support、resource、environment hash、重复 `render_input_signature` 以及重复 image/mask content hash。它们不再作为当前 R1 身份、路径或完整性字段。
+
+职责冻结为两层且不重复做相同全量检查：exporter commit gate 只负责最终引用/计数/状态、精确 render 路径与文件集、PNG 基础可读性和尺寸、checksum 生成、fsync 及一次原子提交；外部 Python validator 只对目录名等于 `export_id` 且不是 staging 的包执行一次 strict Schema、跨记录/registry 关系、资源黑名单、PNG 语义/质量、一次 checksum 和 artifact digest 复算，并复用同一次文件读取和 PNG 解码。commit gate 不在提交前再次对全包逐记录跑完整 Schema，也不再次复算刚生成的 checksum；任一层失败都不能宣称 R1 验收通过。
+
+真实 validator 在 1000 renders 上已超过 600 秒，原因为 preview 重复解码/扫描。验收应改为单次读取/解码，不延长 timeout、不增加并行框架、不增加磁盘缓存；当时尚缺 Linux Java 25/runtime 与同环境独立重跑证据，后由下述 2026-08-14 阶段门重分配决定将其归入 R5。上述收敛不破坏本地单机、可复现构建、无额外服务、MCP 只读、一次原子提交或后续不可变 release/current 语义；它只要求旧导出按新命名和路径重新生成。
+
 ## 等价替换影响记录
 
 ### 2026-08-13 — Loom、mappings 与 R0 简化影响记录
 
 Loom `1.17` 替换为精确 `1.17.19`，并将 Minecraft 26.2 mappings 澄清为 native Mojang names/unobfuscated、无外部 mappings artifact；同时批准 CPython `3.14.7` 与 Windows 11 x86_64 / Linux x86_64 `manylinux_2_17` / glibc `>=2.17`。该记录和 D-036 不改变本地单机运行、可复现构建目标、无额外服务、MCP stdio 只读边界、不可变 release/current 语义或既有数据契约；也不新增 Schema ID、词汇 artifact、服务、框架或能力。项目 owner 已于 2026-08-13 在本会话明确批准。实际工具链、Schema、锁和双平台运行报告仍需验证，未据此宣称通过。
+
+### 2026-08-14 — R1/R5 阶段门重分配记录
+
+项目 owner 于 2026-08-14 在本会话明确批准直接关闭 R1：以当前 Windows 11 x86_64、冻结 Java 25 基线构建证据、实际 Minecraft Java 26.2 exporter 导出和已记录的外部 validator 通过证据作为 R1 退出依据。Linux Java 25/runtime、Linux exporter 独立重跑以及最终双平台源码锁/运行时复现重新归入 R5；R1 不宣称 Linux 已通过。该重分配不移除 Linux 正式支持、不放宽 R5 验证、不新增技术、依赖或服务，也不改变既有数据契约、MCP 只读边界或本地单机运行语义。

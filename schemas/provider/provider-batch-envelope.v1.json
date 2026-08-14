@@ -84,7 +84,7 @@
       "anyOf": [
         {
           "type": "string",
-          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+          "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"
         },
         {
           "type": "null"
@@ -160,7 +160,7 @@
                   },
                   "variant_id": {
                     "type": "string",
-                    "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+                    "pattern": "^minecraft:[a-z0-9_./-]+$"
                   },
                   "image_sha256": {
                     "type": "string",
@@ -230,7 +230,7 @@
                   },
                   "variant_id": {
                     "type": "string",
-                    "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+                    "pattern": "^minecraft:[a-z0-9_./-]+$"
                   },
                   "block_id": {
                     "type": "string",
@@ -272,7 +272,8 @@
             "const": "annotation_batch_output_v1"
           },
           "export_id": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"
           },
           "release_id": {
             "type": "null"

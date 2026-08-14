@@ -2,7 +2,7 @@
 
 ## 文档状态与导航
 
-本文定义 Blockpedia MVP 的质量范围、确定性完整性、strict Schema、provider/MCP/WebUI 测试、Windows 11/Linux x86_64 运行验收、降级和原子发布门。正文使用简体中文；测试文件、字段、Schema、状态、错误码和命令保持英文。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 为规范性关键字。
+本文定义 Blockpedia MVP 的质量范围、确定性完整性、strict Schema、provider/MCP/WebUI 测试、Windows 11/Linux x86_64 运行验收、降级和原子发布门。正文使用简体中文；测试文件、字段、Schema、状态、错误码和命令保持英文。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 为规范性关键字。各项测试按 R1–R5 阶段归属执行，不把后续阶段命令倒灌为 R1 blocker。
 
 本文服从 [`../AGENTS.md`](../AGENTS.md)、[`roadmap.md`](roadmap.md)、[`decisions.md`](decisions.md)、[`product-scope.md`](product-scope.md) 和 [`architecture.md`](architecture.md)。原始设计稿 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 仅作历史背景和最低优先级参考，不与本契约一起执行；冲突内容禁止实现。具体契约链接如下：
 
@@ -10,13 +10,13 @@
 - [`openai-provider.md`](openai-provider.md)、[`search-and-ranking.md`](search-and-ranking.md)、[`mcp-api.md`](mcp-api.md)、[`webui-and-operations.md`](webui-and-operations.md)；
 - [`security-and-distribution.md`](security-and-distribution.md)。
 
-当前仓库已完成 R0 契约、Schema/fixture 轻量验收、依赖锁和工具链骨架；尚无 R1–R5 的真实导出、产品索引或 release。本文件后续验收只在对应实现阶段执行，不作为未开始阶段的提前 blocker。
+当前仓库已完成 R0 契约、Schema/fixture 轻量验收、依赖锁和工具链骨架；R1 已有当前 v1 命名/路径契约下的 Windows Java 25 构建、实际 Minecraft 26.2 导出和优化后的 validator 通过证据。Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现保留至 R5；产品索引或 release 尚未开始。本文件后续验收只在对应实现阶段执行，不作为未开始阶段的提前 blocker。
 
 ## 1. MVP 质量边界
 
 MVP 必须退出的质量范围只有：
 
-1. 确定性导出/导入、100% `minecraft` registry 登记、合法状态、图片和不可变 release 完整性；
+1. 确定性导出/导入、100% `minecraft` registry 登记、合法状态、图片和不可变 release 完整性；R1 只负责 exporter 产物完整性，release 完整性属于后续 candidate/activation gate；
 2. 机器事实/AI 语义/人工 override 分层、strict JSON Schema 和引用边界；
 3. OpenAI Responses 三阶段请求、严格一次总重试、错误分类、离线审核和在线本地降级；
 4. MCP stdio 四工具、结构化输出/等价 TextContent、PNG 联系表/四视角图片和 stdout 纯净；
@@ -25,6 +25,16 @@ MVP 必须退出的质量范围只有：
 7. 原子 `current.json` 切换、回滚只切指针、release 不可变和最小安全/分发检查。
 
 MVP **MUST NOT** 把黄金查询集、Top-5 指标、硬约束统计目标、排序权重调优、安装包、容器、系统服务或自动更新作为 roadmap 必做退出条件。它们可以在 MVP 后开展真实质量工作，但不得用目标数字冒充已测结果。
+
+### 阶段归属
+
+- **R1**：以现有 Windows Java 25 构建、实际 Minecraft 26.2 exporter 导出和外部 validator 证据验收 exporter 的完整注册表/合法状态/机器事实、唯一 default representative、按 `block_id` 推导的 isolated 四视角 preview/mask、pending failure/skip、exporter commit gate 与外部 validator 的分工、checksum 和 fresh staging 原子提交。
+- **R2**：验收 Index Studio、导入验证、SQLite、任务状态、WebUI loopback 和进程内 Worker。
+- **R3**：验收 OpenAI Responses、`store=false` 能力门、strict wire Schema、人工审核/覆盖和 candidate-build gate。
+- **R4**：验收临时 candidate/current fixture 上的 MCP stdio 四工具、搜索/排序和本地降级；不激活生产 current。
+- **R5**：验收 Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码锁依赖/运行时复现，以及双 release、activation gate、current 原子切换、回滚和首发清单。
+
+R2–R5 的契约继续保留在本文后续章节，但其实现、命令和证据只在对应阶段开始后建立；它们不是 R1 blocker。
 
 ## 2. 固定基线和测试材料
 
@@ -57,7 +67,7 @@ test summary/report path
 
 发布产物还必须有：`manifest.json`、`quality_report.json`、完整 SHA-256、版本、release ID 和原子切换报告。JSON、Schema 字段、metadata、manifest、current 和 release 中的 hash 字符串必须使用 `sha256:<64 lowercase hex>`；唯一文本例外是 `checksums.sha256` 与 `schemas.sha256` 的行首 digest，均不带前缀。`checksums.sha256` 排除自身，格式为 `<64hex><two ASCII spaces><release-relative-posix-path>\n`，按路径排序；`schemas.sha256` 格式为 `<64hex><two ASCII spaces><schema-id><two ASCII spaces><canonical-repository-relative-posix-path>\n`，按 schema ID UTF-8 bytes 排序，路径不声称位于 release。测试失败、缺本地合法导出或缺真实 release 时必须准确记录 `SKIPPED_LOCAL_EXPORT_MISSING` 或 `SKIPPED_LOCAL_RELEASE_MISSING`，不能改用假数据声称集成通过。没有证据不得更新路线图 `[x]`。
 
-## 4. Schema、数据分层和确定性测试
+## 4. R0/R1 Schema、数据分层和确定性测试
 
 ### 4.1 strict Schema
 
@@ -81,31 +91,37 @@ mcp-compare-blocks-output.v1 / mcp-error.v1
 
 ### 4.2 导出和导入
 
+R1 exporter 验收只覆盖最小确定性边界：完整 `minecraft` registry 登记、全部合法状态和机器事实、唯一 default representative、按 `block_id` 推导的 isolated 四视角 preview/mask、failure/skip pending 语义、fresh staging 原子提交和 checksum。exporter commit gate 只检查最终引用/计数/状态、精确 render 路径与文件集、PNG 基础可读性和尺寸、checksum 生成、fsync 及一次原子提交；外部 Python validator 对最终非 staging 包执行一次 strict Schema、跨记录/registry 关系、资源黑名单、PNG 语义/质量、checksum 与 artifact digest 复算，并复用同一次文件读取/PNG 解码。两者不得重复相同全量检查。R1 不要求 workspace 人工 `skip-review.v1`；该审核属于 R3 candidate-build 前置。R1 不实现逐逻辑缓存/游标恢复、复杂幂等冲突、16 类回归矩阵、复杂跨环境图片比较或 R2–R5 测试命令。
+
+导出包导入验收属于 R2；R1 仅验证同一 fixture 的重导出确定性。
+
 原创 fixture 必须覆盖：
 
 1. 每个输入 `minecraft` registry block 恰好一条 Block 记录，虚假/重复 ID 为 0；
-2. 每个 Block 至少一个发布视觉变体，或完整 skip（reviewer、时间、reason code、note、evidence）；
+2. R1 每个 Block 至少一个 exporter selected representative，或 exporter failure/skip 保持 pending；workspace `skip-review.v1` 的人工审核字段由 R3 candidate-build 另行验证；
 3. default/canonical/represented state 均属于该 block 合法状态；
 4. 机器事实由 fixture 确定性测量生成，AI 文本不能覆盖；
-5. PNG 可读、MIME/尺寸/hash 与 metadata/manifest 一致；
+5. PNG 可读、MIME/尺寸/hash 与 render reference/manifest 一致；
 6. 缺文件、错误版本、虚假引用、重复主键、非法状态和 hash mismatch 被拒绝；
-7. 同一 fixture 重导入产生相同机器事实、排序键和 artifact hash（时间字段除外）。
+7. 同一 fixture 重导出产生相同机器事实、排序键和 artifact hash（时间字段除外）。
 
-## 5. OpenAI provider contract tests
+R1 validator 对 1000 renders 的验收必须采用单次读取/解码；真实旧 validator 已超过 600 秒，不得延长 timeout、增加并行框架或磁盘缓存。目录名必须等于 `export_id` 且不是 staging；旧 `exp_...`/`vv_<hash>` 身份（已删除）的导出直接作废重导。
+
+## 5. R3 OpenAI provider contract tests
 
 Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixture，不发送真实 key，覆盖：
 
 1. `offline_annotation`、`query_spec`、`visual_rerank` 均使用同一个 Studio active profile 的同一个 runtime `model_id`；可保存多个非活动 profile，但全局最多一个 active；release-bound MCP 使用 release 冻结 snapshot，不读取或比较可变 active profile；
 2. 请求 strict `text.format.type=json_schema`、`strict=true`，Schema ID/name 分别为 `annotation-batch-output.v1`/`annotation_batch_output_v1`、`query-spec-output.v1`/`query_spec_output_v1`、`rerank-output.v1`/`rerank_output_v1`，没有 `json_object`/自由文本正常 fallback；
 3. 能力 probe 实际发送上述三个 Schema、图片、错误分类和实际 `store=false`；任何能力不能证明（包括 `store=false`）都 probe fail 并禁止 enable，不得提供确认或豁免绕过硬门；
-4. SDK 内置 retry 加应用层 retry 的总尝试最多 2 次；网络、timeout、429、5xx、可修复 Schema 各最多一次；
+4. R3 provider 请求的总尝试最多 2 次；仅已观察的可恢复错误最多补试一次，不能据此为 R1 exporter 预建通用重试框架；
 5. `refusal`、`incomplete`、认证、权限、能力缺失和不可修复请求错误不重试；
 6. 离线最终失败创建 high `needs_review`；在线最终失败保留本地结果、warning 和 `reranked_by_llm=false`；
 7. usage、完整 response、图片、Authorization、key、绝对路径不进入返回对象、SQLite 或日志；只留脱敏 request ID；
 8. cache key 缺任一字段即失败：`image_hash`、`machine_metadata_hash`、`prompt_version`、`model_id`、`schema_version`、`base_url_stable_id`、`stage`；
 9. artifact 与 profile/model/prompt/wire schema/search/base URL stable ID/secret reference、input hash 和 cache key 在 release freeze 中可复核；不出现 Token usage、费用或预算字段；Keyring/env 无法解析时在线只本地降级并 warning，不写状态。
 
-## 6. 搜索和排序 contract tests
+## 6. R4 搜索和排序 contract tests
 
 使用原创小型 release fixture 验证：
 
@@ -120,7 +136,7 @@ Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixtur
 9. 未验证视觉条件使用 warning/`visual_constraints_verified=false`，不伪称满足；
 10. LLM 不能新增、删除、改写候选 ID、block/state、图片或机器事实。
 
-## 7. MCP protocol tests
+## 7. R4 MCP protocol tests
 
 必须以子进程运行 `block-index mcp` 并覆盖：
 
@@ -134,7 +150,7 @@ Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixtur
 8. current/default version、显式版本、禁止历史 selector、未知版本/ID、空搜索、图片失败符合 [`mcp-api.md`](mcp-api.md)；
 9. MCP 进程执行全部路径后不写 SQLite、文件、cache、logs 或 current；联系表和 ImageContent 使用内存 bytes，provider 降级也成立。
 
-## 8. WebUI、任务和安全测试
+## 8. R2/R3/R5 WebUI、任务和安全测试
 
 ### 8.1 WebUI/Worker
 
@@ -162,7 +178,7 @@ Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixtur
 6. 发布中 MCP 只读旧 release，切换后只读新完整 release；
 7. 并发 apply/rollback 串行化，第二请求返回明确状态冲突，不覆盖第一请求。
 
-## 9. 发布完整性门
+## 9. R3/R5 发布完整性门
 
 发布检查必须拆成两个独立门：`candidate-build gate` 由 WebUI `POST /api/releases/check` 执行，生成不可编辑的 `quality_report.json` 并决定 `can_build`；`activation gate` 由 WebUI `POST /api/releases/activation-check` 执行，决定 `can_apply`。`/api/releases/check` 和 `/api/releases/build` 只要求 R0–R3 及 candidate-build 前置；`/api/releases/activation-check` 和 `/api/releases/apply` 才要求 R0–R4、activation gate 和用户确认。candidate-build gate 只检查单个 release 内容完整性，**MUST NOT** 包含 MCP smoke、`TWO_INDEPENDENT_RELEASES` 或 current 切换；activation gate 检查至少两个 candidate、四工具 MCP smoke、原子 current 和 candidate 报告/hash 复核。任一 blocker 失败，WebUI **MUST NOT** build（candidate）或 apply（activation）。
 
@@ -186,24 +202,11 @@ Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixtur
 
 `quality_report.json` 使用严格的 release 质量产物契约，只能记录非秘密计数/状态和 release 内相对 evidence ref，不得写绝对路径、key、usage 或完整 response；报告自身必须纳入 release hash。它不是 D-030 冻结的额外 Schema ID。candidate report 的 `can_build` 不得伪称 `can_apply`；其中必须包含 `excluded` qualification 审计完整性结果。activation report 只能引用已 build 的 release ID、candidate report hash 及其复核结果，不首次补做资格内容审计。
 
-## 10. 跨平台精确命令
+## 10. 各阶段跨平台验证
 
-实现交付时必须在 Windows 11 x86_64 与 Linux x86_64（`manylinux_2_17` / glibc `>=2.17`）各执行以下命令，完整 stdout/stderr、退出码和环境/lock hash 保存到项目规定的测试报告路径。每份报告必须记录 OS version、CPU architecture、GPU、driver、render backend、Python/Java/Gradle/Fabric 版本和 lock/verification metadata hash。跨平台比较只要求 canonical machine fields、Schema、几何/构图逻辑和排序逻辑一致；PNG 字节 hash 只有在同一完整渲染环境重复运行时才要求一致，不得把不同 GPU/driver/backend 的 PNG 字节差异判为失败：
+R1 已由现有 Windows Java 25 构建、实际 Minecraft 26.2 exporter 导出和优化后的外部 validator 证据关闭；Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现由 R5 验证。正式支持平台仍为 Windows 11 x86_64 与 Linux x86_64；R1 不宣称 Linux 已通过。跨平台验收仍只比较 canonical 机器字段、Schema、逻辑排序和构图规则；PNG byte hash 只有在完整渲染环境一致时才要求相同。R2–R5 仅在对应实现存在后执行其契约测试。
 
-```text
-python -m pip install --require-hashes -r requirements.lock
-python -m compileall -q .
-python -m pytest -q
-python -m pytest -q tests/test_provider_contract.py tests/test_search_contract.py
-python -m pytest -q tests/test_mcp_stdio.py tests/test_release_atomicity.py
-```
-
-Gradle/Fabric 工具链锁定验收还必须执行并记录：
-
-```text
-Windows: gradlew.bat --offline build
-Linux:   ./gradlew --offline build
-```
+R0 已有的 tooling/schema 验收命令仍由路线图证据区记录；本节不把当前不存在的 R1–R5 精确命令伪装成现行命令。后续阶段应在实际实现后分别记录对应 provider、MCP、WebUI/release 和跨平台命令的路径、退出码、报告与锁哈希。
 
 Gradle wrapper properties、wrapper JAR checksum、dependency lock 和 dependency verification metadata 必须进入可审计路径；R0 tooling Python lock 必须包含实际引入依赖的精确版本及 hashes，不能预锁未实现的 R2-R4 栈。MCP/R4 和 candidate/activation gate 测试必须使用测试框架生成的临时 data-root/current fixture，不得依赖生产 current；测试结束只清理临时测试目录，产品 MCP 仍零写。
 

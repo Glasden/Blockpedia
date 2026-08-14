@@ -1,15 +1,15 @@
 # Blockpedia MVP 路线图
 
 - **版本**：MVP 冻结版
-- **日期**：2026-08-13
+- **日期**：2026-08-14
 - **目标**：在 Windows 11 x86_64 和 Linux x86_64（`manylinux_2_17` / glibc `>=2.17`）上完成原版 Minecraft Java 26.2 的本地单机端到端闭环
-- **当前状态**：R0 契约冻结已完成；仓库已有真实 Schema、fixtures、轻量验收、依赖锁和可构建 Fabric/Gradle 骨架。R1–R5 的真实导出、产品实现、索引和 release 尚未开始。
+- **当前状态**：R0 契约冻结与 R1 确定性导出均已完成；R1 以当前 v1 命名/路径契约下的 Windows Java 25 构建、实际 Minecraft 26.2 导出和外部 validator 通过证据关闭。Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现保留至 R5；R2–R5 的产品实现、索引和 release 尚未开始，R2 可以开始。
 
 规范优先级和硬限制见 [`../AGENTS.md`](../AGENTS.md)；冻结决定集中见 [`decisions.md`](decisions.md)。冲突必须先更新高优先级文档，不能在实现中静默偏离。移入的原始设计稿仅是历史背景和最低优先级参考，不能与新文档一起作为执行规范；其中冲突内容禁止实现。
 
 ## 路线图文档索引
 
-当前仓库已完成最小 R0 物化和验收。后续阶段只在实际实现需要时增加测试与平台证据，不重复设计或为未来阶段预建验证体系。
+当前仓库已完成最小 R0 物化和验收，并已按现有 Windows 证据关闭 R1。R1 的当前 v1 身份、路径、哈希删留和 exporter/外部 validator 职责已冻结；Linux 与最终双平台复现义务保留在 R5。R2 可以开始；后续阶段只在实际实现需要时增加测试与平台证据，不重复设计或为未来阶段预建验证体系。
 
 所有链接均相对于本文件所在的 `docs/` 目录。
 
@@ -35,7 +35,7 @@
 
 ## 阶段依赖与退出门
 
-依赖链为 `R0 → R1 → R2 → R3 → R4 → R5`。每一阶段只以该阶段已经定义的最小交付物和验收为退出条件；后续阶段的平台、运行时、数据和发布证据不得倒灌阻塞前一阶段。R0 已退出，R1 可以开始；R1–R5 未完成项保持未勾选。
+依赖链为 `R0 → R1 → R2 → R3 → R4 → R5`。每一阶段只以该阶段已经定义的最小交付物和验收为退出条件；后续阶段的平台、运行时、数据和发布证据不得倒灌阻塞前一阶段。R0 与 R1 已退出，R2 可以开始；R2–R5 未完成项保持未勾选。
 
 ### R0：契约冻结
 
@@ -71,7 +71,7 @@
 - 轻量验收：`python -m tools.validate_r0 --repo-root . --report` 通过，输出 `R0 validation passed: 26 schemas, 52 fixture case(s)`，报告为 `docs/evidence/r0-schema-report.json`；`python -m pytest -q tests/test_r0_schemas.py` 输出 `1 passed`。
 - Python 锁：`requirements.in` 与 `requirements.lock`；`python -m pip install --require-hashes -r requirements.lock` 和 `python -m pip check` 已通过。精确 CPython `3.14.7` 产品运行验证留到 R2。
 - Gradle/Fabric 骨架：`build.gradle`、`settings.gradle`、`gradle.properties`、`gradle/wrapper/`、`gradle/dependency-locks.lockfile`、`gradle/verification-metadata.xml` 和 `src/main/`。wrapper JAR SHA-256 为 `497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7`，与 Gradle 官方 9.5.1 记录一致；Windows 使用 Zulu Java 25 执行 `gradlew.bat --offline build`，结果为 `BUILD SUCCESSFUL`。
-- R0 于 2026-08-13 关闭。Linux、真实 Minecraft runtime/export 和双平台端到端复现分别在 R1、R2 及 R5 按实际交付物验证，不再作为 R0 blocker。
+- R0 于 2026-08-13 关闭。Windows 的真实 Minecraft runtime/export 已在 R1 以现有证据完成；Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现保留至 R5，不再作为 R0 或 R1 blocker。
 
 ### R1：确定性导出
 
@@ -79,28 +79,31 @@
 
 #### 任务
 
-- [ ] 用冻结基线实现仅客户端 Fabric `Block Index Exporter`，登记 `minecraft` 命名空间 100% 注册表。
-- [ ] 冻结 exporter 内部顺序为 `EXPORT_REGISTRY → SELECT_VARIANTS → RENDER_VARIANTS`：exporter 唯一负责注册表枚举、代表状态选择和 Minecraft 内渲染。
-- [ ] 导出合法 BlockState、默认状态、属性值、行为探测、代表性状态和标准化多视角预览。
-- [ ] 为每个方块建立至少一个视觉变体，或建立带人工审计信息的跳过记录。
+- [x] 用冻结基线实现仅客户端 Fabric `Block Index Exporter`，登记 `minecraft` 命名空间 100% 注册表。
+- [x] 冻结 exporter 内部顺序为 `EXPORT_REGISTRY → SELECT_VARIANTS → RENDER_VARIANTS`：exporter 唯一负责注册表枚举、代表状态选择和 Minecraft 内渲染。
+- [x] 导出每个注册表方块的合法 `BlockState`、默认状态、全部合法属性值和运行时机器事实；每个合法状态显式链接到该方块的 block-level visual representative。Python 不选择状态、不渲染图片。
+- [x] 每个方块只选择唯一 default `BlockState` 作为普通视觉代表，并在固定 isolated context 中生成四视角预览和 mask；普通 block model 无法稳定渲染时保留 Block/State，写入机器可读 failure/skip 和 `pending` review。
 
 #### 交付物
 
-- [ ] Fabric exporter 可复现构建产物和运行时清单。
-- [ ] `manifest.json`、`blocks.jsonl`、`states.jsonl`、`variants.jsonl`、`failures.jsonl`、预览和日志。
-- [ ] 导出契约、状态策略与渲染规则的实现和验证证据。
+- [x] Fabric exporter 可复现构建产物和运行时清单。
+- [x] `manifest.json`、`blocks.jsonl`、`states.jsonl`、`variants.jsonl`、`failures.jsonl`、预览和日志。
+- [x] fresh staging 中由 exporter commit gate 完成最终引用/计数/状态、精确 render 路径与文件集、PNG 基础可读性和尺寸、checksum 生成、fsync 及一次原子提交；外部 Python validator 对最终包另行执行一次 strict Schema/关系/资源/PNG 语义与 checksum/artifact digest 校验；失败 staging 不得被消费者接受。
+- [x] 导出契约、最小状态策略与渲染约束的实现和验证证据；R1 不产生 workspace 人工 `skip-review.v1`。
 
 #### 验证与退出条件
 
-- [ ] 注册表覆盖率为 100%，每个 `block_id` 唯一且属于 `minecraft` 命名空间。
-- [ ] 所有导出状态均为运行时合法状态；代表集和全量导出均无未解释失败。
-- [ ] 预览、蒙版、颜色、几何和行为字段可读取且哈希稳定。
-- [ ] Windows 11 与 Linux x86_64 的同一输入复现检查通过。
+- [x] 注册表覆盖率为 100%，每个 `block_id` 唯一且属于 `minecraft` 命名空间。
+- [x] 所有导出状态均为运行时合法状态；每个状态都有该 block 的代表链接，或有 exporter failure/skip 且保持 `pending` review。
+- [x] 预览、蒙版、几何、行为和资源快照字段可读取且哈希稳定；R1 不以不存在 exporter Schema owner 的颜色字段作为验收项。
+- [x] Windows 11 x86_64 已以冻结 Java 25 基线完成构建并运行实际 Minecraft 26.2 exporter，导出包通过外部 validator；Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现保留至 R5，未在 R1 宣称完成。
 
 **证据区**
 
-- 尚无实现路径、导出包、运行日志、测试报告或哈希；本阶段所有实现和数据项保持未勾选。
-- 退出门未通过，R2 不得开始。
+- Windows 当前 v1 真实导出：`run/blockpedia-data/exports/26.2/export_20260813T213208Z/`，exporter `0.1.3`，status=`needs_review`，1196 blocks、32366 states、1000 selected、196 skipped/pending；`variant_id == block_id`，抽查 `minecraft:stone` 的 preview 为 `renders/minecraft/stone/preview.png`。`manifest.json` SHA-256 为 `ea7ee7c144dd47244c1bc837a6c89c4d2100ac7eed94615021389ced75d54c82`，`checksums.sha256` SHA-256 为 `2f3541f331d5fe7cf6c72e625bba32819c597dfbe631aa531aa06c7cbf851026`。首次同版本尝试因外部 Notepad 占用 staging 内 `exporter.log` 导致 Windows rename 拒绝并仅保留 staging；关闭外部占用后 fresh 重跑于一次原子 rename 成功提交，失败 staging 未作为消费者输入。
+- 构建与聚焦验收：使用 `C:\Users\Glasden\.jdks\azul-25.0.2` 执行 `./gradlew.bat --offline compileJava` 和 `./gradlew.bat --offline build` 均为 `BUILD SUCCESSFUL`；`blockpedia-exporter-0.1.3.jar` SHA-256 为 `fe6686998160df91a3b6b0d44a30ace9926cb41c0987157be576c6d262660a2f`，sources JAR 为 `8961897cd6584b10e146d5b964f24f037a9acc01d6a533bb774ff650b75a0584`。`python -m pytest -q tests/test_r0_schemas.py tests/test_r1_export_validator.py` 为 `9 passed, 2 skipped`；两个 skip 是当前 Windows 环境无 symlink 创建权限，hardlink 与其它检查实际执行。
+- 优化后外部验收：`python tools/validate_r1_export.py --repo-root . --export-dir run/blockpedia-data/exports/26.2/export_20260813T213208Z --report run/blockpedia-data/reports/export_20260813T213208Z-validator.json` 输出 `R1 export validation passed`，实测 `516.836s`，未延长 600 秒上限；本地报告 status=`passed`、issues=`[]`，SHA-256 为 `7a839ba3f3b60ae87cbe4a55e1e4ddc3af6ce3c05f90a4f9f02f48404c5e1ec7`。Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现尚无证据；按 owner 于 2026-08-14 批准的阶段门重分配，这些义务保留在 R5，不构成 R1 未完成条件。R1 已于 2026-08-14 关闭，R2 可以开始。
+- 退出门已通过；R2 可以开始。Linux 和最终双平台验证仍由 R5 的未勾选门负责。
 
 ### R2：Index Studio、存储与任务
 
@@ -224,7 +227,7 @@
 - [ ] 每个目标版本均有两个或以上独立完整 release，且通过 activation gate。
 - [ ] 发布和回滚均为 WebUI 操作，release 内容在操作前后字节不变。
 - [ ] MCP 四工具读取临时/当前 release 的冒烟检查通过，stdout 保持纯净。
-- [ ] Windows 11 与 Linux x86_64 的源码锁依赖复现运行通过。
+- [ ] Windows 11 与 Linux x86_64 的源码锁依赖、Java 25/runtime 和 exporter 双平台复现运行通过；此项承接 R1 延后的 Linux 与最终双平台验证义务。
 - [ ] 用户完成最终人工激活；在此之前不得把任何 candidate 说成首发。
 - [ ] 未把黄金查询、Top-5 或排序调优结果冒充为本阶段验收；这些质量工作明确后置，不是路线图必做项。
 

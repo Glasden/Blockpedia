@@ -2,7 +2,7 @@
   "schema_version": "annotation-record.v1",
   "annotation_id": "ann_01",
   "subject_type": "visual_variant",
-  "subject_id": "vv_01",
+  "subject_id": "minecraft:stone",
   "minecraft_version": "26.2",
   "synonyms_zh": ["石块"],
   "synonyms_en": ["stone block"],

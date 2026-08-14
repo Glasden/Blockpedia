@@ -1,6 +1,6 @@
 {
   "schema_version": "export-block.v1",
-  "export_id": "exp_fixture",
+  "export_id": "export_20260814T165501Z",
   "minecraft_version": "26.2",
   "block_id": "minecraft:yellow_carpet",
   "translation_key": "block.minecraft.yellow_carpet",
@@ -32,7 +32,7 @@
   "source": {
     "type": "runtime",
     "minecraft_version": "26.2",
-    "export_id": "exp_fixture",
+    "export_id": "export_20260814T165501Z",
     "exporter_version": "1.0.0",
     "stage": "EXPORT_REGISTRY"
   },

@@ -7,7 +7,7 @@
     "schema_version": {"const": "qualification-review.v1"},
     "review_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "target_type": {"const": "visual_variant"},
-    "target_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "target_id": {"type": "string", "pattern": "^minecraft:[a-z0-9_./-]+$"},
     "minecraft_version": {"const": "26.2"},
     "reviewer": {"type": "string", "minLength": 1, "maxLength": 128},
     "reviewed_at": {"type": "string", "format": "date-time"},

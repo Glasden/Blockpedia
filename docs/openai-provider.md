@@ -153,7 +153,7 @@ Studio 三类新写调用都必须使用同一个活动 profile、同一个 `mod
   "schema_id": "annotation-batch-output.v1",
   "items": [
     {
-      "variant_id": "vv_7c5e",
+      "variant_id": "minecraft:yellow_carpet",
       "synonyms_zh": ["黄色薄层"],
       "synonyms_en": ["yellow thin layer"],
       "summary_zh": "黄色且非常薄，适合覆盖水平表面。",
