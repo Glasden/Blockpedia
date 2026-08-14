@@ -33,31 +33,8 @@
       <span class="readonly-chip">显式版本</span>
     </div>
 
-    <form
-      class="import-form"
-      hx-post="/ui/imports/check"
-      hx-target="#import-result"
-      hx-swap="innerHTML"
-      hx-indicator="#import-spinner"
-      autocomplete="off"
-    >
-      <div class="field-group field-group--wide">
-        <label for="source-directory">本地导出目录</label>
-        <input
-          id="source-directory"
-          name="source_directory"
-          type="text"
-          required
-          maxlength="4096"
-          spellcheck="false"
-          aria-describedby="source-help source-privacy"
-          placeholder="选择 data-root/exports/版本/export_id 目录"
-        >
-        <small id="source-help">必须是所选版本下、已完成 R1 校验的非 staging 导出目录。</small>
-        <small id="source-privacy" class="privacy-note"><span aria-hidden="true">◆</span> 路径仅用于本次本地检查，页面和响应不会回显绝对路径。</small>
-      </div>
-
-      <div class="field-group">
+    <form class="import-form import-form--chooser" action="/api/imports/check" method="post" data-import-check-form autocomplete="off">
+      <div class="field-group field-group--version">
         <label for="minecraft-version">Minecraft 版本</label>
         <input
           id="minecraft-version"
@@ -68,22 +45,92 @@
           inputmode="decimal"
           pattern="[0-9]+\.[0-9]+(\.[0-9]+)?"
           aria-describedby="version-help"
+          data-directory-version
         >
         <small id="version-help">必须与导出 manifest 精确一致。</small>
       </div>
 
+      <div class="field-group field-group--wide directory-select">
+        <label for="selected-export">已选择的导出</label>
+        <div class="directory-select__control">
+          <input
+            id="selected-export"
+            type="text"
+            readonly
+            aria-describedby="source-help source-privacy directory-feedback"
+            aria-errormessage="directory-feedback"
+            placeholder="尚未选择导出目录"
+            data-directory-display
+          >
+          <input id="source-directory" name="source_directory" type="hidden" required data-directory-ref>
+          <button class="button button--quiet directory-select__browse" type="button" aria-expanded="false" aria-controls="directory-chooser" data-directory-browse>浏览导出目录</button>
+        </div>
+        <small id="source-help">先选择精确版本，再从已配置 data-root 中选择一个 exporter 导出。</small>
+        <small id="source-privacy" class="privacy-note"><span aria-hidden="true">◆</span> 页面只接收不透明目录引用，不读取或显示本机绝对路径。</small>
+
+        <div id="directory-feedback" class="directory-feedback directory-feedback--neutral" role="status" aria-atomic="true" data-directory-feedback>
+          <span class="directory-feedback__mark" aria-hidden="true">○</span>
+          <span>尚未选择导出目录。</span>
+        </div>
+
+        <section class="selected-export-state" aria-labelledby="selected-export-state-heading" hidden data-selected-workflow>
+          <div class="selected-export-state__identity">
+            <span class="export-state-mark" aria-hidden="true" data-selected-marker>○</span>
+            <div>
+              <span class="status-badge" data-selected-badge>未检查</span>
+              <h3 id="selected-export-state-heading" data-selected-title>等待选择导出</h3>
+              <p data-selected-detail>选择后会显示检查与运行状态。</p>
+            </div>
+          </div>
+          <div class="compact-check-progress" hidden data-selected-progress>
+            <progress aria-label="当前检查子步骤进度" data-selected-progress-bar></progress>
+            <span data-selected-progress-copy></span>
+          </div>
+        </section>
+
+        <section id="directory-chooser" class="directory-chooser" aria-labelledby="directory-chooser-heading" hidden data-directory-chooser>
+          <div class="directory-chooser__header">
+            <div>
+              <p class="section-index">LOCAL EXPORT BROWSER</p>
+              <h3 id="directory-chooser-heading">选择已检测的导出</h3>
+              <p data-directory-location>正在读取所选版本的导出目录…</p>
+            </div>
+            <button class="text-button" type="button" data-directory-close>关闭</button>
+          </div>
+          <div class="directory-chooser__toolbar">
+            <button class="button button--quiet" type="button" data-directory-parent hidden><span aria-hidden="true">←</span> 上一级</button>
+            <span class="activity-label" data-directory-browser-status>等待浏览。</span>
+          </div>
+          <div class="directory-entry-list" role="group" aria-label="可用导出目录" data-directory-entries></div>
+        </section>
+
+        <details class="manual-ref">
+          <summary>使用手动目录引用</summary>
+          <div class="manual-ref__body">
+            <label for="manual-source-ref">不透明目录引用</label>
+            <div>
+              <input id="manual-source-ref" type="text" maxlength="4096" spellcheck="false" autocomplete="off" aria-describedby="directory-feedback" aria-errormessage="directory-feedback" placeholder="粘贴由本地 Studio 提供的目录引用" data-manual-directory-ref>
+              <button class="button button--quiet" type="button" data-use-manual-ref>使用引用</button>
+            </div>
+            <small>这里只接受本地 Studio 目录引用，不接受或显示绝对路径。</small>
+          </div>
+        </details>
+      </div>
+
       <div class="form-action">
-        <button class="button button--primary" type="submit">
-          <span>检查完整性</span><span aria-hidden="true">→</span>
+        <button class="button button--primary" type="submit" disabled data-import-check-submit data-selected-primary data-selected-action="start">
+          <span data-selected-action-label>开始完整性检查</span><span aria-hidden="true">→</span>
         </button>
-        <span id="import-spinner" class="htmx-indicator activity-label" role="status">正在建立安全快照并检查…</span>
+        <span class="activity-label" role="status" data-import-start-status>选择可检查的导出后继续。</span>
       </div>
     </form>
 
-    <div id="import-result" class="result-slot" aria-live="polite">
+    {% include "partials/recent_checks.html" %}
+
+    <div id="import-result" class="result-slot" aria-live="polite" data-import-start-feedback>
       <div class="empty-state empty-state--compact">
         <span class="empty-state__symbol" aria-hidden="true">⌁</span>
-        <p>检查结果会显示在这里。通过检查后，才会出现导入操作。</p>
+        <p>检查启动后会进入独立进度页。通过完整检查后，才会出现导入操作。</p>
       </div>
     </div>
   </section>

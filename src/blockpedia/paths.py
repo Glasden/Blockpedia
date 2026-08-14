@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import sys
@@ -42,13 +41,6 @@ def safe_relative_posix_ref(value: str) -> str:
     if PurePosixPath(value).is_absolute():
         raise UnsafeReference(value)
     return value
-
-
-def source_directory_ref(path: Path) -> str:
-    """Return a non-reversible, safe identifier for a user-selected directory."""
-
-    normalized = os.path.normcase(str(path.absolute()))
-    return "sha256:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,6 +7,7 @@ import json
 import re
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -146,6 +147,34 @@ def _new_injected_service(tmp_path: Path) -> StudioService:
     from conftest import PassingToolchainProbe
 
     return StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
+
+
+def _web_import_check(client, export_fixture: Path) -> dict[str, object]:
+    directories = client.get("/api/directories", params={"minecraft_version": "26.2"})
+    assert directories.status_code == 200
+    entries = directories.json()["data"]["entries"]
+    entry = next(item for item in entries if item.get("export_id") == export_fixture.name and item.get("selectable"))
+    ref = entry["directory_ref"]
+    assert isinstance(ref, str)
+    assert not Path(ref).is_absolute()
+    started = client.post(
+        "/api/imports/check",
+        json={"source_directory": ref, "minecraft_version": "26.2"},
+    )
+    assert started.status_code in {200, 202}
+    started_data = started.json()["data"]
+    check_id = started_data["check_id"]
+    deadline = time.monotonic() + 30
+    latest = started_data
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/imports/checks/{check_id}")
+        assert response.status_code == 200
+        latest = response.json()["data"]
+        if latest["status"] in {"passed", "failed"}:
+            break
+        time.sleep(0.02)
+    assert latest["status"] == "passed", latest
+    return latest
 
 
 @pytest.mark.parametrize("close_first", ("app_one", "app_two"))
@@ -304,12 +333,7 @@ def test_web_import_unknown_fields_use_stable_error_envelope(web_context, export
 
 def test_web_import_run_actions_and_workspace_search_use_injected_service(web_context, export_fixture: Path) -> None:
     client, service, tmp_path = web_context
-    checked = client.post(
-        "/api/imports/check",
-        json={"source_directory": str(export_fixture), "minecraft_version": "26.2"},
-    )
-    assert checked.status_code == 200
-    check_data = checked.json()["data"]
+    check_data = _web_import_check(client, export_fixture)
     imported = client.post(
         "/api/imports",
         json={"check_id": check_data["check_id"], "copy_mode": "copy_to_workspace"},
@@ -333,19 +357,17 @@ def test_web_import_run_actions_and_workspace_search_use_injected_service(web_co
 
 def test_web_cancel_and_retry_failed_actions(web_context, export_fixture: Path) -> None:
     client, service, tmp_path = web_context
-    checked = client.post("/api/imports/check", json={"source_directory": str(export_fixture), "minecraft_version": "26.2"})
-    run_id = client.post("/api/imports", json={"check_id": checked.json()["data"]["check_id"], "copy_mode": "copy_to_workspace"}).json()["data"]["run_id"]
+    checked = _web_import_check(client, export_fixture)
+    run_id = client.post("/api/imports", json={"check_id": checked["check_id"], "copy_mode": "copy_to_workspace"}).json()["data"]["run_id"]
     service.tick(run_id)
     cancelled = client.post(f"/api/runs/{run_id}/cancel", json={})
     assert cancelled.status_code == 200
     assert cancelled.json()["data"]["status"] == "cancelled"
 
-    checked_again = client.post("/api/imports/check", json={"source_directory": str(export_fixture), "minecraft_version": "26.2"})
-    retry_run_id = client.post("/api/imports", json={"check_id": checked_again.json()["data"]["check_id"], "copy_mode": "copy_to_workspace"}).json()["data"]["run_id"]
-    with service.worker.open_database(retry_run_id) as database:
+    with service.worker.open_database(run_id) as database:
         with database.transaction() as connection:
-            connection.execute("UPDATE runs SET status='failed' WHERE run_id=?", (retry_run_id,))
-    retried = client.post(f"/api/runs/{retry_run_id}/retry-failed", json={})
+            connection.execute("UPDATE runs SET status='failed' WHERE run_id=?", (run_id,))
+    retried = client.post(f"/api/runs/{run_id}/retry-failed", json={})
     assert retried.status_code == 200
     assert retried.json()["data"]["status"] == "pending"
     _assert_safe_payload(retried.json(), tmp_path)
@@ -353,8 +375,8 @@ def test_web_cancel_and_retry_failed_actions(web_context, export_fixture: Path) 
 
 def test_htmx_write_action_uses_service_and_does_not_echo_search_query(web_context, export_fixture: Path) -> None:
     client, service, tmp_path = web_context
-    checked = client.post("/api/imports/check", json={"source_directory": str(export_fixture), "minecraft_version": "26.2"})
-    run_id = client.post("/api/imports", json={"check_id": checked.json()["data"]["check_id"], "copy_mode": "copy_to_workspace"}).json()["data"]["run_id"]
+    checked = _web_import_check(client, export_fixture)
+    run_id = client.post("/api/imports", json={"check_id": checked["check_id"], "copy_mode": "copy_to_workspace"}).json()["data"]["run_id"]
     service.tick(run_id)
     action = client.post(f"/ui/runs/{run_id}/pause", data={})
     assert action.status_code == 200

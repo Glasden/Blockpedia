@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 
 {% block content %}
+{% set run_view = run|default(run_snapshot|default(snapshot|default({})), true) %}
+{% set run_identifier = run_view.get('run_id', run_id|default('unavailable')) %}
 <section class="run-hero page-shell reveal reveal--1">
   <div>
     <a class="back-link" href="/runs"><span aria-hidden="true">←</span> 返回运行记录</a>
-    <p class="eyebrow"><span>{{ run.minecraft_version }}</span> WORKSPACE RUN</p>
+    <p class="eyebrow"><span>{{ run_view.get('minecraft_version', 'unknown') }}</span> WORKSPACE RUN</p>
     <h1>运行详情</h1>
-    <code class="run-identity">{{ run.run_id }}</code>
+    <code class="run-identity">{{ run_identifier }}</code>
   </div>
   <div class="fact-lock" role="note">
     <span class="fact-lock__icon" aria-hidden="true">◇</span>
@@ -15,8 +17,16 @@
 </section>
 
 <div class="page-shell run-layout reveal reveal--2">
-  <div id="run-panel">
-    {% include "partials/run_panel.html" %}
+  <div
+    id="run-panel"
+    data-event-panel="run"
+    data-run-id="{{ run_identifier }}"
+    data-events-url="{{ run_events_url|default('/api/runs/' ~ run_identifier ~ '/events') }}"
+    data-initial-stage="{{ run_view.get('current_stage', 'PREPARE') }}"
+    data-initial-status="{{ run_view.get('status', 'pending') }}"
+    data-initial-boundary="{{ run_view.get('boundary_event') or '' }}"
+  >
+    {% with run=run_view %}{% include "partials/run_panel.html" %}{% endwith %}
   </div>
 
   <aside class="run-side">
@@ -26,7 +36,7 @@
       <p>查询已完成离线特征的候选。这里只读当前 workspace，不是 MCP release 查询。</p>
       <form
         class="search-form"
-        hx-get="/ui/runs/{{ run.run_id }}/search"
+        hx-get="/ui/runs/{{ run_identifier }}/search"
         hx-target="#search-results"
         hx-swap="innerHTML"
         hx-indicator="#search-spinner"

@@ -10,7 +10,7 @@
 
 ## R2 数据与流水线
 
-应用使用用户选定的 `<data-root>`，并保持 `exports/`、`workspace/`、`cache/`、`releases/`、`logs/` 和根 `current.json` 的目录边界。导入先建立 check-owned snapshot，再由唯一一次 R1 validator 校验；后续只消费已验证 snapshot，不重新选择 variant 或渲染图片。
+应用使用用户选定的 `<data-root>`，并保持 `exports/`、`workspace/`、`cache/`、`releases/`、`logs/` 和根 `current.json` 的目录边界。`cache/import-checks/{check_id}/state.json` 是 check 的 authoritative state；导入先建立 check-owned immutable snapshot，再由唯一一次 R1 validator 校验，后续只消费已验证 snapshot，不重新选择 variant 或渲染图片。
 
 Studio 持久化完整阶段顺序：
 
@@ -21,6 +21,21 @@ PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS
 ```
 
 R2 只执行前六阶段；完成后停在 `R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING`。Worker 支持持久状态、心跳、stale 只读检测、显式 WebUI recover、暂停/取消、失败收敛和一次自动恢复尝试。
+
+## Import check UX optimization contract
+
+这是在现有 check/snapshot 设计上的最小增量，不引入第二索引、`index.json`、`owner_instance_id`、SQLite 表/字段、通用 migration、依赖、服务、消息总线或任意生成框架。
+
+- 首页和目录 listing 按需扫描严格命名的 check directories/state files，拒绝 links/reparse，并只显示 sanitized summaries；按 `(minecraft_version, export_id)` 选择 latest actionable check。`Recent Checks` 始终可见，最多 5 个 distinct exports，active first；chooser 条目显示派生 checked/imported/changed marker。`GET /api/imports/checks?minecraft_version=&limit=` 只读这些 state，不建立持久索引。
+- `ImportService` 在单一 WebUI 进程内使用以 `(minecraft_version, export_id)` 为键的 coordinator `RLock`。同 export 的不同 opaque ref 不能排入重复 active check；active duplicate 返回同一 `check_id` 的 `202,reused=true`。passed check 只有在当前 raw `manifest.json` 与 `checksums.sha256` SHA-256 anchors 均匹配时复用，返回 `200,reused=true` 且不调用 validator；anchor 改变或 failed/interrupted 才创建新的 `202`。进程重启 active check 固定为 `IMPORT_CHECK_INTERRUPTED`，不自动 resume。
+- `state.json` 最小增补 `created_at`、`updated_at`、validator subphase/progress 和 `workspace={status: absent|creating|created|failed, import_id, run_id, error_code}`。不持久化 absolute source path 或 chooser ref；旧 state 缺少 association 时按 version/export/manifest hash 扫描既有 workspace DB 做 backward-compatible discovery，不改 SQL。
+- `POST /api/imports` 严格只接受 `check_id + copy_mode=copy_to_workspace`，不接受 `project_id`。第一次在同一 lock 内预留 import/run、写 `creating` 后构建现有 workspace；duplicate creating 返回 `202` 同一 run，valid created 返回 `200` 同一 run，首次完成可返回 `201`。只从 snapshot 导入；只有最终 `work.sqlite3` 验证后才 deep-link。restart 的 creating 优先 reconcile 原 reservation，否则保留原 ID 并稳定失败/重试，绝不分配第二 run/workspace。
+- UI 状态为 `unchecked`、`checking→View Progress`、`passed_not_imported→Import and Enter Run`、`imported→Enter Existing Run`、`failed/interrupted→Retry after fresh chooser ref`、`changed_since_check→Run New Check`；成功 `/ui/imports` 使用 `HX-Redirect /runs/{run_id}`。
+- 进度只有 `snapshot→validate→finalize` 宏观阶段，validator subphase 来自既有 inventory/Schema/JSONL/reference/render/checksum loops；snapshot callback 来自既有 copy/hash loop。callback 只观察，不增加 scan/read/hash/decode；subphase completed 单调，total 未知保持 null/0，UI 显示 live-count indeterminate bar，持久化节流且 phase/terminal 强制。SSE 发送完整 snapshots，不逐 item。
+
+## Minimal R2 verification obligations
+
+复用现有 fixture，至少验证同 export 并发 refs 只执行一个 check/validator、unchanged passed reuse、changed anchors 新 check、Recent Checks re-entry、duplicate import 只有一个 run/work.sqlite3、restart creating reconciliation、多个 progress snapshots 单调、callback/no-callback report 与 PNG reads 不变，以及无 absolute path/chooser ref、SQL/hash unchanged。上述验证不得生成真实 Minecraft 资产或扩大 R2 阶段边界。
 
 ## 验收命令
 

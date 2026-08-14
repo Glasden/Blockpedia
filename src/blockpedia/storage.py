@@ -112,6 +112,19 @@ class WorkspaceDatabase:
         else:
             self.connection.commit()
 
+    @contextmanager
+    def read_transaction(self) -> Iterator[sqlite3.Connection]:
+        """One consistent read view for a public live snapshot."""
+
+        self.connection.execute("BEGIN")
+        try:
+            yield self.connection
+        except Exception:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
+
     def execute(self, sql: str, parameters: Sequence[Any] = ()) -> sqlite3.Cursor:
         return self.connection.execute(sql, parameters)
 

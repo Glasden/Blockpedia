@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import html
+import json
 import re
 import math
 import uuid
@@ -14,14 +17,15 @@ from fastapi import FastAPI, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import http_exception_handler as default_http_exception_handler
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .importer import ImportCheckNotFound, ImportNotAllowed
+from .directory_chooser import DirectoryChooserError, DirectoryPathUnsafe, DirectoryRefNotFound, DirectoryRefStale
+from .importer import ImportCheckInProgress, ImportCheckNotFound, ImportCheckProgressPersistFailed, ImportNotAllowed
 from .paths import ExportPathError, UnsafeReference, validate_minecraft_version
 from .services import StudioService
 from .stages import R2_STAGES, STUDIO_STAGES, RunStateConflict
@@ -57,6 +61,22 @@ STAGE_META: dict[str, dict[str, str | bool]] = {
     "HUMAN_REVIEW": {"label": "人工审核", "detail": "后续 R3 阶段", "phase": "R3", "future": True},
     "BUILD_RELEASE": {"label": "构建候选", "detail": "后续 R3 阶段", "phase": "R3", "future": True},
     "ACTIVATE_RELEASE": {"label": "激活发布", "detail": "后续 R5 阶段", "phase": "R5", "future": True},
+}
+
+AUDIT_STEP_LABELS = {
+    "STAGE_STARTED": "阶段开始",
+    "STAGE_SUCCEEDED": "阶段完成",
+    "STAGE_FAILED": "阶段失败",
+    "FEATURE_ITEM_SUCCEEDED": "条目完成",
+    "FEATURE_ITEM_FAILED": "条目失败",
+    "RUN_PAUSED_REQUESTED": "已请求暂停",
+    "RUN_PAUSED_AFTER_ITEM": "条目完成后暂停",
+    "RUN_RESUMED": "继续运行",
+    "RUN_CANCELLED": "运行已取消",
+    "RUN_RETRY_FAILED": "重试失败项",
+    "WORKER_RECOVERED_STALE_RUNNING": "已恢复 stale 项",
+    "R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING": "到达 R3 边界",
+    "IMPORT_CHECKED_AND_PROJECTED": "导入检查完成",
 }
 
 
@@ -169,6 +189,7 @@ def create_app(
         unofficial_notice=UNOFFICIAL_NOTICE,
     )
     app.mount("/static", StaticFiles(directory=str(PACKAGE_ROOT / "static")), name="static")
+    app.state.templates = templates
 
     @app.middleware("http")
     async def local_request_id(request: Request, call_next):
@@ -201,11 +222,41 @@ def create_app(
 
     @app.exception_handler(ImportCheckNotFound)
     async def import_not_found(request: Request, _exc: ImportCheckNotFound):
-        return _error_response(request, 404, "IMPORT_NOT_FOUND", "导入检查不存在或已失效，请重新检查。")
+        if request.url.path.startswith("/api/"):
+            return _error_response(request, 404, "IMPORT_NOT_FOUND", "导入检查不存在或已失效，请重新检查。")
+        return HTMLResponse("导入检查不存在或已失效。", status_code=404)
 
     @app.exception_handler(ImportNotAllowed)
     async def import_incomplete(request: Request, _exc: ImportNotAllowed):
-        return _error_response(request, 422, "IMPORT_INCOMPLETE", "导出包未通过完整性检查，请修复后重新检查。")
+        code = getattr(_exc, "code", None) or "IMPORT_INCOMPLETE"
+        status = 409 if code == "IMPORT_CHECK_IN_PROGRESS" else 422
+        message = "完整性检查仍在进行，请等待完成。" if code == "IMPORT_CHECK_IN_PROGRESS" else "导出包未通过完整性检查，请修复后重新检查。"
+        return _error_response(request, status, code, message)
+
+    @app.exception_handler(ImportCheckInProgress)
+    async def import_check_in_progress(request: Request, _exc: ImportCheckInProgress):
+        return _error_response(request, 409, "IMPORT_CHECK_IN_PROGRESS", "完整性检查仍在进行，请等待完成。")
+
+    @app.exception_handler(ImportCheckProgressPersistFailed)
+    async def import_check_persist_failed(request: Request, _exc: ImportCheckProgressPersistFailed):
+        return _error_response(request, 500, "IMPORT_CHECK_PROGRESS_PERSIST_FAILED", "导入检查状态无法安全保存。")
+
+    @app.exception_handler(DirectoryRefNotFound)
+    async def directory_ref_not_found(request: Request, _exc: DirectoryRefNotFound):
+        return _error_response(request, 404, "DIRECTORY_REF_NOT_FOUND", "目录引用已失效，请重新选择目录。")
+
+    @app.exception_handler(DirectoryRefStale)
+    async def directory_ref_stale(request: Request, _exc: DirectoryRefStale):
+        return _error_response(request, 409, "DIRECTORY_REF_STALE", "目录已发生变化，请重新选择目录。")
+
+    @app.exception_handler(DirectoryPathUnsafe)
+    async def directory_path_unsafe(request: Request, _exc: DirectoryPathUnsafe):
+        return _error_response(request, 400, "DIRECTORY_PATH_UNSAFE", "目录不在允许的导出根目录内。")
+
+    @app.exception_handler(DirectoryChooserError)
+    async def directory_chooser_error(request: Request, exc: DirectoryChooserError):
+        code = getattr(exc, "code", "DIRECTORY_REF_INVALID")
+        return _error_response(request, 400, code, "目录引用不合法，请重新选择目录。")
 
     @app.exception_handler(RunStateConflict)
     async def run_conflict(request: Request, _exc: RunStateConflict):
@@ -245,11 +296,40 @@ def create_app(
 
     # JSON API -----------------------------------------------------------
 
+    @app.get("/api/directories")
+    def api_directories(
+        request: Request,
+        minecraft_version: str = Query(min_length=3, max_length=32),
+        parent_ref: str | None = Query(default=None, min_length=1, max_length=160),
+    ):
+        _allow_query_keys(request, {"minecraft_version", "parent_ref"})
+        data = studio.list_directories(minecraft_version, parent_ref)
+        checks = {
+            (item.get("minecraft_version"), item.get("export_id")): item
+            for item in studio.imports.list_checks(minecraft_version, limit=100)
+        }
+        for entry in data.get("entries", []):
+            check = checks.get((minecraft_version, entry.get("export_id")))
+            entry["check_marker"] = (
+                {
+                    "status": check.get("status"),
+                    "check_id": check.get("check_id"),
+                    "check_url": check.get("check_url"),
+                    "updated_at": check.get("updated_at"),
+                }
+                if check is not None
+                else None
+            )
+        return _success_response(request, data)
+
     @app.post("/api/imports/check")
     def api_check_import(payload: ImportCheckRequest, request: Request):
         _allow_query_keys(request, set())
-        checked = studio.check_import(payload.source_directory, payload.minecraft_version)
-        return _success_response(request, _shape_import_check(checked))
+        checked = studio.start_import_check(payload.source_directory, payload.minecraft_version)
+        shaped = _shape_import_check(checked)
+        shaped["reused"] = bool(getattr(checked, "reused", False))
+        shaped["response_status"] = int(getattr(checked, "response_status", 202))
+        return _success_response(request, shaped, status_code=shaped["response_status"])
 
     @app.post("/api/imports")
     def api_import(payload: ImportRequest, request: Request):
@@ -257,6 +337,28 @@ def create_app(
         _require_worker(request)
         imported = studio.import_checked(payload.check_id, copy_mode=payload.copy_mode)
         return _success_response(request, _shape_import_result(imported))
+
+    @app.get("/api/imports/checks/{check_id}")
+    def api_import_check(check_id: str, request: Request):
+        _allow_query_keys(request, set())
+        return _success_response(request, _shape_import_check(studio.get_import_check(check_id)))
+
+    @app.get("/api/imports/checks")
+    def api_import_checks(
+        request: Request,
+        minecraft_version: str | None = Query(default=None, min_length=3, max_length=32),
+        limit: int = Query(default=20, ge=1, le=100),
+    ):
+        _allow_query_keys(request, {"minecraft_version", "limit"})
+        if minecraft_version is not None:
+            validate_minecraft_version(minecraft_version)
+        return _success_response(
+            request,
+            {
+                "minecraft_version": minecraft_version,
+                "checks": studio.imports.list_checks(minecraft_version, limit=limit),
+            },
+        )
 
     @app.get("/api/runs")
     def api_runs(
@@ -287,6 +389,28 @@ def create_app(
     def api_run(run_id: str, request: Request):
         _allow_query_keys(request, set())
         return _success_response(request, _shape_run(studio.get_run(run_id)))
+
+    @app.get("/api/runs/{run_id}/events")
+    async def api_run_events(run_id: str, request: Request):
+        _allow_query_keys(request, set())
+        # Resolve before constructing StreamingResponse so an unknown run is
+        # an ordinary 404 envelope rather than a late generator failure.
+        initial = _shape_run(studio.get_run(run_id))
+        return StreamingResponse(
+            _run_event_stream(studio, run_id, request, templates, initial),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/imports/checks/{check_id}/events")
+    async def api_import_check_events(check_id: str, request: Request):
+        _allow_query_keys(request, set())
+        checked = _shape_import_check(studio.get_import_check(check_id))
+        return StreamingResponse(
+            _import_event_stream(studio, check_id, request, templates, checked),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/api/runs/{run_id}/recover")
     def api_recover(run_id: str, request: Request, payload: RecoverRequest | None = None):
@@ -334,6 +458,7 @@ def create_app(
                 current_page="home",
                 runs=runs[:5],
                 counts=counts,
+                recent_checks=studio.imports.list_checks(limit=5),
             ),
         )
 
@@ -359,6 +484,24 @@ def create_app(
             ),
         )
 
+    @app.get("/imports/checks/{check_id}", response_class=HTMLResponse)
+    def import_check_page(check_id: str, request: Request):
+        checked = _shape_import_check(studio.get_import_check(check_id))
+        context = _page_context(
+            request,
+            app,
+            page_title=f"导入检查 {checked['check_id']}",
+            current_page="home",
+            check=checked,
+        )
+        return _template_or_fallback(
+            templates,
+            request,
+            "import_check_detail.html",
+            context,
+            _fallback_import_page(checked),
+        )
+
     @app.get("/runs/{run_id}", response_class=HTMLResponse)
     def run_page(run_id: str, request: Request):
         try:
@@ -374,6 +517,8 @@ def create_app(
                 page_title=f"运行 {run['run_id']}",
                 current_page="runs",
                 run=run,
+                run_identifier=run["run_id"],
+                run_events_url=f"/api/runs/{run['run_id']}/events",
             ),
         )
 
@@ -385,16 +530,13 @@ def create_app(
         try:
             form = await _form_payload(request, {"source_directory", "minecraft_version"})
             payload = ImportCheckRequest.model_validate(form)
-            checked = await run_in_threadpool(
-                studio.check_import,
-                payload.source_directory,
-                payload.minecraft_version,
-            )
-            result = _shape_import_check(checked)
-            return templates.TemplateResponse(
-                request=request,
-                name="partials/import_check.html",
-                context={"request": request, "check": result},
+            checked = studio.start_import_check(payload.source_directory, payload.minecraft_version)
+            # Enqueue immediately; the canonical page owns the persistent
+            # progress view and does not hold the HTMX request open.
+            return HTMLResponse(
+                content="",
+                status_code=202,
+                headers={"HX-Redirect": f"/imports/checks/{checked.check_id}"},
             )
         except Exception as exc:
             return _partial_exception(templates, request, exc, "重新检查目录与版本后再试。")
@@ -491,11 +633,159 @@ def create_app(
     return app
 
 
+def sse_snapshot_event(snapshot: Mapping[str, Any], fragment_html: str) -> str:
+    """Encode the shared snapshot event without replay IDs."""
+
+    data = json.dumps(
+        {"snapshot": dict(snapshot), "html": fragment_html},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"event: snapshot\ndata: {data}\n\n"
+
+
+def sse_heartbeat_comment() -> str:
+    return ": heartbeat\n\n"
+
+
+async def _run_event_stream(
+    studio: StudioService,
+    run_id: str,
+    request: Request,
+    templates: Jinja2Templates,
+    initial: Mapping[str, Any],
+):
+    last: str | None = None
+    last_heartbeat = asyncio.get_running_loop().time()
+    yield "retry: 2000\n\n"
+    while True:
+        if last is not None and await request.is_disconnected():
+            return
+        try:
+            snapshot = dict(initial) if last is None else _shape_run(studio.get_run(run_id))
+            encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            if encoded != last:
+                last = encoded
+                yield sse_snapshot_event(snapshot, _render_fragment(templates, "partials/run_panel.html", {"request": request, "run": snapshot}, "run", snapshot))
+            if snapshot.get("status") in {"paused", "needs_review", "failed", "succeeded", "cancelled"}:
+                return
+        except KeyError:
+            # The initial route has already validated existence.  A later
+            # disappearance is a redacted snapshot error, never a traceback.
+            yield _sse_snapshot_error("RUN_SNAPSHOT_NOT_FOUND", "运行快照暂时不可用。")
+        except Exception:
+            yield _sse_snapshot_error("RUN_SNAPSHOT_UNAVAILABLE", "运行快照暂时不可用。")
+        now = asyncio.get_running_loop().time()
+        if now - last_heartbeat >= 15.0:
+            yield sse_heartbeat_comment()
+            last_heartbeat = now
+        await asyncio.sleep(0.25)
+
+
+async def _import_event_stream(
+    studio: StudioService,
+    check_id: str,
+    request: Request,
+    templates: Jinja2Templates,
+    initial: Mapping[str, Any],
+):
+    last: str | None = None
+    last_heartbeat = asyncio.get_running_loop().time()
+    yield "retry: 2000\n\n"
+    while True:
+        if last is not None and await request.is_disconnected():
+            return
+        try:
+            snapshot = dict(initial) if last is None else _shape_import_check(studio.get_import_check(check_id))
+            encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            if encoded != last:
+                last = encoded
+                yield sse_snapshot_event(snapshot, _render_fragment(templates, "partials/import_check_progress.html", {"request": request, "check": snapshot}, "import", snapshot))
+            if snapshot.get("status") in {"passed", "failed"}:
+                return
+        except ImportCheckNotFound:
+            yield _sse_snapshot_error("IMPORT_NOT_FOUND", "导入检查暂时不可用。")
+            return
+        except Exception:
+            yield _sse_snapshot_error("IMPORT_CHECK_SNAPSHOT_UNAVAILABLE", "导入检查暂时不可用。")
+        now = asyncio.get_running_loop().time()
+        if now - last_heartbeat >= 15.0:
+            yield sse_heartbeat_comment()
+            last_heartbeat = now
+        await asyncio.sleep(0.25)
+
+
+def _sse_snapshot_error(code: str, message: str) -> str:
+    data = json.dumps({"error_code": code, "message": message}, ensure_ascii=False, separators=(",", ":"))
+    return f"event: snapshot_error\ndata: {data}\n\n"
+
+
+def _render_fragment(
+    templates: Jinja2Templates,
+    name: str,
+    context: Mapping[str, Any],
+    kind: str,
+    snapshot: Mapping[str, Any],
+) -> str:
+    try:
+        return templates.env.get_template(name).render(**dict(context))
+    except Exception:
+        if kind == "run":
+            return (
+                '<section class="run-panel" data-run-id="%s"><span>%s</span><code>%s</code></section>'
+                % (
+                    html.escape(str(snapshot.get("run_id", "")), quote=True),
+                    html.escape(str(snapshot.get("status", "pending"))),
+                    html.escape(str(snapshot.get("current_stage", "PREPARE"))),
+                )
+            )
+        return (
+            '<section class="import-check-progress" data-check-id="%s"><span>%s</span><strong>%s</strong></section>'
+            % (
+                html.escape(str(snapshot.get("check_id", "")), quote=True),
+                html.escape(str(snapshot.get("status", "pending"))),
+                html.escape(str(snapshot.get("phase", "QUEUED"))),
+            )
+        )
+
+
+def _template_or_fallback(
+    templates: Jinja2Templates,
+    request: Request,
+    name: str,
+    context: Mapping[str, Any],
+    fallback: str,
+) -> HTMLResponse:
+    try:
+        template = templates.env.get_template(name)
+    except Exception:
+        return HTMLResponse(fallback)
+    return HTMLResponse(template.render(**dict(context)))
+
+
+def _fallback_import_page(check: Mapping[str, Any]) -> str:
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'><title>导入检查</title></head>"
+        "<body><main id='import-check'><h1>导入检查</h1><p data-status='%s'>%s</p><p>%s</p></main></body></html>"
+        % (
+            html.escape(str(check.get("status", "pending")), quote=True),
+            html.escape(str(check.get("phase", "QUEUED"))),
+            html.escape(str(check.get("export_id", ""))),
+        )
+    )
+
+
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "web_" + uuid.uuid4().hex)
 
 
-def _success_response(request: Request, data: Any, warnings: list[str] | None = None) -> JSONResponse:
+def _success_response(
+    request: Request,
+    data: Any,
+    warnings: list[str] | None = None,
+    *,
+    status_code: int = 200,
+) -> JSONResponse:
     return JSONResponse(
         jsonable_encoder(
             {
@@ -504,7 +794,8 @@ def _success_response(request: Request, data: Any, warnings: list[str] | None = 
                 "data": _safe_value(data),
                 "warnings": warnings or [],
             }
-        )
+        ),
+        status_code=status_code,
     )
 
 
@@ -533,17 +824,40 @@ def _error_response(
 def _shape_import_check(value: Any) -> dict[str, Any]:
     raw = value.to_dict() if hasattr(value, "to_dict") else dict(value)
     expected_files = raw.get("expected_files", [])
+    source_ref = _safe_opaque_ref(raw.get("source_directory_ref"), optional=True)
+    progress_raw = raw.get("progress")
+    progress: Mapping[str, Any] = progress_raw if isinstance(progress_raw, Mapping) else {}
+    completed = max(0, _safe_int(progress.get("completed"), 0))
+    total = max(0, _safe_int(progress.get("total"), 0))
+    if total:
+        completed = min(completed, total)
+    public_progress: dict[str, Any] = {
+        "completed": completed,
+        "total": total,
+        "unit": _safe_unit(progress.get("unit")),
+    }
+    if "bytes" in progress:
+        public_progress["bytes"] = max(0, _safe_int(progress.get("bytes"), 0))
     return {
         "check_id": _safe_identifier(raw.get("check_id")),
         "minecraft_version": _safe_minecraft_version(raw.get("minecraft_version")),
         "export_id": _safe_identifier(raw.get("export_id")),
-        "source_directory_ref": _safe_hash(raw.get("source_directory_ref")),
+        "source_directory_ref": source_ref,
         "manifest_sha256": _safe_hash(raw.get("manifest_sha256"), optional=True),
         "checksum_sha256": _safe_hash(raw.get("checksum_sha256"), optional=True),
         "status": _safe_status(raw.get("status"), fallback="failed"),
+        "phase": str(raw.get("phase")) if str(raw.get("phase")) in {"QUEUED", "SNAPSHOT_EXPORT", "VALIDATE_EXPORT", "FINALIZE"} else "FINALIZE",
+        "progress": public_progress,
+        "progress_subphase": _safe_subphase(raw.get("progress_subphase") or progress.get("subphase")),
+        "created_at": _safe_optional_text(raw.get("created_at")),
+        "updated_at": _safe_optional_text(raw.get("updated_at")),
+        "workspace": _shape_import_workspace(raw.get("workspace")),
+        "check_url": f"/imports/checks/{_safe_identifier(raw.get('check_id'))}",
+        "error_code": _safe_code(raw.get("error_code"), optional=True),
         "issues": _shape_import_issues(raw.get("issues", [])),
         "checked_file_count": len(expected_files) + (1 if expected_files else 0),
         "can_import": bool(raw.get("can_import")),
+        "reused": bool(getattr(value, "reused", False)),
     }
 
 
@@ -553,7 +867,7 @@ def _shape_import_result(value: Mapping[str, Any]) -> dict[str, Any]:
         "run_id": _safe_identifier(value.get("run_id")),
         "minecraft_version": _safe_minecraft_version(value.get("minecraft_version")),
         "status": _safe_status(value.get("status")),
-        "source_directory_ref": _safe_hash(value.get("source_directory_ref")),
+        "source_directory_ref": _safe_opaque_ref(value.get("source_directory_ref"), optional=True),
     }
 
 
@@ -563,6 +877,7 @@ def _shape_run_summary(value: Mapping[str, Any]) -> dict[str, Any]:
         "minecraft_version": _safe_minecraft_version(value.get("minecraft_version")),
         "status": _safe_status(value.get("status")),
         "current_stage": _safe_stage(value.get("current_stage")),
+        "heartbeat_at": _safe_optional_text(value.get("heartbeat_at")),
         "boundary_event": _safe_code(value.get("boundary_event"), optional=True),
         "created_at": _safe_optional_text(value.get("created_at")),
         "started_at": _safe_optional_text(value.get("started_at")),
@@ -578,6 +893,8 @@ def _shape_run(value: Mapping[str, Any]) -> dict[str, Any]:
             "stage": stage_name,
             "ordinal": _safe_int(source.get("ordinal"), 0),
             "status": _safe_status(source.get("status")),
+            "error_code": _safe_code(source.get("error_code"), optional=True),
+            "error_present": bool(source.get("error_present") or source.get("error_code")),
             "recovery_attempt": _safe_int(source.get("recovery_attempt"), 0),
             "pause_after_item": bool(source.get("pause_after_item", 0)),
             "heartbeat_at": _safe_optional_text(source.get("heartbeat_at")),
@@ -595,6 +912,8 @@ def _shape_run(value: Mapping[str, Any]) -> dict[str, Any]:
                     "stage": name,
                     "ordinal": ordinal,
                     "status": "pending",
+                    "error_code": None,
+                    "error_present": False,
                     "recovery_attempt": 0,
                     "pause_after_item": False,
                     "heartbeat_at": None,
@@ -622,11 +941,74 @@ def _shape_run(value: Mapping[str, Any]) -> dict[str, Any]:
         )
     stale = [_marker_dict(marker) for marker in value.get("stale", []) or []]
     boundary_event = _safe_code(value.get("boundary_event"), optional=True)
+    item_counts_raw = value.get("item_counts")
+    item_counts: Mapping[str, Any] = item_counts_raw if isinstance(item_counts_raw, Mapping) else {}
+    public_counts: dict[str, Any] = {
+        str(key): _safe_int(item, 0) if str(key) != "by_stage" else _safe_counts_by_stage(item)
+        for key, item in item_counts.items()
+        if str(key) in {"total", "pending", "running", "succeeded", "needs_review", "failed", "skipped", "by_stage"}
+    }
+    audit_steps = []
+    for item in value.get("latest_audit_steps", []) or []:
+        if isinstance(item, Mapping):
+            event_type = _safe_code(item.get("event_type"), optional=True)
+            if event_type:
+                audit_steps.append({"event_type": event_type, "created_at": _safe_optional_text(item.get("created_at"))})
+    supplied_latest_steps = value.get("latest_steps")
+    if isinstance(supplied_latest_steps, (list, tuple)):
+        latest_steps = []
+        for supplied in supplied_latest_steps:
+            if not isinstance(supplied, Mapping):
+                continue
+            code = _safe_code(supplied.get("code"), optional=True)
+            if code is None:
+                continue
+            latest_steps.append(
+                {
+                    "code": code,
+                    "label": _clean_text(supplied.get("label", code)),
+                    "status": _safe_status(supplied.get("status")),
+                    "created_at": _safe_optional_text(supplied.get("created_at")),
+                }
+            )
+    else:
+        latest_steps = [
+            {
+                "code": step["event_type"],
+                "label": AUDIT_STEP_LABELS.get(step["event_type"], step["event_type"]),
+                "status": _audit_step_status(step["event_type"]),
+                "created_at": step["created_at"],
+            }
+            for step in audit_steps
+        ]
     warnings: list[str] = []
     if stale:
         warnings.append("检测到心跳超时项；系统没有自动改写状态。")
     if boundary_event:
         warnings.append("R2 本地处理已到边界；AI 标注与发布属于后续阶段。")
+    supplied_item_progress = value.get("item_progress")
+    if isinstance(supplied_item_progress, Mapping):
+        supplied_by_status = supplied_item_progress.get("by_status")
+        supplied_by_status = supplied_by_status if isinstance(supplied_by_status, Mapping) else {}
+        item_progress = {
+            "total": _safe_int(supplied_item_progress.get("total"), _safe_int(public_counts.get("total"), 0)),
+            "completed": _safe_int(supplied_item_progress.get("completed"), 0),
+            "by_status": {
+                str(key): _safe_int(item, 0)
+                for key, item in supplied_by_status.items()
+                if str(key) in {"pending", "running", "succeeded", "needs_review", "failed", "skipped", "total"}
+            },
+            "has_items": bool(supplied_item_progress.get("has_items", False)),
+        }
+        if item_progress["total"]:
+            item_progress["percent"] = round(item_progress["completed"] / item_progress["total"] * 100)
+    else:
+        item_progress = {
+            "total": _safe_int(public_counts.get("total"), 0),
+            "completed": _safe_int(public_counts.get("succeeded"), 0) + _safe_int(public_counts.get("skipped"), 0),
+            "by_status": {key: value for key, value in public_counts.items() if key != "by_stage"},
+            "has_items": bool(public_counts.get("total", 0)),
+        }
     return {
         "run_id": _safe_identifier(value.get("run_id")),
         "import_id": _safe_identifier(value.get("import_id"), optional=True),
@@ -634,12 +1016,17 @@ def _shape_run(value: Mapping[str, Any]) -> dict[str, Any]:
         "status": _safe_status(value.get("status")),
         "current_stage": _safe_stage(value.get("current_stage")),
         "boundary_event": boundary_event,
+        "heartbeat_at": _safe_optional_text(value.get("heartbeat_at")),
         "created_at": _safe_optional_text(value.get("created_at")),
         "started_at": _safe_optional_text(value.get("started_at")),
         "finished_at": _safe_optional_text(value.get("finished_at")),
         "config_snapshot": _safe_config(value.get("config_snapshot", {})),
         "stages": ordered_stages,
         "jobs": jobs,
+        "item_counts": public_counts,
+        "item_progress": item_progress,
+        "latest_audit_steps": audit_steps,
+        "latest_steps": latest_steps,
         "stale": stale,
         "warnings": warnings,
         "progress": {
@@ -733,6 +1120,8 @@ def _sensitive_key(value: str) -> bool:
 
 
 def _safe_mapping_key(value: str) -> bool:
+    if value in {"manifest.json", "checksums.sha256"}:
+        return True
     return bool(re.fullmatch(r"^[A-Za-z][A-Za-z0-9_]{0,63}$", value)) and not _sensitive_key(value)
 
 
@@ -761,6 +1150,68 @@ def _safe_hash(value: Any, *, optional: bool = False) -> str | None:
     if not _SAFE_HASH.fullmatch(text):
         return None if optional else "unavailable"
     return text
+
+
+_SAFE_OPAQUE_REF = re.compile(r"^dir_[A-Za-z0-9_-]{40,128}$")
+
+
+def _safe_opaque_ref(value: Any, *, optional: bool = False) -> str | None:
+    if value is None or value == "":
+        return None if optional else "unavailable"
+    text = str(value)
+    if not _SAFE_OPAQUE_REF.fullmatch(text):
+        return None if optional else "unavailable"
+    return text
+
+
+def _safe_unit(value: Any) -> str:
+    text = str(value) if value is not None else "items"
+    return text if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}", text) else "items"
+
+
+def _safe_subphase(value: Any) -> str | None:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", value):
+        return None
+    return value
+
+
+def _shape_import_workspace(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, Mapping) else {}
+    status = raw.get("status") if raw.get("status") in {"absent", "creating", "created", "failed"} else "absent"
+    return {
+        "status": status,
+        "import_id": _safe_identifier(raw.get("import_id"), optional=True),
+        "run_id": _safe_identifier(raw.get("run_id"), optional=True),
+        "error_code": _safe_code(raw.get("error_code"), optional=True),
+    }
+
+
+def _safe_counts_by_stage(value: Any) -> dict[str, dict[str, int]]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, dict[str, int]] = {}
+    for stage, statuses in value.items():
+        stage_name = _safe_stage(stage)
+        if not isinstance(statuses, Mapping):
+            continue
+        result[stage_name] = {
+            str(status): _safe_int(count, 0)
+            for status, count in statuses.items()
+            if str(status) in {"pending", "running", "succeeded", "needs_review", "failed", "skipped"}
+        }
+    return result
+
+
+def _audit_step_status(code: str) -> str:
+    if code.endswith("FAILED"):
+        return "failed"
+    if code.endswith("SUCCEEDED") or code == "WORKER_RECOVERED_STALE_RUNNING":
+        return "succeeded"
+    if code in {"RUN_CANCELLED"}:
+        return "cancelled"
+    if code in {"RUN_PAUSED_REQUESTED", "RUN_PAUSED_AFTER_ITEM"}:
+        return "paused"
+    return "running"
 
 
 def _safe_minecraft_version(value: Any) -> str:
@@ -944,8 +1395,19 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
         return 400, "INVALID_INPUT", "表单字段不合法，请检查后重试。", False, _validation_fields(exc.errors())
     if isinstance(exc, ImportCheckNotFound):
         return 404, "IMPORT_NOT_FOUND", "导入检查不存在或已失效，请重新检查。", False, {}
+    if isinstance(exc, ImportCheckInProgress):
+        return 409, "IMPORT_CHECK_IN_PROGRESS", "完整性检查仍在进行，请等待完成。", False, {}
+    if isinstance(exc, ImportCheckProgressPersistFailed):
+        return 500, "IMPORT_CHECK_PROGRESS_PERSIST_FAILED", "导入检查状态无法安全保存。", False, {}
     if isinstance(exc, ImportNotAllowed):
-        return 422, "IMPORT_INCOMPLETE", "导出包未通过完整性检查，请修复后重新检查。", False, {}
+        code = getattr(exc, "code", None) or "IMPORT_INCOMPLETE"
+        return 422, code, "导出包未通过完整性检查，请修复后重新检查。", False, {}
+    if isinstance(exc, DirectoryRefNotFound):
+        return 404, "DIRECTORY_REF_NOT_FOUND", "目录引用已失效，请重新选择目录。", False, {}
+    if isinstance(exc, DirectoryRefStale):
+        return 409, "DIRECTORY_REF_STALE", "目录已发生变化，请重新选择目录。", False, {}
+    if isinstance(exc, DirectoryChooserError):
+        return 400, getattr(exc, "code", "DIRECTORY_REF_INVALID"), "目录引用不合法，请重新选择目录。", False, {}
     if isinstance(exc, RunStateConflict):
         return 409, "RUN_STATE_CONFLICT", "当前运行状态不允许此操作，请刷新后重试。", False, {}
     if isinstance(exc, KeyError):

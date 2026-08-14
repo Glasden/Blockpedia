@@ -14,7 +14,7 @@
     },
     "public_surface": {
       "details": {
-        "file_count": 66
+        "file_count": 76
       },
       "status": "passed"
     },
@@ -58,7 +58,7 @@
     "python_implementation": "CPython",
     "python_version": "3.14.7"
   },
-  "generated_at": "2026-08-14T10:07:50Z",
+  "generated_at": "2026-08-14T15:10:15Z",
   "issues": [],
   "status": "passed"
 }

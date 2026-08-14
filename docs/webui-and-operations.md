@@ -97,6 +97,14 @@ MVP **MUST NOT** 使用通用 SQLite migration framework。schema 在 R0 冻结�
 
 所有 WebUI 写操作必须在 SQLite transaction 中同时写状态和审计记录；写文件必须先校验版本、目标 ID、release 和输入，再采用临时文件、flush/fsync 和原子替换。失败时回滚数据库，不留下“成功”状态。SQLite 不能存图片 BLOB，只能存安全的相对 artifact ref、尺寸和 hash。
 
+### 3.5 导出目录 chooser 与来源引用
+
+目录 chooser 的可见根严格是 `<data-root>/exports/<minecraft_version>`。`GET /api/directories?minecraft_version=26.2&parent_ref=<optional opaque ref>` 只能列出该精确版本根下的目录；省略 `parent_ref` 表示该根。chooser ref 必须是进程内生成的高熵 opaque ref，只在当前进程有效。任何 token、response、log、cache、SQLite、HTML 或 URL 都不得包含本机绝对路径；ref 不能反解为路径。
+
+服务在列出目录和每次消费 ref（包括创建 check、读取 snapshot 和 import）时，必须重新验证 data root、精确版本、目录身份以及路径的每个 component。必须拒绝 traversal、`.`/`..`、symlink、Windows junction/reparse point、意外 mount crossing、snapshot 中的 hardlink 和 chooser 后的 stale replacement；不能仅依赖列目录时的结果或字符串规范化。ref 失效时要求重新选择并返回稳定的 path/ref 错误码。消费闭包之外不得保留 source `Path`。
+
+目录列表和首页的导入检查摘要必须按需安全扫描 `<data-root>/cache/import-checks/` 下严格匹配 `^check_[0-9a-f]{32}$` 的 check 目录及其 `state.json`。扫描必须拒绝 symlink、junction、reparse point 和其它链接/reparse entry，只读取允许的 `state.json`，并对导出 ID、状态、时间和错误摘要做 allowlist/sanitization；损坏、越界或未知文件只作为不可操作摘要，不得成为导航或路径输入。按 `(minecraft_version, export_id)` 选择最新 actionable check 时以 `created_at`/`updated_at` 的稳定排序和持久 `state.json` 为准。该扫描是派生视图，**MUST NOT** 写入第二个持久索引（包括 `index.json`）、数据库表或 cache marker。
+
 ## 4. WebUI 页面和功能
 
 页面必须覆盖下表；不得创建 Token/成本/预算页面或字段：
@@ -112,6 +120,10 @@ MVP **MUST NOT** 使用通用 SQLite migration framework。schema 在 R0 冻结�
 | `Settings/Logs` | data root、日志级别/保留、脱敏日志 | 远程遥测、秘密查看、Token/成本仪表盘 |
 
 Provider 页面可以保存多个非活动 `openai_responses` profile，但全局最多一个 active profile；active 只控制 Studio 新写任务和新 release。release-bound MCP 使用已解析 release 冻结的 provider snapshot，不读取或比较可变 active profile。每个 profile 在 enable 前必须通过图片、实际 Responses Structured Outputs strict Schema、错误分类和实际 `store=false` 四项硬能力门。任一项失败都禁止 enable；不得用确认、豁免或其他路径绕过 `store=false`。具体字段见 [`openai-provider.md`](openai-provider.md)。
+
+页面初始 HTML 必须由服务端渲染。状态 hero 的可滚动区域必须展示完整的 11-stage timeline（顺序仍为 `PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS → VALIDATE_RENDERS → EXTRACT_FEATURES → AI_ANNOTATE → VALIDATE → HUMAN_REVIEW → BUILD_RELEASE → ACTIVATE_RELEASE`）。下方使用统一 live work 区域展示 heartbeat、item aggregates、current step、recent steps 和 latest allowlisted audit projection。浏览器刷新后以持久化的 `check_id`/run snapshot 恢复；不要求 `localStorage`。EventSource 是 live DOM 更新的权威来源，HTMX/普通页面刷新不得与其维护第二套状态。
+
+首页必须始终显示 `Recent Checks` 入口，即使没有可用条目；首页扫描结果最多显示 5 个不同 `(minecraft_version, export_id)`，active check 优先，其余按最近 actionable 状态/时间排序。导出目录 chooser 的每个安全目录条目可显示 checked/passed/imported/changed 等 marker，但 marker 只是 state 扫描的派生展示，不是新的身份或索引。进入首页、目录列表或 canonical check 页面都不得把绝对路径或 chooser ref 回显到 HTML、URL 或脚本。
 
 ## 5. HTTP route 契约
 
@@ -160,12 +172,35 @@ Provider 页面可以保存多个非活动 `openai_responses` profile，但全�
 `POST /api/imports/check` 请求：
 
 ```json
-{"source_directory": "<local chooser ref>", "minecraft_version": "26.2"}
+{"source_directory": "<opaque chooser ref>", "minecraft_version": "26.2"}
 ```
 
-服务可读取用户选择目录，但 response、日志和数据库只能保存 `source_directory_ref`（稳定 hash/本地标签），不得保存绝对路径。检查 [`export-contract.md`](export-contract.md) 的 manifest、JSONL、PNG、hash、版本、完整 `minecraft` registry、合法状态和 exporter 清单。输出 `check_id`、版本、计数、检查数组和 `can_import`。
+`source_directory` 现在只接受 opaque chooser ref。服务必须返回 HTTP `202` 和 `check_id`/`status=pending`，随后由同一进程内的 check 执行器启动一次检查。`cache/import-checks/{check_id}/state.json` 是唯一 authoritative check state；snapshot 仍写入 `cache/import-checks/{check_id}/snapshot/{export_id}/`，现有其它 check-owned metadata 不是列表索引。写 JSON 必须 atomic replace。state 的持久内容限于 check identity、版本/export、非秘密阶段/状态/计数、声明式 anchor hash、创建/更新时间、validator 进度和 workspace association；不得持久化 source 绝对路径或 chooser ref/token，source `Path` 只能存在于本次执行的 in-memory closure。
 
-`POST /api/imports` 只能接受通过 check 的 `check_id`、`project_id` 和固定 `copy_mode=copy_to_workspace`；成功生成 `import_id`/`run_id` 和审计事件。禁止把来源目录直接作为 release。
+check 阶段固定为 `QUEUED → SNAPSHOT_EXPORT → VALIDATE_EXPORT → FINALIZE`；对外 progress 的宏观阶段是 `snapshot|validate|finalize`，check 状态只能是 `pending|running|passed|failed`。浏览器刷新通过 canonical `GET /imports/checks/{check_id}` 恢复页面，数据接口为 `GET /api/imports/checks/{check_id}`；摘要查询为 `GET /api/imports/checks?minecraft_version=&limit=`，只返回脱敏 summary，不返回路径或 token。若 server 在 source snapshot 期间重启，check 不得续跑，必须变为 `failed`、错误码 `IMPORT_CHECK_INTERRUPTED` 并要求重新选择。snapshot 完成后，passed check 保持可 import；`POST /api/imports` 不得重跑 validator。
+
+同一 WebUI 进程使用一个 coordinator `RLock`，其协调键为 `(minecraft_version, export_id)`。不同 opaque chooser ref 解析到同一 export 时，不能排入第二个 active check；命中 exact active check 返回 `202`、相同 `check_id`、`reused=true`。已有 passed check 只有在 canonical source entry 的当前 raw `manifest.json` SHA-256 和 `checksums.sha256` SHA-256 都与 passed state 的 declared anchors 相同时才可复用，返回 `200`、相同 `check_id`、`reused=true`，且不得调用 validator。anchor 比较是轻量的 declared-anchor comparison，不证明每个 live artifact 未改变；完整性只来自 immutable checked snapshot 和该 check 的一次 validator pass。failed/interrupted check 或任一 anchor 改变时创建新的 `202` check。进程重启后 active check 必须收敛为 `IMPORT_CHECK_INTERRUPTED`，不得自动 resume。
+
+validator 只允许由该 check 调用一次 `Validator.run`；只能接收 observational progress callback，不得因进度而增加扫描、读取、PNG decode 或 hash。callback 只挂接既有 inventory、Schema、JSONL、reference、render、checksum 循环；snapshot callback 只挂接既有 copy/hash loop。validator subphase 的 `completed` 在该 subphase 内单调递增；`total` 仅在已有确定总量时写入，否则保持 `null`/`0`，UI 使用带 live count 的 indeterminate bar。进度持久化应节流，phase transition 和 terminal state 必须强制写入；SSE 发送完整 snapshot，不逐 item 广播。既有 default/CLI report 的内容、调用次数和 PNG reads/decodes 必须保持不变；进度持久化失败本身必须收敛为稳定失败。`GET /api/imports/checks/{check_id}/events` 提供该 check 的 live snapshot。
+
+`state.json` 仅增补 `created_at`、`updated_at`、validator subphase/progress，以及以下 workspace association；不改 workspace SQLite schema，也不新增 migration：
+
+```text
+workspace: {
+  status: absent|creating|created|failed,
+  import_id,
+  run_id,
+  error_code
+}
+```
+
+对旧 state 缺少 association 的情况，服务可以按精确版本、`export_id` 和 manifest hash 扫描现有 workspace 数据库做兼容发现；发现只用于恢复关联，不生成第二索引，不改变数据库字节。
+
+`POST /api/imports` 的严格请求只有 `check_id` 和 `copy_mode=copy_to_workspace`；**不接受 `project_id`，也不得把它加入代码或 Schema**。它按 passed check 幂等：第一次在同一 `(minecraft_version, export_id)` coordinator lock 内先预留 `import_id`/`run_id`、将 association 写为 `creating`，再从 immutable snapshot 构建现有 workspace。重复 `creating` 返回 `202` 和同一 `run_id`，不得创建第二 workspace；已验证 `created` 返回 `200` 和同一 `run_id`；首次完成创建可返回 `201`。导入只消费 snapshot，不重跑 validator，不从 source directory 复制到 release；UI 只有在最终 `work.sqlite3` 已验证后才能 deep-link。
+
+若重启时 association 为 `creating`，服务先 reconcile 该 reservation 对应的最终 workspace；有效 `work.sqlite3` 可收敛为 `created`，否则保留原 `import_id`/`run_id` reservation 并返回稳定失败/可重试状态，重试复用 reservation，绝不静默分配第二个 run。`/ui/imports` 成功后使用 `HX-Redirect: /runs/{run_id}`。
+
+UI 状态必须明确区分：`unchecked`；`checking`（动作 `View Progress`）；`passed_not_imported`（显示 checked marker，动作 `Import` 与 `Enter Run`）；`imported`（动作 `Enter Existing Run`）；`failed`/`interrupted`（必须用 fresh chooser ref `Retry`）；以及 anchor 不匹配的派生状态 `changed_since_check`（动作 `Run New Check`，不把旧 passed state 伪装成当前 source 未变）。
 
 ### 5.3 Pipeline routes
 
@@ -182,6 +217,16 @@ item 状态固定为 `pending|running|succeeded|needs_review|failed|skipped`；r
 `POST /api/runs` 请求至少包含：`import_id`、`minecraft_version`、`profile_id`、联系表大小和置信度阈值；不得接受或要求 `release_build_id`。服务必须检查版本、导出契约、profile capability、Schema/semantic constraints、阈值和 R0–R3 前置门，返回 `run_id`、`status=pending`、`effective_config_hash` 和非秘密 snapshot。后续 `POST /api/releases/check` 以 `run_id` 创建并返回 `release_build_id`。
 
 `GET /api/runs/{run_id}` 至少返回：`run_id`、精确版本、run status、stage、progress、heartbeat、非秘密 config snapshot 和 warnings。启动时 stale 只读展示，不改变这些状态；不得返回 Token usage、费用、图片 base64 或完整 provider response。
+
+#### 5.3.1 SSE live snapshots
+
+run 和 import check 的事件接口分别为 `GET /api/runs/{run_id}/events` 与 `GET /api/imports/checks/{check_id}/events`。实现必须使用 FastAPI 原生 `StreamingResponse` 和浏览器原生 `EventSource`，不引入依赖、服务、消息总线或 SQLite/Schema migration；这是现有 FastAPI/Jinja2/HTMX/SQLite/进程内 Worker 栈上的增量能力。
+
+响应必须使用 `Content-Type: text/event-stream`、`Cache-Control: no-cache, no-transform`，连接建立后立即发送完整 `event: snapshot`（并发送 `retry: 2000`）。不得提供 `id` 或 replay；重连重新发送当前完整 snapshot。每 15 秒发送 SSE comment heartbeat。可选的 `snapshot_error` 只能包含稳定、脱敏的错误码和 message。客户端断开不得取消、暂停或改变后台工作。
+
+run snapshot 每次必须在一个一致的只读 SQLite transaction 中读取，随后关闭 transaction 后再 sleep；只发送发生变化的 snapshot，heartbeat 不改变或写入任何状态，也不能把 stale 检测写回数据库。snapshot 只能暴露 allowlisted 的 item aggregate 与 latest audit projection（包括当前/最近步骤的非秘密状态与稳定代码），不得暴露 raw `details_json`、`cursor`、`worker_id`、exception、绝对路径或 secret。
+
+import-check SSE 只发送 `state.json` 的完整脱敏快照；它不宣布每个 validator item，也不把 `completed/total` 解释为跨 subphase 的全局百分比。未知总量保持 indeterminate，phase 和 terminal 快照必须可见；客户端断开、刷新或重连不改变 check/import 工作。
 
 以下 routes 必须幂等或返回 `RUN_STATE_CONFLICT`：
 
@@ -291,6 +336,9 @@ import/run/review service 必须验证各自的 R0–R3 前置；`/api/releases/
 | `PROVIDER_STORAGE_UNSUPPORTED` | endpoint 不支持或不能证明实际 `store=false` | 否 |
 | `IMPORT_NOT_FOUND` | check/import 不存在 | 否 |
 | `IMPORT_INCOMPLETE` | 导出包缺失/版本/hash/Schema 错 | 否 |
+| `IMPORT_CHECK_IN_PROGRESS` | import 引用的 check 仍为 `running` | 否 |
+| `IMPORT_CHECK_INTERRUPTED` | server 在 source snapshot 期间重启或 check 无法续跑 | 否 |
+| `IMPORT_CHECK_PROGRESS_PERSIST_FAILED` | import check 的进度状态无法安全持久化 | 否 |
 | `RUN_STATE_CONFLICT` | 状态不允许操作 | 否 |
 | `RUN_NOT_FOUND` | run 不存在 | 否 |
 | `REVIEW_NOT_FOUND` | review 不存在 | 否 |

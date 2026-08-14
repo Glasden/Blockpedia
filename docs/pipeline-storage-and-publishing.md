@@ -73,6 +73,18 @@ MCP                   → 只读根 current.json 与指定版本 release
 
 所有图片来自用户本地合法安装和 exporter 渲染。导出包、cache、workspace 和 release 可以保存生成的 PNG、对象蒙版和特征，但只能保存机器元数据与渲染产物的哈希，不保存原始资源。测试 fixture 必须由程序生成原创图/伪数据；真实集成测试依赖本地导出，缺失时必须明确输出 `SKIPPED_LOCAL_EXPORT_MISSING`，不能静默改用真实资源或伪造通过。
 
+### 3.1 Import check handoff and recent-check discovery
+
+`cache/import-checks/{check_id}/state.json` 是 import check 的 authoritative state。首页、导出目录 listing 和 `GET /api/imports/checks?minecraft_version=&limit=` 只在请求时安全扫描严格 check ID 目录和 `state.json`，按 `(minecraft_version, export_id)` 选择最新 actionable check；扫描结果不落第二份索引。禁止 `index.json`、`owner_instance_id` 或其它 owner instance marker、额外 SQLite 表、通用 migration 或任意生成框架。目录 entry 必须拒绝 symlink/junction/reparse/link，summary 只允许脱敏的版本、export ID、状态、时间、anchor 状态、进度和稳定错误码。
+
+同一 WebUI 进程的 `ImportService` 使用一个 coordinator `RLock`，协调键为 `(minecraft_version, export_id)`。不同 opaque chooser ref 解析到同一 export 不能产生两个 active check；exact active duplicate 返回 `202` 和相同 `check_id`/`reused=true`。passed check 的复用只比较 canonical source entry 当前 raw `manifest.json` 与 `checksums.sha256` 的 SHA-256 是否分别等于 passed state 的 declared anchors；这是轻量 declared-anchor comparison，不是对 live export 每个 artifact 未变的证明。immutable checked snapshot 和一次 validator pass 才是完整 integrity 依据。anchor 不匹配、failed 或 interrupted 时新建 `202` check；进程重启后的 active check 固定为 `IMPORT_CHECK_INTERRUPTED`，不自动 resume。
+
+state 只做最小扩展：`created_at`、`updated_at`、validator subphase/progress 和 `workspace` association：`status=absent|creating|created|failed`、`import_id`、`run_id`、`error_code`。不得把绝对 source path 或 chooser ref/token 持久化。旧 state 没有关联时，可以扫描现有 workspace `work.sqlite3`，按精确 `minecraft_version`、`export_id`、manifest hash 发现既有 run；这是向后兼容的读取，不是新索引或数据库结构。
+
+`POST /api/imports` 是严格的 `{check_id, copy_mode: "copy_to_workspace"}` 请求，**不含 `project_id`**，代码和 Schema 也不得加入该字段。请求在同一 coordinator lock 内先预留 `import_id`/`run_id` 并把 association 写为 `creating`，再由既有 workspace builder 从 immutable snapshot 建库。相同 passed check 是幂等入口：`creating` 重复请求返回 `202`/同一 `run_id`，有效 `created` 返回 `200`/同一 `run_id`，首次完成创建可返回 `201`；任何分支都不能分配第二 workspace。只有验证过最终 `work.sqlite3` 后 UI 才能 deep-link。重启发现 `creating` 时先 reconcile 原 reservation 的 final workspace；无有效 workspace 则保留原 ID，进入稳定 failure/retry，重试不得静默生成第二 run。
+
+check progress 只展示 `snapshot → validate → finalize` 三个宏观阶段。snapshot callback 接既有 copy/hash loop；validator callback 接既有 inventory、Schema、JSONL、reference、render、checksum loops，不增加 scan/read/hash/decode。`completed` 在同一 validator subphase 内单调递增；只有已有总量时填写 `total`，否则为 `null`/`0`，UI 使用带 live count 的 indeterminate bar。state persistence 节流，phase transition/terminal 强制写入；SSE 发完整 snapshots，不逐 item 广播。
+
 ## 4. Python/SDK 锁定和 `PREPARE`
 
 Fabric/Gradle 工具链由导出契约固定为 Minecraft Java `26.2`、Java `25`、Fabric Loader `0.19.3`、Fabric API `0.157.0+26.2`、Loom `1.17.19`、Gradle `9.5.1`；Minecraft 26.2 使用 native Mojang names/unobfuscated，不解析外部 mappings artifact。R0 只锁定实际引入的 Python tooling 依赖；不预锁未实现的 R2-R4 栈。后续依赖在使用前必须精确/hash 锁定，Windows 在对应阶段验证，Linux `manylinux_2_17` / glibc `>=2.17` 的安装、运行、wheel/ABI 和最终双平台复现统一在 R5 验证。candidate check/build 的前置只要求 R0-R3 和 candidate-build gate；activation-check/apply 的前置才要求 R0-R4、activation gate 和用户确认。
@@ -93,7 +105,7 @@ PREPARE 输出可恢复的 run spec、导出 manifest 快照、版本锁快照�
 
 ### 5.1 `IMPORT_EXPORT`
 
-Python 导入只接受目录名等于 `export_id` 且不是 staging、并已通过 R1 外部 validator 的 exporter 包；Studio 复用该 validator 的一次性 strict Schema、关系、资源、PNG 语义/质量、checksum 和 artifact digest 结果，不重复整包验证。它只复制/引用导出结果到 `workspace/{minecraft_version}/{run_id}`，不重新枚举注册表、选择代表状态或渲染图片。
+Python 导入只接受 passed check 的 `check_id` 和固定 `copy_mode=copy_to_workspace`；它只消费 check 创建的 immutable snapshot，不读取 source chooser ref 作为导入输入，也不重新调用 R1 validator。check 已完成一次 strict Schema、关系、资源、PNG 语义/质量、checksum 和 artifact digest pass；导入过程只复制/校验 snapshot 到 `workspace/{minecraft_version}/{run_id}`，不重新枚举注册表、选择代表状态或渲染图片。请求不得包含 `project_id`。
 
 输出：工作库中的只读机器事实投影、原始导出引用和导入完整性报告。
 
@@ -237,6 +249,14 @@ recover 不能删除成功产物，也不能把未知结果当作 AI 已返回�
 ### 6.5 provider 配置冻结
 
 `AI_ANNOTATE` 和在线 query lane 使用同一个已启用的 `OpenAIResponsesProvider`。release candidate 必须冻结以下非秘密 provider 引用和版本：`profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、`prompt_version`、各 wire/record Schema version、`search_ranking_version`。MCP 只能从 release metadata 读取这些值，并按 `secret_reference` 从 Keyring 或允许的环境变量读取秘密；MCP **MUST NOT** 读取 workspace 数据库、可变 provider profile 或缓存。compatible `base_url` 仍属于同一 Responses provider；能力探测和 `store=false` 未完全通过时不得冻结为可用配置。
+
+### 6.6 Import state and workspace reconciliation
+
+`state.json` 的新增时间、validator progress 和 workspace association 是 check 的最小 durable handoff，不改变 `workspace.v1.sql` 或任一 SQLite 表。`workspace.status=creating` 表示 reservation 已经写入但最终 workspace 尚未验证；`created` 只有在目标 `work.sqlite3` 存在、可打开、版本/export/manifest hash 关联一致且最终目录不是 staging 后才能写入。UI 只有 `created` 才能进入 `/runs/{run_id}`。
+
+同一 passed check 的 import 请求必须在 export lock 内完成“检查 association → 保留已有 reservation 或建立 reservation → 写 `creating` → 构建/验证 workspace”的顺序。`creating` 的 duplicate 不得重新 copy、创建新 run 或调用 validator。重启 reconcile 必须优先检查同一 `run_id` 的最终 workspace；旧 state 缺少 association 时再按版本、export ID 和 manifest hash 扫描既有数据库。无效或不完整结果保留原 reservation 和稳定 `error_code`，显式 retry 仍复用原 ID；不得自动 resume source check 或隐式分配第二 run。
+
+check 的 progress callback 只观察既有循环：snapshot 阶段接 copy/hash loop，validate 阶段接 validator 已有 inventory/Schema/JSONL/reference/render/checksum loop，finalize 阶段接既有 atomic state/snapshot finalize。callback 不能新增读取、扫描、hash、解码或第二份报告；callback 开关前后报告、PNG read/decode 计数和最终 hash 必须一致。state 写入节流但 phase/terminal 强制，subphase `completed` 单调递增，未知 `total` 保持 null/0。
 
 ## 7. 错误、恢复和重试语义
 
@@ -428,5 +448,9 @@ release 创建成功后目录内容和数据库权限/应用层均视为只读�
 7. 发布后修改 workspace、override 或 Schema 不改变已发布 release；新内容必须产生新 release。
 8. 维护至少两个成功 release，current/pinned/正在使用/保底版本不能被清理，人工回滚只改变 current 指针。
 9. candidate-build gate、activation gate、MCP 冒烟、FTS 构建、零虚假 ID、高优先级审核为零和原子切换均留下可审计日志。
+10. 同一 export 的并发 opaque refs 只产生一个 active check 和一次 validator；anchor 未变的 passed check 复用原 check，manifest 或 checksum anchor 改变时建立新 check。
+11. 首页/目录 listing 的 Recent Checks 与 chooser marker 可从 `state.json` 重建；最多 5 个不同 export，active first，且没有第二持久索引、绝对路径或 chooser token。
+12. 同一 passed check 的并发 import 只保留一个 `run_id` 和一个最终 `work.sqlite3`；`creating` duplicate 返回同一 run，重启能 reconcile 有效 workspace 或保留原 reservation 后稳定失败/重试。
+13. progress snapshots 在每个 validator subphase 内单调递增；启用/关闭 observational callback 的 validator report、PNG reads/decodes 和 hash 相同，SSE 不逐 item 广播。
 
 最终的导出字段和图片完整性由 [导出契约](export-contract.md) 验收，分层/来源由 [数据与 Schema](data-and-schemas.md) 验收；三者任何一项不一致都应阻断 release。

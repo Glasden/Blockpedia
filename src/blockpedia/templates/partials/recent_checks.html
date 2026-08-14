@@ -1,0 +1,108 @@
+{% set recent = recent_checks|default([], true) %}
+{% set subphase_labels = {
+  'QUEUED': '等待检查',
+  'SNAPSHOT_EXPORT': '建立安全快照',
+  'VALIDATE_EXPORT': '验证导出包',
+  'SNAPSHOT_INVENTORY': '枚举快照文件',
+  'SNAPSHOT_COPY_HASH': '复制并计算哈希',
+  'SNAPSHOT_METADATA': '写入快照元数据',
+  'INVENTORY': '清点导出内容',
+  'SCHEMAS_MANIFEST': '加载 Schema 与 manifest',
+  'JSONL_RECORDS': '读取业务记录',
+  'CROSS_REFERENCES': '核对跨记录引用',
+  'RENDERS': '检查预览与蒙版',
+  'CHECKSUMS': '复算 checksums',
+  'FINALIZE': '汇总检查结果'
+} %}
+<section class="recent-checks" aria-labelledby="recent-checks-heading">
+  <div class="recent-checks__header">
+    <div>
+      <p class="section-index">RECENT CHECKS</p>
+      <h3 id="recent-checks-heading">最近完整性检查</h3>
+    </div>
+    <span class="count-badge">{{ recent|length }}</span>
+  </div>
+
+  {% if recent %}
+    <div class="recent-check-list">
+      {% for item in recent %}
+        {% set workspace = item.get('workspace', {}) or {} %}
+        {% set marker = item.get('check_marker', {}) or {} %}
+        {% set workspace_status = workspace.get('status', 'absent') %}
+        {% set run_id = workspace.get('run_id') %}
+        {% set workflow_state = item.get('workflow_state', marker.get('state', item.get('status', 'unchecked'))) %}
+        {% set checking = workflow_state == 'checking' or item.get('status') in ['pending', 'running'] %}
+        {% set changed = workflow_state == 'changed_since_check' %}
+        {% set failed = workflow_state in ['failed', 'interrupted'] or item.get('status') == 'failed' %}
+        {% set interrupted = item.get('error_code') == 'IMPORT_CHECK_INTERRUPTED' or workflow_state == 'interrupted' %}
+        {% set creating = workspace_status in ['pending', 'running', 'creating'] %}
+        {% set imported = run_id and workspace_status in ['created', 'imported', 'succeeded', 'existing'] %}
+        {% set checked = workflow_state in ['checked', 'passed_not_imported', 'imported'] or item.get('can_import') %}
+        {% set item_progress = item.get('progress', {}) or {} %}
+        {% set item_subphase = item.get('subphase') or item.get('phase') or 'QUEUED' %}
+        {% set completed = item_progress.get('completed', 0)|int %}
+        {% set total = item_progress.get('total', 0)|int %}
+        {% set unit = item_progress.get('unit', 'items') %}
+        <article class="recent-check-row recent-check-row--{{ workflow_state }}" data-recent-check data-export-id="{{ item.get('export_id', '') }}" data-minecraft-version="{{ item.get('minecraft_version', '') }}">
+          <div class="recent-check-row__mark" aria-hidden="true">{% if checking %}●{% elif failed or changed %}!{% elif imported or checked %}✓{% else %}○{% endif %}</div>
+          <div class="recent-check-row__identity">
+            <div class="recent-check-row__badges">
+              {% if imported %}
+                <span class="status-badge status-badge--running">已有运行</span><span class="checked-chip">✓ 已检查</span>
+              {% elif creating %}
+                <span class="status-badge status-badge--running">正在创建运行</span><span class="checked-chip">✓ 已检查</span>
+              {% elif checking %}
+                <span class="status-badge status-badge--running">检查中</span>
+              {% elif changed %}
+                <span class="status-badge status-badge--paused">来源已变化</span><span class="checked-chip">✓ 已检查快照</span>
+              {% elif failed %}
+                <span class="status-badge status-badge--failed">{% if interrupted %}检查中断{% else %}检查失败{% endif %}</span>
+              {% elif checked %}
+                <span class="status-badge status-badge--succeeded">✓ 已检查</span><span class="readonly-chip">待导入</span>
+              {% else %}
+                <span class="status-badge">未检查</span>
+              {% endif %}
+            </div>
+            <b>{{ item.get('export_id', 'unavailable') }}</b>
+            <small>MC {{ item.get('minecraft_version', 'unknown') }}{% if item.get('updated_at') %} · <time datetime="{{ item.get('updated_at') }}">{{ item.get('updated_at') }}</time>{% endif %}</small>
+            {% if checking %}
+              <div class="compact-check-progress">
+                {% if total %}<progress value="{{ completed }}" max="{{ total }}" aria-label="{{ subphase_labels.get(item_subphase, item_subphase) }}，已完成 {{ completed }}，共 {{ total }}"></progress>{% else %}<progress class="indeterminate-progress" aria-label="{{ subphase_labels.get(item_subphase, item_subphase) }}正在执行"></progress>{% endif %}
+                <span>{{ subphase_labels.get(item_subphase, item_subphase) }} · {% if total %}{{ completed }}/{{ total }} {{ unit }}{% else %}已处理 {{ completed }} {{ unit }}{% endif %}</span>
+              </div>
+            {% elif failed or changed %}
+              <code class="recent-check-row__error">{{ item.get('error_code') or ('EXPORT_CHANGED_SINCE_CHECK' if changed else 'IMPORT_CHECK_FAILED') }}</code>
+            {% elif workspace_status == 'failed' %}
+              <code class="recent-check-row__error">{{ workspace.get('error_code', 'WORKSPACE_CREATE_FAILED') }}</code>
+            {% elif creating %}
+              <small>保留运行 <code>{{ run_id or '正在分配' }}</code>，完成后可直接进入。</small>
+            {% elif imported %}
+              <small>运行 <code>{{ run_id }}</code>{% if item.get('current_stage') %} · {{ item.get('current_stage') }}{% endif %}</small>
+            {% endif %}
+          </div>
+          <div class="recent-check-row__action">
+            {% if imported %}
+              <a class="button button--primary" href="{{ item.get('run_url') or ('/runs/' ~ run_id) }}">进入现有运行 <span aria-hidden="true">↗</span></a>
+            {% elif creating %}
+              <a class="button button--quiet" href="{{ item.get('check_url') or ('/imports/checks/' ~ item.get('check_id', '')) }}">正在创建运行</a>
+            {% elif checking %}
+              <a class="button button--quiet" href="{{ item.get('check_url') or ('/imports/checks/' ~ item.get('check_id', '')) }}">查看进度</a>
+            {% elif changed %}
+              <button class="button button--primary" type="button" data-reselect-export data-export-id="{{ item.get('export_id', '') }}" data-minecraft-version="{{ item.get('minecraft_version', '') }}">重新检查</button>
+            {% elif failed %}
+              <button class="button button--quiet" type="button" data-reselect-export data-export-id="{{ item.get('export_id', '') }}" data-minecraft-version="{{ item.get('minecraft_version', '') }}">重新选择导出</button>
+            {% elif checked %}
+              <form action="/api/imports" method="post" data-import-action data-check-url="{{ item.get('check_url') or ('/imports/checks/' ~ item.get('check_id', '')) }}">
+                <input type="hidden" name="check_id" value="{{ item.get('check_id', '') }}">
+                <input type="hidden" name="copy_mode" value="copy_to_workspace">
+                <button class="button button--primary" type="submit">导入并进入运行 <span aria-hidden="true">→</span></button>
+              </form>
+            {% endif %}
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="recent-checks__empty"><span aria-hidden="true">⌁</span><p>还没有完整性检查记录；从上方选择导出开始。</p></div>
+  {% endif %}
+</section>

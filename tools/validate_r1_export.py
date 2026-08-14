@@ -18,7 +18,7 @@ import sys
 import zlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from jsonschema import Draft202012Validator
 
@@ -64,6 +64,7 @@ WINDOWS_DEVICE_NAMES = {
     *(f"com{index}" for index in range(1, 10)),
     *(f"lpt{index}" for index in range(1, 10)),
 }
+ProgressCallback = Callable[[str, int, int | None, str], None]
 
 
 @dataclass(frozen=True)
@@ -127,24 +128,66 @@ class Validator:
         # check reaches the same path.
         self._png_cache: dict[Path, _PngAnalysis | None] = {}
         self._early_reject = False
+        self._on_progress: ProgressCallback | None = None
+        self._inventory_completed = 0
+        self._schema_manifest_completed = 0
+        self._jsonl_completed = 0
+        self._selected_variant_count = 0
+        self._cross_reference_completed = 0
+        self._render_completed = 0
+        self._render_total = 0
+        self._checksum_completed = 0
+        self._checksum_total = 0
 
     def add(self, code: str, detail: str) -> None:
         self.issues.append(Issue(code, detail))
 
-    def run(self) -> dict[str, Any]:
+    def run(self, *, on_progress: ProgressCallback | None = None) -> dict[str, Any]:
+        self._on_progress = on_progress
+        self._inventory_completed = 0
+        self._schema_manifest_completed = 0
+        self._jsonl_completed = 0
+        self._selected_variant_count = 0
+        self._cross_reference_completed = 0
+        self._render_completed = 0
+        self._checksum_completed = 0
+        self._progress("INVENTORY", 0, None, "files")
         self._check_directories()
         if self._early_reject:
+            self._progress("FINALIZE", 0, 1, "checks")
+            self._progress("FINALIZE", 1, 1, "checks")
             return self._report()
+
+        schema_manifest_total = len(SCHEMA_PATHS) + 1
+        self._progress("SCHEMAS_MANIFEST", 0, schema_manifest_total, "files")
         self._load_schemas()
         self._read_manifest()
+
+        self._progress("JSONL_RECORDS", 0, None, "records")
         self._read_jsonl()
+
+        record_count = self._jsonl_completed
+        self._progress("CROSS_REFERENCES", 0, record_count, "records")
         self._check_package_files()
         self._check_asset_blacklist()
         self._check_cross_record_invariants()
+
+        self._render_total = self._selected_variant_count
+        self._progress("RENDERS", 0, self._render_total, "renders")
         self._check_renders()
+
+        self._checksum_total = len(self._files) - int("checksums.sha256" in self._files)
+        self._progress("CHECKSUMS", 0, self._checksum_total, "checks")
         self._check_checksums()
+
+        self._progress("FINALIZE", 0, 1, "checks")
         self._check_manifest_counts_and_status()
+        self._progress("FINALIZE", 1, 1, "checks")
         return self._report()
+
+    def _progress(self, phase: str, completed: int, total: int | None, unit: str) -> None:
+        if self._on_progress is not None:
+            self._on_progress(phase, completed, total, unit)
 
     def _report(self) -> dict[str, Any]:
         return {
@@ -229,6 +272,8 @@ class Validator:
                     self.add("INVENTORY_HARDLINK_REJECTED", relative)
                     continue
                 self._files[relative] = path
+                self._inventory_completed += 1
+                self._progress("INVENTORY", self._inventory_completed, None, "files")
 
     def _read_bytes(self, path: Path) -> bytes:
         if path in self._bytes_cache:
@@ -249,24 +294,31 @@ class Validator:
 
     def _load_schemas(self) -> None:
         for schema_id, relative_path in SCHEMA_PATHS.items():
-            path = self.repo_root / relative_path
             try:
+                path = self.repo_root / relative_path
                 raw = self._read_bytes(path)
                 value = json.loads(_decode_text(raw, path))
             except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                 self.add("SCHEMA_READ_FAILED", f"{relative_path.as_posix()}: {type(exc).__name__}")
-                continue
-            if not isinstance(value, Mapping):
-                self.add("SCHEMA_NOT_OBJECT", relative_path.as_posix())
-                continue
-            self.schemas[schema_id] = value
-            self._schema_bytes_cache[schema_id] = raw
-            self._schema_digest_cache[schema_id] = "sha256:" + self._sha256_hex(path)
-            try:
-                self.validators[schema_id] = Draft202012Validator(value)
-                Draft202012Validator.check_schema(value)
-            except Exception as exc:  # jsonschema exposes several schema errors
-                self.add("SCHEMA_INVALID", f"{schema_id}: {type(exc).__name__}")
+            else:
+                if not isinstance(value, Mapping):
+                    self.add("SCHEMA_NOT_OBJECT", relative_path.as_posix())
+                else:
+                    self.schemas[schema_id] = value
+                    self._schema_bytes_cache[schema_id] = raw
+                    self._schema_digest_cache[schema_id] = "sha256:" + self._sha256_hex(path)
+                    try:
+                        self.validators[schema_id] = Draft202012Validator(value)
+                        Draft202012Validator.check_schema(value)
+                    except Exception as exc:  # jsonschema exposes several schema errors
+                        self.add("SCHEMA_INVALID", f"{schema_id}: {type(exc).__name__}")
+            self._schema_manifest_completed += 1
+            self._progress(
+                "SCHEMAS_MANIFEST",
+                self._schema_manifest_completed,
+                len(SCHEMA_PATHS) + 1,
+                "files",
+            )
 
     def _check_package_files(self) -> None:
         if not self.export_dir.is_dir():
@@ -298,37 +350,44 @@ class Validator:
             value = json.loads(_decode_text(self._read_bytes(path), path))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             self.add("MANIFEST_READ_FAILED", f"{path.name}: {type(exc).__name__}")
-            return
-        if not isinstance(value, Mapping):
-            self.add("MANIFEST_NOT_OBJECT", path.name)
-            return
-        self.manifest = value
-        self._validate_schema("export-manifest.v1", value, path.name)
-        export_id = value.get("export_id")
-        if isinstance(export_id, str) and self.export_dir.name != export_id:
-            self.add(
-                "EXPORT_DIR_NAME_MISMATCH",
-                f"directory {self.export_dir.name!r} does not equal manifest export_id {export_id!r}",
-            )
-        if self.manifest.get("status") == "failed":
-            self.add("FAILED_EXPORT_NOT_ACCEPTED", "failed export staging is diagnostic only")
-        inventory = value.get("schema_inventory")
-        if isinstance(inventory, list):
-            expected = list(SCHEMA_IDS)
-            actual = [item.get("schema_id") for item in inventory if isinstance(item, Mapping)]
-            if actual != expected:
-                self.add("SCHEMA_INVENTORY_ORDER", f"expected {expected!r}, got {actual!r}")
-            for item in inventory:
-                if not isinstance(item, Mapping):
-                    continue
-                schema_id = item.get("schema_id")
-                if schema_id not in SCHEMA_PATHS:
-                    continue
-                expected_hash = self._schema_digest_cache.get(schema_id)
-                if expected_hash is None:
-                    continue
-                if item.get("schema_sha256") != expected_hash:
-                    self.add("SCHEMA_INVENTORY_HASH_MISMATCH", str(schema_id))
+        else:
+            if not isinstance(value, Mapping):
+                self.add("MANIFEST_NOT_OBJECT", path.name)
+            else:
+                self.manifest = value
+                self._validate_schema("export-manifest.v1", value, path.name)
+                export_id = value.get("export_id")
+                if isinstance(export_id, str) and self.export_dir.name != export_id:
+                    self.add(
+                        "EXPORT_DIR_NAME_MISMATCH",
+                        f"directory {self.export_dir.name!r} does not equal manifest export_id {export_id!r}",
+                    )
+                if self.manifest.get("status") == "failed":
+                    self.add("FAILED_EXPORT_NOT_ACCEPTED", "failed export staging is diagnostic only")
+                inventory = value.get("schema_inventory")
+                if isinstance(inventory, list):
+                    expected = list(SCHEMA_IDS)
+                    actual = [item.get("schema_id") for item in inventory if isinstance(item, Mapping)]
+                    if actual != expected:
+                        self.add("SCHEMA_INVENTORY_ORDER", f"expected {expected!r}, got {actual!r}")
+                    for item in inventory:
+                        if not isinstance(item, Mapping):
+                            continue
+                        schema_id = item.get("schema_id")
+                        if schema_id not in SCHEMA_PATHS:
+                            continue
+                        expected_hash = self._schema_digest_cache.get(schema_id)
+                        if expected_hash is None:
+                            continue
+                        if item.get("schema_sha256") != expected_hash:
+                            self.add("SCHEMA_INVENTORY_HASH_MISMATCH", str(schema_id))
+        self._schema_manifest_completed += 1
+        self._progress(
+            "SCHEMAS_MANIFEST",
+            self._schema_manifest_completed,
+            len(SCHEMA_PATHS) + 1,
+            "files",
+        )
 
     def _read_jsonl(self) -> None:
         for filename, schema_id in JSONL_SCHEMAS.items():
@@ -359,6 +418,10 @@ class Validator:
                     continue
                 records.append(value)
                 self._validate_schema(schema_id, value, f"{filename}:{line_number}")
+                self._jsonl_completed += 1
+                if filename == "variants.jsonl" and value.get("status") == "selected":
+                    self._selected_variant_count += 1
+                self._progress("JSONL_RECORDS", self._jsonl_completed, None, "records")
             self.records[filename] = records
 
         if "failures.jsonl" in self._files:
@@ -387,6 +450,7 @@ class Validator:
                     self.add("ORIGINAL_ASSET_BLACKLISTED", posix)
 
     def _check_checksums(self) -> None:
+        self._checksum_total = len(self._files) - int("checksums.sha256" in self._files)
         path = self.export_dir / "checksums.sha256"
         try:
             raw = self._read_bytes(path)
@@ -415,6 +479,8 @@ class Validator:
             if relative == "checksums.sha256":
                 continue
             expected[relative] = self._sha256_hex(file)
+            self._checksum_completed += 1
+            self._progress("CHECKSUMS", self._checksum_completed, self._checksum_total, "checks")
         if set(listed) != set(expected):
             missing = sorted(set(expected) - set(listed))
             extra = sorted(set(listed) - set(expected))
@@ -436,17 +502,22 @@ class Validator:
         states = self.records.get("states.jsonl", [])
         variants = self.records.get("variants.jsonl", [])
         failures = self.records.get("failures.jsonl", [])
+        record_total = len(blocks) + len(states) + len(variants) + len(failures)
         export_id = manifest.get("export_id")
         block_map: dict[str, Mapping[str, Any]] = {}
         for record in blocks:
             block_id = record.get("block_id")
             if not isinstance(block_id, str) or not BLOCK_ID_RE.fullmatch(block_id):
                 self.add("BLOCK_ID_INVALID", repr(block_id))
+                self._cross_reference_completed += 1
+                self._progress("CROSS_REFERENCES", self._cross_reference_completed, record_total, "records")
                 continue
             if block_id in block_map:
                 self.add("BLOCK_ID_DUPLICATE", block_id)
             block_map[block_id] = record
             self._same_export_id(record, export_id)
+            self._cross_reference_completed += 1
+            self._progress("CROSS_REFERENCES", self._cross_reference_completed, record_total, "records")
 
         state_map: dict[str, Mapping[str, Any]] = {}
         states_by_block: dict[str, list[Mapping[str, Any]]] = {}
@@ -462,6 +533,8 @@ class Validator:
             if isinstance(block_id, str):
                 states_by_block.setdefault(block_id, []).append(record)
             self._same_export_id(record, export_id)
+            self._cross_reference_completed += 1
+            self._progress("CROSS_REFERENCES", self._cross_reference_completed, record_total, "records")
 
         variant_map: dict[str, Mapping[str, Any]] = {}
         variants_by_block: dict[str, list[Mapping[str, Any]]] = {}
@@ -485,6 +558,8 @@ class Validator:
             if isinstance(block_id, str):
                 variants_by_block.setdefault(block_id, []).append(record)
             self._same_export_id(record, export_id)
+            self._cross_reference_completed += 1
+            self._progress("CROSS_REFERENCES", self._cross_reference_completed, record_total, "records")
 
         failures_by_variant: dict[str, list[Mapping[str, Any]]] = {}
         for record in failures:
@@ -493,6 +568,8 @@ class Validator:
                 failures_by_variant.setdefault(variant_id, []).append(record)
             self._same_export_id(record, export_id)
             self._check_failure_reference(record, block_map, state_map, variant_map)
+            self._cross_reference_completed += 1
+            self._progress("CROSS_REFERENCES", self._cross_reference_completed, record_total, "records")
 
         for block_id, block in block_map.items():
             block_states = states_by_block.get(block_id, [])
@@ -613,6 +690,10 @@ class Validator:
         if counts.get("registry_blocks") != len(blocks):
             self.add("REGISTRY_COUNT_MISMATCH", "counts.registry_blocks")
 
+    def _progress_render_unit(self) -> None:
+        self._render_completed += 1
+        self._progress("RENDERS", self._render_completed, self._render_total, "renders")
+
     def _check_renders(self) -> None:
         variants = self.records.get("variants.jsonl", [])
         selected_render_directories: set[str] = set()
@@ -628,15 +709,18 @@ class Validator:
                 continue
             render = variant.get("render")
             if not isinstance(render, Mapping):
+                self._progress_render_unit()
                 continue
             variant_id = variant.get("variant_id")
             block_id = variant.get("block_id")
             paths = [render.get("preview_path"), render.get("mask_path"), render.get("render_metadata_path")]
             if not all(isinstance(path, str) for path in paths):
+                self._progress_render_unit()
                 continue
             expected_paths = _render_reference_paths(block_id) if isinstance(block_id, str) else None
             if expected_paths is None or tuple(paths) != expected_paths:
                 self.add("RENDER_PATH_INVALID", str(variant_id))
+                self._progress_render_unit()
                 continue
             selected_render_directories.add(PurePosixPath(expected_paths[0]).parent.as_posix())
             preview_path, mask_path, metadata_path = (self.export_dir / str(path) for path in paths)
@@ -645,6 +729,7 @@ class Validator:
                 if relative not in self._files or not _inside(self.export_dir, self._files[relative]):
                     self.add("RENDER_FILE_MISSING", relative)
             if not all(relative in self._files for relative in relative_paths):
+                self._progress_render_unit()
                 continue
             preview_info = _read_png(preview_path, self)
             mask_info = _read_png(mask_path, self)
@@ -668,9 +753,11 @@ class Validator:
                 metadata = json.loads(_decode_text(self._read_bytes(metadata_path), metadata_path))
             except (UnicodeError, json.JSONDecodeError) as exc:
                 self.add("RENDER_METADATA_PARSE_FAILED", f"{variant_id}: {type(exc).__name__}")
+                self._progress_render_unit()
                 continue
             if not isinstance(metadata, Mapping):
                 self.add("RENDER_METADATA_NOT_OBJECT", str(variant_id))
+                self._progress_render_unit()
                 continue
             self._validate_schema("render-metadata.v1", metadata, str(paths[2]))
             if metadata.get("variant_id") != variant_id:
@@ -682,6 +769,7 @@ class Validator:
                 self.add("MASK_METADATA_FORMAT_INVALID", str(variant_id))
             if isinstance(metadata.get("mask"), Mapping) and metadata["mask"].get("channel") != "alpha":
                 self.add("MASK_METADATA_CHANNEL_INVALID", str(variant_id))
+            self._progress_render_unit()
 
         actual_render_files = {
             relative for relative in self._files if relative.startswith("renders/")
@@ -1156,10 +1244,15 @@ def _check_image_quality(analysis: _PngAnalysis, validator: Validator, variant_i
         validator.add("MISSING_TEXTURE", variant_id)
 
 
-def validate_export(repo_root: str | Path, export_dir: str | Path) -> dict[str, Any]:
+def validate_export(
+    repo_root: str | Path,
+    export_dir: str | Path,
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
     """Return a report for one export package; never writes to the package."""
 
-    return Validator(Path(repo_root), Path(export_dir)).run()
+    return Validator(Path(repo_root), Path(export_dir)).run(on_progress=on_progress)
 
 
 def _parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:

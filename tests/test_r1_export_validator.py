@@ -58,6 +58,113 @@ def test_r1_validator_reports_helpful_missing_package_errors(tmp_path: Path) -> 
     assert "CHECKSUM_FILE_READ_FAILED" in codes
 
 
+def _make_progress_fixture(export_dir: Path) -> None:
+    export_dir.mkdir()
+    (export_dir / "renders").mkdir()
+    (export_dir / "manifest.json").write_text('{"schema_version":"export-manifest.v1"}\n', encoding="utf-8")
+    (export_dir / "blocks.jsonl").write_text("{}\n{}\n", encoding="utf-8")
+    (export_dir / "states.jsonl").write_text("{}\n{}\n", encoding="utf-8")
+    (export_dir / "variants.jsonl").write_text('{"status":"selected"}\n{"status":"selected"}\n', encoding="utf-8")
+    (export_dir / "failures.jsonl").write_text("{}\n", encoding="utf-8")
+    (export_dir / "checksums.sha256").write_text("", encoding="utf-8")
+    (export_dir / "exporter.log").write_text("", encoding="utf-8")
+
+
+def test_r1_validator_progress_is_monotonic_and_uses_stable_units(tmp_path: Path) -> None:
+    export_dir = tmp_path / "export"
+    _make_progress_fixture(export_dir)
+    events: list[tuple[str, int, int | None, str]] = []
+
+    def record_progress(phase: str, completed: int, total: int | None, unit: str) -> None:
+        events.append((phase, completed, total, unit))
+
+    validate_export(
+        Path(__file__).resolve().parents[1],
+        export_dir,
+        on_progress=record_progress,
+    )
+
+    expected_phases = {
+        "INVENTORY",
+        "SCHEMAS_MANIFEST",
+        "JSONL_RECORDS",
+        "CROSS_REFERENCES",
+        "RENDERS",
+        "CHECKSUMS",
+        "FINALIZE",
+    }
+    assert {phase for phase, _, _, _ in events} == expected_phases
+    events_by_phase = {
+        phase: [event for event in events if event[0] == phase]
+        for phase in expected_phases
+    }
+    assert len(events_by_phase["INVENTORY"]) == 8
+    assert len(events_by_phase["SCHEMAS_MANIFEST"]) == 8
+    assert len(events_by_phase["JSONL_RECORDS"]) == 8
+    assert len(events_by_phase["CROSS_REFERENCES"]) == 8
+    assert len(events_by_phase["RENDERS"]) == 3
+    assert len(events_by_phase["CHECKSUMS"]) == 7
+    assert events_by_phase["JSONL_RECORDS"][-1][1:] == (7, None, "records")
+    assert {event[2] for event in events_by_phase["CROSS_REFERENCES"][1:]} == {7}
+    assert {event[2] for event in events_by_phase["RENDERS"]} == {2}
+    assert {event[2] for event in events_by_phase["CHECKSUMS"]} == {6}
+    previous: dict[str, int] = {}
+    totals: dict[str, int | None] = {}
+    for phase, completed, total, unit in events:
+        assert phase in expected_phases
+        assert completed >= 0
+        assert total is None or total >= completed
+        assert unit in {"files", "records", "renders", "checks"}
+        assert completed >= previous.get(phase, 0)
+        if total is not None:
+            assert totals.get(phase, total) == total
+            totals[phase] = total
+        previous[phase] = completed
+
+
+def test_r1_validator_progress_does_not_change_default_report(tmp_path: Path) -> None:
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    repo_root = Path(__file__).resolve().parents[1]
+
+    default_report = validate_export(repo_root, export_dir)
+    callback_report = validate_export(repo_root, export_dir, on_progress=lambda *_: None)
+
+    assert callback_report == default_report
+
+
+def test_r1_validator_progress_callback_failure_propagates(tmp_path: Path) -> None:
+    export_dir = tmp_path / "export"
+    _make_progress_fixture(export_dir)
+
+    class ProgressFailure(RuntimeError):
+        pass
+
+    def fail(phase: str, completed: int, total: int | None, unit: str) -> None:
+        if phase == "JSONL_RECORDS" and completed == 1:
+            raise ProgressFailure("progress persistence failed")
+
+    with pytest.raises(ProgressFailure, match="progress persistence failed"):
+        validate_export(Path(__file__).resolve().parents[1], export_dir, on_progress=fail)
+
+
+def test_r1_validator_uses_one_validator_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    calls = 0
+    original_run = Validator.run
+
+    def counted_run(self: Validator, *, on_progress=None):
+        nonlocal calls
+        calls += 1
+        return original_run(self, on_progress=on_progress)
+
+    monkeypatch.setattr(Validator, "run", counted_run)
+    validate_export(Path(__file__).resolve().parents[1], export_dir, on_progress=lambda *_: None)
+
+    assert calls == 1
+
+
 def test_r1_v1_export_identity_and_render_path_boundaries() -> None:
     assert EXPORT_ID_RE.fullmatch("export_20260814T165501Z")
     assert EXPORT_ID_RE.fullmatch("export_20260814T165501Z_01")
@@ -190,6 +297,48 @@ def test_r1_png_analysis_reuses_one_read_and_decode(monkeypatch, tmp_path: Path)
     assert png_path not in validator._bytes_cache
     assert png_path in validator._digest_cache
     assert not validator.issues
+
+
+def test_r1_progress_does_not_add_png_reads_or_decodes(monkeypatch, tmp_path: Path) -> None:
+    from tools import validate_r1_export as validator_module
+
+    png_path = tmp_path / "progress.png"
+    pixels = bytearray(4 * 4 * 4)
+    for index in (5, 6, 9, 10):
+        pixels[index * 4 : index * 4 + 4] = bytes((80, 80, 80, 255))
+    png_path.write_bytes(_rgba_png(4, 4, bytes(pixels)))
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    repo_root = Path(__file__).resolve().parents[1]
+    original_read_bytes = Path.read_bytes
+    original_parse_png = validator_module._parse_png
+    png_read_count = 0
+    png_decode_count = 0
+
+    def counted_read(path: Path) -> bytes:
+        nonlocal png_read_count
+        if path == png_path:
+            png_read_count += 1
+        return original_read_bytes(path)
+
+    def counted_parse(raw: bytes):
+        nonlocal png_decode_count
+        png_decode_count += 1
+        return original_parse_png(raw)
+
+    def check_renders(validator: Validator) -> None:
+        assert _read_png(png_path, validator) is not None
+        assert _read_png(png_path, validator) is not None
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read)
+    monkeypatch.setattr(validator_module, "_parse_png", counted_parse)
+    monkeypatch.setattr(Validator, "_check_renders", check_renders)
+
+    validate_export(repo_root, export_dir)
+    validate_export(repo_root, export_dir, on_progress=lambda *_: None)
+
+    assert png_read_count == 2
+    assert png_decode_count == 2
 
 
 def test_r1_inventory_rejects_hardlinks(tmp_path: Path) -> None:

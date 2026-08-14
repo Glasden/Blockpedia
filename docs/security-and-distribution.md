@@ -55,6 +55,14 @@ MVP 假设单用户本机运行：
 
 MCP stdout 只能是 JSON-RPC/MCP 消息，日志、诊断和堆栈只能到 stderr，不得写本地日志文件。MCP 查询不能写数据库、文件、cache 或 `current.json`，详细工具边界见 [`mcp-api.md`](mcp-api.md)。
 
+### 3.1 导出目录 chooser 与 import snapshot
+
+WebUI 的目录选择范围严格限定为 `<data-root>/exports/<minecraft_version>`；chooser 只能传递进程本地、高熵 opaque ref，绝不把绝对路径放入 token、response、log、cache、SQLite 或 URL。消费 ref 时必须重新验证 root、精确版本、目录 identity 和每个 path component，拒绝 traversal、symlink、Windows junction/reparse point、意外 mount crossing、snapshot hardlink、以及 chooser 后的 stale replacement。source `Path` 只允许存在于当前 in-memory closure。
+
+`cache/import-checks/{check_id}/state.json` 是 import check 的唯一 authoritative state；snapshot 仍位于 `cache/import-checks/{check_id}/snapshot/{export_id}/`，其它 check-owned metadata 不能作为列表索引。state 以 atomic replace 保存最小非秘密阶段、状态、anchor hash、时间、validator subphase/progress 和 workspace association；绝对 source path、chooser ref/token、API key 和其它秘密不得持久化。首页、目录 listing 和 Recent Checks 必须按需扫描严格匹配 `^check_[0-9a-f]{32}$` 的 check directories/state files，拒绝 symlink、junction、reparse point、hardlink 和未知路径 entry，并只展示经过 sanitization 的 summary。禁止 `index.json`、`owner_instance_id`、额外数据库表、generic migration、依赖、服务或任意生成框架。
+
+通过 check 的再次使用只比较 canonical source entry 当前 raw `manifest.json` 与 `checksums.sha256` 的 SHA-256 declared anchors；这只是轻量变化提示，不是 live artifact 全量未变的安全证明。导入永远从 immutable checked snapshot 读取，完整性依据是 snapshot 与一次 validator pass；source chooser ref 失效、anchor 改变或 check failed/interrupted 时必须重新选择/新建 check。source snapshot 阶段发生进程重启时不得续跑，必须报告 `IMPORT_CHECK_INTERRUPTED`。该增强沿用 loopback、SQLite、本地文件和进程内 Worker，不改变 MCP 的 stdio/只读边界或引入新服务。
+
 ## 4. 秘密管理
 
 ### 4.1 Keyring/env 优先级
@@ -120,6 +128,8 @@ WebUI 每次发送前必须展示待发送的文本、图片和 machine metadata
 - Token usage、费用、预算、价格估算。
 
 路径必须替换为稳定 hash 或相对 artifact ID；用户 query 仅在本地任务必要时最小保存，不自动外发。前端错误使用稳定 `error_code` 和可操作消息，详细诊断写本地脱敏日志；不得回显 key、路径或 provider body。WebUI/Worker 日志在 data root `logs/`，默认本地滚动；MCP 是例外，只写 stderr，绝不写 data-root logs、cache 或临时文件。无远程日志服务；用户主动导出诊断包时必须再次脱敏并列出字段清单。
+
+SSE snapshot 同样属于前端响应，必须使用与普通 API 相同的路径/秘密脱敏规则。run 只允许输出 item aggregate、current/recent/latest allowlisted audit projection、heartbeat 和稳定错误码；import check 允许输出 `state.json` 的完整脱敏快照（包括宏观 phase、validator subphase/progress 和 workspace association），但不逐 item 广播。两者都不得输出 raw `details_json`、cursor、worker ID、exception、绝对路径、chooser token、secret 或可 replay 的事件 ID。断开连接只能结束响应，不能取消或改变后台工作；heartbeat、stale 展示和 summary 扫描不得产生写入。
 
 ## 7. Release、current 和回滚保护
 

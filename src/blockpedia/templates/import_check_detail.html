@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block content %}
+{% set check_view = check|default(import_check|default(check_snapshot|default(snapshot|default({})), true), true) %}
+{% set check_identifier = check_view.get('check_id', check_id|default('unavailable')) %}
+{% set initial_workspace = check_view.get('workspace', {}) or {} %}
+{% set initial_workspace_creating = initial_workspace.get('status') in ['pending', 'running', 'creating'] %}
+<section class="page-intro page-shell import-check-intro">
+  <div class="reveal reveal--1">
+    <a class="back-link" href="/"><span aria-hidden="true">←</span> 返回导入工作台</a>
+    <p class="eyebrow"><span>{{ check_view.get('minecraft_version', '26.2') }}</span> IMPORT CHECK</p>
+    <h1>导出完整性<br><em>检查进度。</em></h1>
+  </div>
+  <p class="page-intro__copy reveal reveal--2">检查会建立本地安全快照并执行完整验证。页面只显示公开状态、稳定错误码和不透明来源引用。</p>
+</section>
+
+<section class="page-shell import-check-board reveal reveal--3" aria-labelledby="import-check-heading">
+  <div class="section-heading">
+    <div>
+      <p class="section-index">CANONICAL CHECK</p>
+      <h2 id="import-check-heading">检查 <code>{{ check_identifier }}</code></h2>
+    </div>
+    <span class="stream-state" data-external-stream-status data-state="connecting"><i aria-hidden="true"></i><span>正在连接实时状态</span></span>
+  </div>
+
+  <div
+    id="import-check-panel"
+    data-event-panel="import"
+    data-check-id="{{ check_identifier }}"
+    data-events-url="{{ check_events_url|default('/api/imports/checks/' ~ check_identifier ~ '/events') }}"
+    data-initial-phase="{{ check_view.get('phase', 'QUEUED') }}"
+    data-initial-status="{{ check_view.get('status', 'pending') }}"
+    data-initial-workspace-status="{{ initial_workspace.get('status', 'absent') }}"
+    data-initial-terminal="{{ 'true' if not initial_workspace_creating and (check_view.get('can_import') or check_view.get('status') in ['passed', 'succeeded', 'failed', 'cancelled', 'invalid', 'complete', 'completed']) else 'false' }}"
+  >
+    {% with check=check_view %}{% include "partials/import_check_progress.html" %}{% endwith %}
+  </div>
+  <div id="import-action-feedback" class="import-action-feedback" aria-live="polite"></div>
+</section>
+{% endblock %}

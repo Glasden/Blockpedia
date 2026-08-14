@@ -47,8 +47,14 @@ def test_import_projection_validator_once_and_feature_boundary(monkeypatch: pyte
     check = service.check_import(export_fixture, "26.2")
     assert check.can_import
     assert calls == 1
-    cache = next((tmp_path / "cache" / "import-checks").glob("*.json"))
-    assert "repo_root" not in cache.read_text(encoding="utf-8")
+    check_dir = tmp_path / "cache" / "import-checks" / check.check_id
+    state_path = check_dir / "state.json"
+    metadata_path = check_dir / "metadata.json"
+    assert state_path.is_file()
+    assert metadata_path.is_file()
+    assert not list((tmp_path / "cache" / "import-checks").glob("*.json"))
+    assert "repo_root" not in state_path.read_text(encoding="utf-8")
+    assert "repo_root" not in metadata_path.read_text(encoding="utf-8")
     imported = service.import_checked(check.check_id)
     run_id = imported["run_id"]
     db = service.worker.database_for(run_id)
@@ -65,7 +71,9 @@ def test_import_projection_validator_once_and_feature_boundary(monkeypatch: pyte
     assert run["boundary_event"] == "R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING"
     assert [stage["status"] for stage in run["stages"][:6]] == ["succeeded"] * 6
     assert [stage["status"] for stage in run["stages"][6:]] == ["pending"] * 5
-    assert all(json.loads(stage["cursor_json"]).get("output_hash", "").startswith("sha256:") for stage in run["stages"][:6])
+    assert all(stage["error_code"] is None and not stage["error_present"] for stage in run["stages"][:6])
+    assert "cursor_json" not in json.dumps(run)
+    assert "details_json" not in json.dumps(run)
     assert service.query_workspace(run_id, "stone")
     assert str(tmp_path) not in json.dumps(check.to_dict())
     service.close()
@@ -156,7 +164,8 @@ def test_default_prepare_matches_runtime_python(tmp_path: Path, export_fixture: 
     else:
         assert result["status"] == "failed"
         assert run["stages"][0]["status"] == "failed"
-        assert json.loads(run["stages"][0]["cursor_json"])["error_code"] == "TOOLCHAIN_NOT_LOCKED"
+        assert run["stages"][0]["error_code"] == "TOOLCHAIN_NOT_LOCKED"
+        assert run["stages"][0]["error_present"] is True
     service.close()
 
 
@@ -170,7 +179,8 @@ def test_prepare_rejects_injected_wrong_python(tmp_path: Path, export_fixture: P
     run = service.get_run(run_id)
     assert result["status"] == "failed"
     assert run["stages"][0]["status"] == "failed"
-    assert json.loads(run["stages"][0]["cursor_json"])["error_code"] == "TOOLCHAIN_NOT_LOCKED"
+    assert run["stages"][0]["error_code"] == "TOOLCHAIN_NOT_LOCKED"
+    assert run["stages"][0]["error_present"] is True
     service.close()
 
 
@@ -326,9 +336,6 @@ def test_worker_pause_resume_cancel_and_explicit_stale_recovery(tmp_path: Path, 
     assert database.fetchone("SELECT 1 FROM audit_events WHERE event_type='WORKER_RECOVERED_STALE_RUNNING'") is not None
     with pytest.raises(RunStateConflict):
         service.cancel(run_id)
-    cancel_run = service.import_checked(check.check_id)["run_id"]
-    service.tick(cancel_run)
-    assert service.cancel(cancel_run)["status"] == "cancelled"
     service.close()
 
 

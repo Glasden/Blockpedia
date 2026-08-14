@@ -178,6 +178,20 @@ Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixtur
 6. 发布中 MCP 只读旧 release，切换后只读新完整 release；
 7. 并发 apply/rollback 串行化，第二请求返回明确状态冲突，不覆盖第一请求。
 
+### 8.3 Import check、chooser 和 SSE 最小验证
+
+在 R2 WebUI 验收中至少覆盖以下行为；这些是新增架构的最小门，不改变既有状态枚举、stage 顺序、loopback、无 CORS/CSRF 或 MCP 规则：
+
+1. `POST /api/imports/check` 返回 `202` 和 `pending`，state 目录扫描只接受严格 check ID、无链接/reparse entry 的 `state.json`；`GET /api/imports/checks/{check_id}`、`GET /api/imports/checks?minecraft_version=&limit=` 和 `/events` 能恢复同一 authoritative state。首页始终有 `Recent Checks`，最多 5 个 distinct exports，active first，目录 chooser 显示派生 marker，不创建第二持久索引。
+2. 两个并发 opaque refs 指向同一 `(minecraft_version, export_id)` 时，coordinator `RLock` 只保留一个 active check 和一次 validator；exact active duplicate 为 `202`/同一 `check_id`/`reused=true`。passed check 的 manifest/checksum raw SHA-256 anchors 未变时为 `200`/同一 check/`reused=true` 且 validator 调用数为 0；任一 anchor 改变、failed 或 interrupted 时才新建 `202` check。
+3. initial snapshot、15 秒 heartbeat、reconnect 和 client disconnect 都不取消或改变工作；server 在 source snapshot 期间重启则稳定失败为 `IMPORT_CHECK_INTERRUPTED`，不得 automatic resume。chooser root 严格为 `<data-root>/exports/<minecraft_version>`；traversal、symlink、Windows junction/reparse、unexpected mount crossing、snapshot hardlink 和 stale ref replacement 均被拒绝。
+4. 每个真正执行的 check 的 `Validator.run` 计数恰好为 1；observational snapshot/validator callback 不增加 scan/read/decode/hash，callback on/off 的 report、PNG read/decode 计数和最终 hash 相同。进度持久化失败产生稳定失败；`completed` 在每个 subphase 内单调递增，未知 total 保持 null/0，SSE 发完整 snapshot 而不是逐 item announcement。
+5. `POST /api/imports` 严格只接受 `check_id + copy_mode=copy_to_workspace`，不接受 `project_id`；并发 duplicate import 只产生一个 `import_id`/`run_id` 和一个最终 `work.sqlite3`。`creating` duplicate 返回同一 run 的 `202`，valid `created` 返回同一 run 的 `200`，完成首次请求可为 `201`；未验证 `work.sqlite3` 前不得 deep-link。
+6. 模拟 restart 时 `creating` association 能 reconcile 有效 final workspace；无效/缺失 final workspace 时保留原 reservation 和稳定 failure/retry，不静默创建第二 run。旧 state 缺少 association 时按 version/export/manifest hash 发现既有 workspace，且不改 SQL/schema/hash。
+7. status hero/live work 同时呈现完整 11-stage timeline、heartbeat、item aggregate、current/recent/latest allowlisted projection；check UI 的 `unchecked`、`checking`、`passed_not_imported`、`imported`、`failed/interrupted`、`changed_since_check` 动作和 checked marker 正确。成功 `/ui/imports` 使用 `HX-Redirect /runs/{run_id}`；页面刷新不依赖 `localStorage`。
+8. 绝对路径、chooser ref/token、secret、raw details、exception、worker ID、cursor 均不出现在 state/summary、response、URL、HTML、log、cache、SQLite 或 SSE；summary 中错误/ID/时间只经过 allowlist sanitization。
+9. 验收确认 `workspace.v1.sql` 字节内容及其既有 hash 均 unchanged；本增强不新增 `index.json`、`owner_instance_id`、SQLite 表/字段、generic migration、Schema ID、依赖、服务、消息总线或 arbitrary generation framework。
+
 ## 9. R3/R5 发布完整性门
 
 发布检查必须拆成两个独立门：`candidate-build gate` 由 WebUI `POST /api/releases/check` 执行，生成不可编辑的 `quality_report.json` 并决定 `can_build`；`activation gate` 由 WebUI `POST /api/releases/activation-check` 执行，决定 `can_apply`。`/api/releases/check` 和 `/api/releases/build` 只要求 R0–R3 及 candidate-build 前置；`/api/releases/activation-check` 和 `/api/releases/apply` 才要求 R0–R4、activation gate 和用户确认。candidate-build gate 只检查单个 release 内容完整性，**MUST NOT** 包含 MCP smoke、`TWO_INDEPENDENT_RELEASES` 或 current 切换；activation gate 检查至少两个 candidate、四工具 MCP smoke、原子 current 和 candidate 报告/hash 复核。任一 blocker 失败，WebUI **MUST NOT** build（candidate）或 apply（activation）。

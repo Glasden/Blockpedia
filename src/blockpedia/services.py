@@ -8,12 +8,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .importer import ImportCheck, ImportService
+from .directory_chooser import DirectoryChooser
+from .importer import ImportCheck, ImportCheckInProgress, ImportService
 from .paths import DataRoot, resolve_data_root
 from .search import WorkspaceQueryService
 from .stages import RunStateConflict, STUDIO_STAGES, require_transition
 from .storage import WorkspaceDatabase, utc_now
 from .worker import StaleMarker, WorkerService
+from .run_snapshots import RunSnapshotService
 
 
 class StudioService:
@@ -22,8 +24,15 @@ class StudioService:
     def __init__(self, data_root: DataRoot | str | Path | None = None, *, repo_root: Path | None = None, force_normalized_like: bool = False, toolchain_probe: Any | None = None):
         self.data_root = data_root if isinstance(data_root, DataRoot) else resolve_data_root(data_root)
         self.data_root.ensure_layout()
-        self.imports = ImportService(self.data_root, repo_root=repo_root, force_normalized_like=force_normalized_like)
+        self.directory_chooser = DirectoryChooser(self.data_root)
+        self.imports = ImportService(
+            self.data_root,
+            repo_root=repo_root,
+            force_normalized_like=force_normalized_like,
+            chooser=self.directory_chooser,
+        )
         self.worker = WorkerService(self.data_root, repo_root=repo_root, force_normalized_like=force_normalized_like, toolchain_probe=toolchain_probe)
+        self.run_snapshots = RunSnapshotService(self.data_root, stale_after_seconds=self.worker.stale_after_seconds)
         self._close_lock = threading.RLock()
         self._closed = False
 
@@ -33,35 +42,27 @@ class StudioService:
                 return False
             self._closed = True
             self.worker.close()
+            self.imports.close()
             return True
 
     def check_import(self, source_directory: str | Path, minecraft_version: str) -> ImportCheck:
         return self.imports.check_import(source_directory, minecraft_version)
 
+    def start_import_check(self, source_directory_ref: str, minecraft_version: str) -> ImportCheck:
+        return self.imports.start_check(source_directory_ref, minecraft_version)
+
+    def get_import_check(self, check_id: str) -> ImportCheck:
+        return self.imports.get_check(check_id)
+
+    def list_directories(self, minecraft_version: str, parent_ref: str | None = None) -> dict[str, Any]:
+        return self.directory_chooser.list_directories(minecraft_version, parent_ref)
+
     def import_checked(self, check_id: str, *, copy_mode: str = "copy_to_workspace") -> dict[str, Any]:
         return self.imports.import_checked(check_id, copy_mode=copy_mode)
 
     def get_run(self, run_id: str) -> dict[str, Any]:
-        with self.worker.open_database(run_id) as database:
-            run = database.fetchone("SELECT * FROM runs WHERE run_id=?", (run_id,))
-            if run is None:
-                raise KeyError(run_id)
-            stages = database.fetchall("SELECT stage,ordinal,status,cursor_json,worker_id,recovery_attempt,pause_after_item,heartbeat_at FROM stage_runs WHERE run_id=? ORDER BY ordinal", (run_id,))
-            jobs = database.fetchall("SELECT job_id,stage,logical_key,status,auto_attempt,worker_id,heartbeat_at,cursor_json,output_hash,error_code,error_message FROM jobs WHERE run_id=? ORDER BY stage,logical_key", (run_id,))
-            payload = {key: run[key] for key in run.keys()}
-            payload["stages"] = [{key: row[key] for key in row.keys()} for row in stages]
-            payload["jobs"] = [
-                {
-                    **{key: row[key] for key in row.keys()},
-                    "error_message": (str(row["error_message"]).replace(str(database.path.parent), "<workspace>") if row["error_message"] else None),
-                }
-                for row in jobs
-            ]
-            config_snapshot = json.loads(run["config_snapshot_json"] or "{}")
-        payload["stale"] = [marker.to_dict() for marker in self.worker.detect_stale(run_id)]
-        payload.pop("config_snapshot_json", None)
-        payload["config_snapshot"] = config_snapshot
-        return payload
+        self.run_snapshots.stale_after_seconds = self.worker.stale_after_seconds
+        return self.run_snapshots.snapshot(run_id)
 
     def list_runs(self, minecraft_version: str | None = None) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []

@@ -1,102 +1,269 @@
-<section class="run-panel" aria-labelledby="pipeline-heading">
-  <div class="run-overview">
-    <div>
+{% set run_view = run|default(run_snapshot|default(snapshot|default({})), true) %}
+{% set current_stage = run_view.get('current_stage', 'PREPARE') %}
+{% set run_status = run_view.get('status', 'pending') %}
+{% set stages = run_view.get('stages', run_view.get('stage_timeline', [])) or [] %}
+{% set jobs = run_view.get('jobs', run_view.get('recent_queue', run_view.get('queue', []))) or [] %}
+{% set progress = run_view.get('progress', run_view.get('r2_progress', {})) or {} %}
+{% set supplied_item_progress = run_view.get('item_progress', run_view.get('job_progress', {})) or {} %}
+{% set item_by_status = supplied_item_progress.get('by_status', {}) or {} %}
+{% set provided_current_unit = run_view.get('current_unit') %}
+{% set boundary_event = run_view.get('boundary_event') %}
+{% set warnings = run_view.get('warnings', []) or [] %}
+{% set stale_items = run_view.get('stale', []) or [] %}
+
+{% set timeline = namespace(current_index=1, current_status='pending', current_heartbeat=None, pause_after_item=false) %}
+{% for stage_name in stage_order %}
+  {% if stage_name == current_stage %}{% set timeline.current_index = loop.index %}{% endif %}
+{% endfor %}
+{% for entry in stages %}
+  {% set entry_name = entry.get('stage', 'PREPARE') if entry is mapping else entry %}
+  {% if entry_name == current_stage %}
+    {% if entry is mapping %}
+      {% set timeline.current_status = entry.get('status', run_status) %}
+      {% set timeline.current_heartbeat = entry.get('heartbeat_at') %}
+      {% set timeline.pause_after_item = entry.get('pause_after_item', false) %}
+    {% endif %}
+  {% endif %}
+{% endfor %}
+
+{% set job_counts = namespace(total=0, pending=0, running=0, succeeded=0, needs_review=0, failed=0, skipped=0, current=provided_current_unit) %}
+{% for job in jobs %}
+  {% set job_counts.total = job_counts.total + 1 %}
+  {% set job_state = job.get('status', 'pending') %}
+  {% if job_state == 'pending' %}{% set job_counts.pending = job_counts.pending + 1 %}{% endif %}
+  {% if job_state == 'running' %}{% set job_counts.running = job_counts.running + 1 %}{% endif %}
+  {% if job_state == 'succeeded' %}{% set job_counts.succeeded = job_counts.succeeded + 1 %}{% endif %}
+  {% if job_state == 'needs_review' %}{% set job_counts.needs_review = job_counts.needs_review + 1 %}{% endif %}
+  {% if job_state == 'failed' %}{% set job_counts.failed = job_counts.failed + 1 %}{% endif %}
+  {% if job_state == 'skipped' %}{% set job_counts.skipped = job_counts.skipped + 1 %}{% endif %}
+  {% if job_counts.current is none and job.get('stage', current_stage) == current_stage and job_state == 'running' %}
+    {% set job_counts.current = job %}
+  {% endif %}
+{% endfor %}
+
+{% set item_total = supplied_item_progress.get('total', supplied_item_progress.get('total_items', job_counts.total))|int %}
+{% set item_completed = supplied_item_progress.get('completed', supplied_item_progress.get('completed_items', job_counts.succeeded + job_counts.skipped))|int %}
+{% set item_percent = supplied_item_progress.get('percent', ((item_completed * 100 / item_total)|round if item_total else 0))|int %}
+{% set has_item_progress = supplied_item_progress.get('has_items', supplied_item_progress.get('available', false)) or current_stage == 'EXTRACT_FEATURES' or provided_current_unit %}
+{% set active_heartbeat = (job_counts.current.get('heartbeat_at') if job_counts.current else None) or timeline.current_heartbeat or run_view.get('heartbeat_at') %}
+{% set current_meta = stage_meta.get(current_stage, {}) %}
+{% set r2_completed = progress.get('r2_completed_stages', 0)|int %}
+{% set r2_total = progress.get('r2_total_stages', 6)|int %}
+{% set r2_percent = progress.get('r2_percent', ((r2_completed * 100 / r2_total)|round if r2_total else 0))|int %}
+
+<section class="run-panel" aria-labelledby="pipeline-heading" data-run-fragment data-current-stage="{{ current_stage }}" data-run-status="{{ run_status }}" data-boundary-event="{{ boundary_event or '' }}">
+  <div class="pipeline-hero">
+    <div class="pipeline-summary">
       <p class="section-index">PIPELINE STATUS</p>
       <div class="run-state-line">
-        <h2 id="pipeline-heading">{{ status_labels.get(run.status, run.status) }}</h2>
-        <span class="status-badge status-badge--{{ run.status }}">{{ run.status }}</span>
+        <h2 id="pipeline-heading">{{ status_labels.get(run_status, run_status) }}</h2>
+        <span class="status-badge status-badge--{{ run_status }}">{{ run_status }}</span>
       </div>
-      <p>当前阶段 <code>{{ run.current_stage }}</code></p>
+      <p>当前阶段 <code>{{ current_stage }}</code></p>
+      {% if boundary_event %}<p class="pipeline-summary__note">R2 已完成，当前停在后续阶段边界。</p>{% endif %}
+      <span class="stream-state" data-stream-status data-state="connecting"><i aria-hidden="true"></i><span>正在连接实时状态</span></span>
     </div>
-    <div class="progress-dial" style="--progress: {{ run.progress.r2_percent }}" aria-label="R2 进度 {{ run.progress.r2_percent }}%">
-      <span><b>{{ run.progress.r2_completed_stages }}</b>/{{ run.progress.r2_total_stages }}<small>R2 阶段</small></span>
-    </div>
-  </div>
 
-  {% if run.warnings %}
-  <div class="warning-stack">
-    {% for warning in run.warnings %}<p><span aria-hidden="true">!</span>{{ warning }}</p>{% endfor %}
-  </div>
-  {% endif %}
-
-  <div class="run-actions" aria-label="运行操作">
-    {% if run.status == 'running' %}
-    <form hx-post="/ui/runs/{{ run.run_id }}/pause" hx-target="#run-panel" hx-swap="innerHTML">
-      <button class="button button--quiet" type="submit">暂停</button>
-    </form>
-    <form hx-post="/ui/runs/{{ run.run_id }}/cancel" hx-target="#run-panel" hx-swap="innerHTML" hx-confirm="取消后不能恢复此运行。确认取消吗？">
-      <button class="button button--danger" type="submit">取消运行</button>
-    </form>
-    {% elif run.status == 'paused' and not run.boundary_event %}
-    <form hx-post="/ui/runs/{{ run.run_id }}/resume" hx-target="#run-panel" hx-swap="innerHTML">
-      <button class="button button--primary" type="submit">继续运行 <span aria-hidden="true">→</span></button>
-    </form>
-    {% elif run.status == 'failed' %}
-    <form hx-post="/ui/runs/{{ run.run_id }}/retry-failed" hx-target="#run-panel" hx-swap="innerHTML">
-      <button class="button button--primary" type="submit">重试失败阶段 <span aria-hidden="true">↻</span></button>
-    </form>
-    {% elif run.boundary_event %}
-    <p class="boundary-inline"><span aria-hidden="true">◆</span> 已停在 R3 边界；当前版本不会继续执行 AI 标注。</p>
-    {% else %}
-    <p class="boundary-inline">当前状态没有可执行操作。</p>
-    {% endif %}
-  </div>
-
-  {% if run.stale %}
-  <section class="detail-stale" aria-labelledby="detail-stale-heading">
-    <div>
-      <p class="section-index">STALE DETECTED</p>
-      <h3 id="detail-stale-heading">需要显式恢复</h3>
-    </div>
-    {% for marker in run.stale %}
-    <form hx-post="/ui/runs/{{ run.run_id }}/recover" hx-target="#run-panel" hx-swap="innerHTML">
-      {% if marker.job_id %}<input type="hidden" name="job_id" value="{{ marker.job_id }}">{% endif %}
-      <input type="hidden" name="stage" value="{{ marker.stage }}">
-      <input type="hidden" name="return_view" value="detail">
-      <span><b>{{ marker.stage }}</b>{% if marker.logical_key %}<code>{{ marker.logical_key }}</code>{% endif %}</span>
-      <button class="button button--danger" type="submit">恢复此项</button>
-    </form>
-    {% endfor %}
-  </section>
-  {% endif %}
-
-  <ol class="stage-timeline" aria-label="Studio 完整阶段时间线">
-    {% for stage in run.stages %}
-    {% set meta = stage_meta[stage.stage] %}
-    <li class="stage-item stage-item--{{ stage.status }} {% if meta.future %}stage-item--future{% endif %}" {% if run.current_stage == stage.stage %}aria-current="step"{% endif %}>
-      <div class="stage-item__rail">
-        <span class="stage-number">{{ "%02d"|format(loop.index) }}</span>
-        <span class="stage-line" aria-hidden="true"></span>
-      </div>
-      <div class="stage-item__body">
-        <div>
-          <span class="stage-phase">{{ meta.phase }}{% if meta.future %} · 后续阶段{% endif %}</span>
-          <h3>{{ meta.label }}</h3>
-          <code>{{ stage.stage }}</code>
-          <p>{{ meta.detail }}</p>
+    <section class="stage-viewport-shell" aria-labelledby="stage-flow-heading">
+      <div class="stage-viewport" role="region" aria-label="Studio 完整阶段时间线，可滚动" tabindex="0" data-stage-viewport data-scroll-key="stage-timeline" data-focus-key="stage-timeline">
+        <div class="stage-viewport__header">
+          <div>
+            <span class="stage-phase">阶段流</span>
+            <b id="stage-flow-heading">STEP {{ "%02d"|format(timeline.current_index) }} OF {{ "%02d"|format(stage_order|length) }}</b>
+          </div>
+          <button class="text-button locate-current" type="button" data-locate-current data-focus-key="locate-current">定位当前</button>
         </div>
-        <span class="status-badge status-badge--{{ stage.status }}">{{ status_labels.get(stage.status, stage.status) }}</span>
+        <ol class="stage-timeline stage-timeline--compact">
+          {% for stage_name in stage_order %}
+            {% set stage_rows = stages|selectattr('stage', 'equalto', stage_name)|list %}
+            {% set stage_status = stage_rows[0].get('status', 'pending') if stage_rows else 'pending' %}
+            {% set meta = stage_meta.get(stage_name, {}) %}
+            <li class="stage-item stage-item--{{ stage_status }} {% if meta.get('future') %}stage-item--future{% endif %}" {% if current_stage == stage_name %}aria-current="step" data-current-stage-row{% endif %}>
+              <div class="stage-item__rail">
+                <span class="stage-number">{{ "%02d"|format(loop.index) }}</span>
+                <span class="stage-line" aria-hidden="true"></span>
+              </div>
+              <div class="stage-item__body">
+                <div>
+                  <span class="stage-phase">{{ meta.get('phase', 'STUDIO') }}{% if meta.get('future') %} · 后续阶段{% endif %}</span>
+                  <h3>{{ meta.get('label', stage_name) }}</h3>
+                  <code>{{ stage_name }}</code>
+                  {% if current_stage == stage_name %}<p>{{ meta.get('detail', '等待本地阶段状态。') }}</p>{% endif %}
+                </div>
+                <span class="status-badge status-badge--{{ stage_status }}">{{ status_labels.get(stage_status, stage_status) }}</span>
+              </div>
+            </li>
+          {% endfor %}
+        </ol>
       </div>
-    </li>
-    {% endfor %}
-  </ol>
+    </section>
 
-  {% if run.jobs %}
-  <section class="job-ledger" aria-labelledby="job-heading">
-    <div class="section-heading section-heading--small">
-      <div><p class="section-index">ITEM LEDGER</p><h3 id="job-heading">离线特征条目</h3></div>
-      <span class="count-badge">{{ run.jobs|length }}</span>
+    <div class="progress-dial" style="--progress: {{ r2_percent }}" role="progressbar" aria-label="R2 阶段进度" aria-valuemin="0" aria-valuemax="{{ r2_total }}" aria-valuenow="{{ r2_completed }}">
+      <span><b>{{ r2_completed }}</b>/{{ r2_total }}<small>R2 阶段</small></span>
     </div>
-    <div class="job-table" role="table" aria-label="特征任务状态">
-      {% for job in run.jobs %}
-      <div class="job-row" role="row">
-        <code role="cell">{{ job.logical_key }}</code>
-        <span role="cell" class="status-badge status-badge--{{ job.status }}">{{ status_labels.get(job.status, job.status) }}</span>
-        <span role="cell">尝试 {{ job.auto_attempt }}</span>
-        {% if job.error_code %}<p role="cell"><b>{{ job.error_code }}</b> {{ job.error_message }}</p>{% endif %}
+  </div>
+
+  <section class="live-work" aria-labelledby="live-work-heading">
+    <header class="live-work__header">
+      <div>
+        <p class="section-index"><span class="live-label"><i aria-hidden="true"></i> LIVE WORK</span> / {{ current_stage }}</p>
+        <h3 id="live-work-heading">{{ current_meta.get('label', current_stage) }}</h3>
+        <p>
+          <span class="status-badge status-badge--{{ run_status }}">{{ status_labels.get(run_status, run_status) }}</span>
+          {% if active_heartbeat %}<span>最近心跳 <time datetime="{{ active_heartbeat }}">{{ active_heartbeat }}</time></span>{% else %}<span>尚无心跳记录</span>{% endif %}
+        </p>
       </div>
-      {% endfor %}
+      <div class="live-work__actions" aria-label="运行操作">
+        {% if run_status == 'running' %}
+          <form action="/ui/runs/{{ run_view.get('run_id', 'unavailable') }}/pause" method="post" data-run-command data-command-label="暂停" data-focus-key="pause-command">
+            <button class="button button--quiet" type="submit" {% if timeline.pause_after_item %}disabled{% endif %}>{% if timeline.pause_after_item %}当前条目后暂停{% else %}暂停{% endif %}</button>
+          </form>
+          <form action="/ui/runs/{{ run_view.get('run_id', 'unavailable') }}/cancel" method="post" data-run-command data-command-label="取消" data-confirm="取消后不能恢复此运行。确认取消吗？" data-focus-key="cancel-command">
+            <button class="button button--danger" type="submit">取消运行</button>
+          </form>
+        {% elif run_status == 'paused' and not boundary_event %}
+          <form action="/ui/runs/{{ run_view.get('run_id', 'unavailable') }}/resume" method="post" data-run-command data-command-label="继续" data-focus-key="resume-command">
+            <button class="button button--primary" type="submit">继续运行 <span aria-hidden="true">→</span></button>
+          </form>
+        {% elif run_status == 'failed' %}
+          <form action="/ui/runs/{{ run_view.get('run_id', 'unavailable') }}/retry-failed" method="post" data-run-command data-command-label="重试" data-focus-key="retry-command">
+            <button class="button button--primary" type="submit">重试失败阶段 <span aria-hidden="true">↻</span></button>
+          </form>
+        {% elif boundary_event %}
+          <p class="live-work__boundary"><span aria-hidden="true">◆</span> 已停在 R3 边界</p>
+        {% else %}
+          <p class="live-work__boundary">当前状态没有可执行操作。</p>
+        {% endif %}
+      </div>
+    </header>
+
+    <div id="run-command-feedback" class="command-feedback" role="status" aria-atomic="true" data-command-feedback></div>
+
+    {% if warnings %}
+      <div class="warning-stack">
+        {% for warning in warnings %}<p><span aria-hidden="true">!</span>{{ warning }}</p>{% endfor %}
+      </div>
+    {% endif %}
+
+    {% if run_view.get('error_code') %}
+      <div class="live-error" role="alert">
+        <span class="error-code">{{ run_view.get('error_code') }}</span>
+        <p>{{ run_view.get('error_message', '运行未完成，请按稳定错误码处理。') }}</p>
+      </div>
+    {% endif %}
+
+    {% if stale_items %}
+      <section class="live-recovery" aria-labelledby="detail-stale-heading">
+        <div>
+          <p class="section-index">STALE DETECTED</p>
+          <h4 id="detail-stale-heading">实时工作已停止，需要显式恢复</h4>
+        </div>
+        {% for marker in stale_items %}
+          <form action="/ui/runs/{{ run_view.get('run_id', 'unavailable') }}/recover" method="post" data-run-command data-command-label="恢复" data-focus-key="recover-{{ loop.index }}">
+            {% if marker.get('job_id') %}<input type="hidden" name="job_id" value="{{ marker.get('job_id') }}">{% endif %}
+            <input type="hidden" name="stage" value="{{ marker.get('stage', current_stage) }}">
+            <input type="hidden" name="return_view" value="detail">
+            <span><b>{{ marker.get('stage', current_stage) }}</b>{% if marker.get('logical_key') %}<code>{{ marker.get('logical_key') }}</code>{% endif %}</span>
+            <button class="button button--danger" type="submit">恢复此项</button>
+          </form>
+        {% endfor %}
+      </section>
+    {% endif %}
+
+    <div class="live-work__body">
+      <article class="current-unit">
+        <p class="section-index">CURRENT UNIT</p>
+        {% if job_counts.current %}
+          <code class="current-unit__key">{{ job_counts.current.get('logical_key', 'unavailable') }}</code>
+          <h4>正在处理当前条目</h4>
+          <p>{{ current_meta.get('label', current_stage) }} · 尝试 {{ job_counts.current.get('auto_attempt', job_counts.current.get('attempt', 0)) }}</p>
+          <span class="status-badge status-badge--running">{{ status_labels.get(job_counts.current.get('status', 'running'), '进行中') }}</span>
+        {% elif boundary_event %}
+          <span class="current-unit__symbol" aria-hidden="true">◆</span>
+          <h4>R2 本地处理已完成</h4>
+          <p>AI 标注与发布属于后续阶段，当前没有正在处理的条目。</p>
+        {% elif has_item_progress and run_status == 'pending' %}
+          <span class="current-unit__symbol" aria-hidden="true">⌁</span>
+          <h4>条目队列等待 Worker</h4>
+          <p>队列创建后会在这里显示当前方块。</p>
+        {% elif has_item_progress %}
+          <span class="current-unit__symbol" aria-hidden="true">↻</span>
+          <h4>正在准备下一个条目</h4>
+          <p>Worker 正在建立或领取条目；尚未报告当前 unit。</p>
+          {% if run_status == 'running' %}<progress class="indeterminate-progress" aria-label="正在准备条目"></progress>{% endif %}
+        {% else %}
+          <span class="current-unit__symbol" aria-hidden="true">◇</span>
+          <h4>{{ current_meta.get('label', current_stage) }}</h4>
+          <p>当前阶段按整包执行，没有逐条 item 计数。</p>
+          {% if run_status == 'running' %}<progress class="indeterminate-progress" aria-label="阶段正在执行"></progress>{% endif %}
+        {% endif %}
+      </article>
+
+      <section class="item-progress" aria-labelledby="item-progress-heading">
+        <div class="item-progress__heading">
+          <div><p class="section-index">ITEM PROGRESS</p><h4 id="item-progress-heading">条目进度</h4></div>
+          {% if has_item_progress and item_total %}<strong>{{ item_completed }} / {{ item_total }}</strong>{% endif %}
+        </div>
+        {% if has_item_progress and item_total %}
+          <progress value="{{ item_completed }}" max="{{ item_total }}" aria-label="已完成 {{ item_completed }}，共 {{ item_total }}">{{ item_percent }}%</progress>
+          <p class="progress-copy"><b>{{ item_percent }}%</b> 已完成或跳过</p>
+          <dl class="item-counts">
+            <div><dt>完成</dt><dd>{{ supplied_item_progress.get('succeeded', item_by_status.get('succeeded', job_counts.succeeded)) }}</dd></div>
+            <div><dt>进行中</dt><dd>{{ supplied_item_progress.get('running', item_by_status.get('running', job_counts.running)) }}</dd></div>
+            <div><dt>等待</dt><dd>{{ supplied_item_progress.get('pending', item_by_status.get('pending', job_counts.pending)) }}</dd></div>
+            <div><dt>异常</dt><dd>{{ supplied_item_progress.get('failed', item_by_status.get('failed', job_counts.failed + job_counts.needs_review)) }}</dd></div>
+          </dl>
+        {% else %}
+          <div class="no-item-progress"><span aria-hidden="true">—</span><p>{% if has_item_progress %}条目队列尚未报告确定总量。{% else %}该阶段没有可报告的逐条进度；状态来自阶段级事务。{% endif %}</p></div>
+        {% endif %}
+      </section>
     </div>
+
+    {% if jobs %}
+      <section class="queue-window" aria-labelledby="queue-heading">
+        <div class="queue-window__header">
+          <div><p class="section-index">CURRENT / RECENT QUEUE</p><h4 id="queue-heading">工作条目</h4></div>
+          <span class="count-badge">{{ job_counts.total }}</span>
+        </div>
+        <div class="queue-scroll" role="table" aria-label="当前与最近工作条目" tabindex="0" data-scroll-key="work-queue" data-focus-key="work-queue">
+          {% set visible = namespace(count=0) %}
+          {% for job in jobs if job.get('status') in ['running', 'failed', 'needs_review'] %}
+            {% if visible.count < 5 %}
+              <div class="queue-row queue-row--{{ job.get('status', 'pending') }}" role="row">
+                <code role="cell">{{ job.get('logical_key', 'unavailable') }}</code>
+                <span role="cell" class="status-badge status-badge--{{ job.get('status', 'pending') }}">{{ status_labels.get(job.get('status', 'pending'), job.get('status', 'pending')) }}</span>
+                <span role="cell">尝试 {{ job.get('auto_attempt', 0) }}</span>
+                {% if job.get('error_code') %}<p role="cell"><b>{{ job.get('error_code') }}</b> {{ job.get('error_message') or '任务未完成，请按错误码处理。' }}</p>{% endif %}
+              </div>
+              {% set visible.count = visible.count + 1 %}
+            {% endif %}
+          {% endfor %}
+          {% for job in jobs if job.get('status') not in ['running', 'failed', 'needs_review'] %}
+            {% if visible.count < 8 %}
+              <div class="queue-row queue-row--{{ job.get('status', 'pending') }}" role="row">
+                <code role="cell">{{ job.get('logical_key', 'unavailable') }}</code>
+                <span role="cell" class="status-badge status-badge--{{ job.get('status', 'pending') }}">{{ status_labels.get(job.get('status', 'pending'), job.get('status', 'pending')) }}</span>
+                <span role="cell">尝试 {{ job.get('auto_attempt', 0) }}</span>
+              </div>
+              {% set visible.count = visible.count + 1 %}
+            {% endif %}
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
+    {% set latest_steps = run_view.get('latest_steps', []) or [] %}
+    <section class="latest-steps" aria-labelledby="latest-steps-heading">
+      <div><p class="section-index">LATEST ALLOWLISTED STEPS</p><h4 id="latest-steps-heading">最新步骤</h4></div>
+      <ol>
+        {% if latest_steps %}
+          {% for step in latest_steps[:5] %}
+            <li><span aria-hidden="true">↳</span><div><b>{{ step.get('label', step.get('code', 'STAGE_UPDATE')) }}</b>{% if step.get('detail') %}<p>{{ step.get('detail') }}</p>{% endif %}</div>{% if step.get('status') %}<span class="status-badge status-badge--{{ step.get('status') }}">{{ status_labels.get(step.get('status'), step.get('status')) }}</span>{% endif %}</li>
+          {% endfor %}
+        {% else %}
+          <li><span aria-hidden="true">↳</span><div><b>{{ current_meta.get('label', current_stage) }}</b><p>{{ current_meta.get('detail', '等待本地 Worker 提供下一条允许展示的步骤。') }}</p></div><span class="status-badge status-badge--{{ timeline.current_status }}">{{ status_labels.get(timeline.current_status, timeline.current_status) }}</span></li>
+        {% endif %}
+      </ol>
+    </section>
   </section>
-  {% endif %}
 </section>

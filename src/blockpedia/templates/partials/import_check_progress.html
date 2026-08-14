@@ -1,0 +1,136 @@
+{% set check_view = check|default(import_check|default(check_snapshot|default(snapshot|default({})), true), true) %}
+{% set check_status = check_view.get('status', 'pending') %}
+{% set check_phase = check_view.get('phase', check_view.get('current_phase', 'QUEUED')) %}
+{% set check_subphase = check_view.get('subphase') or ('FINALIZE' if check_phase == 'FINALIZE' else None) %}
+{% set check_progress = check_view.get('progress', {}) or {} %}
+{% set completed = check_progress.get('completed', check_view.get('completed', 0))|int %}
+{% set total = check_progress.get('total', check_view.get('total', 0))|int %}
+{% set unit = check_progress.get('unit', check_view.get('unit', 'items')) %}
+{% set unit_labels = {'files': '文件', 'records': '记录', 'renders': '渲染', 'checks': '检查', 'items': '项', 'export': '导出', 'check': '检查'} %}
+{% set unit_label = unit_labels.get(unit, unit) %}
+{% set percent = check_progress.get('percent', ((completed * 100 / total)|round if total else 0))|int %}
+{% set issues = check_view.get('issues', []) or [] %}
+{% set can_import = check_view.get('can_import', false) %}
+{% set check_marker = check_view.get('check_marker', {}) or {} %}
+{% set workflow_state = check_view.get('workflow_state', check_marker.get('state', 'checked' if can_import else check_status)) %}
+{% set source_changed = workflow_state == 'changed_since_check' %}
+{% set is_failed = check_status in ['failed', 'cancelled', 'invalid'] %}
+{% set is_terminal = can_import or is_failed or check_status in ['passed', 'succeeded', 'complete', 'completed'] %}
+{% set workspace = check_view.get('workspace', {}) or {} %}
+{% set workspace_status = workspace.get('status', 'absent') %}
+{% set workspace_creating = workspace_status in ['pending', 'running', 'creating'] %}
+{% set workspace_run_id = workspace.get('run_id') %}
+{% set workspace_created = workspace_run_id and workspace_status in ['created', 'imported', 'succeeded', 'existing'] %}
+{% set workspace_failed = workspace_status == 'failed' %}
+{% set snapshot_steps = ['SNAPSHOT_INVENTORY', 'SNAPSHOT_COPY_HASH', 'SNAPSHOT_METADATA'] %}
+{% set validator_steps = ['INVENTORY', 'SCHEMAS_MANIFEST', 'JSONL_RECORDS', 'CROSS_REFERENCES', 'RENDERS', 'CHECKSUMS', 'FINALIZE'] %}
+{% set subphase_labels = {
+  'SNAPSHOT_INVENTORY': '枚举快照文件',
+  'SNAPSHOT_COPY_HASH': '复制并计算 SHA-256',
+  'SNAPSHOT_METADATA': '写入快照元数据',
+  'INVENTORY': '清点导出内容',
+  'SCHEMAS_MANIFEST': '加载 Schema 与 manifest',
+  'JSONL_RECORDS': '读取业务记录',
+  'CROSS_REFERENCES': '核对跨记录引用',
+  'RENDERS': '检查预览与蒙版',
+  'CHECKSUMS': '复算 checksums',
+  'FINALIZE': '汇总检查结果'
+} %}
+{% set active_steps = snapshot_steps if check_phase == 'SNAPSHOT_EXPORT' or check_subphase in snapshot_steps else validator_steps %}
+{% set active_subphase = check_subphase or (snapshot_steps[0] if check_phase in ['QUEUED', 'SNAPSHOT_EXPORT'] else validator_steps[0]) %}
+{% set substep = namespace(index=0) %}
+{% for name in active_steps %}{% if name == active_subphase %}{% set substep.index = loop.index %}{% endif %}{% endfor %}
+
+<section class="import-progress {% if can_import and not source_changed %}import-progress--pass{% elif is_failed or source_changed %}import-progress--fail{% endif %}" aria-labelledby="check-progress-heading" data-import-fragment data-check-status="{{ check_status }}" data-check-phase="{{ check_phase }}" data-check-subphase="{{ check_subphase or '' }}" data-workspace-status="{{ workspace_status }}" data-terminal="{{ 'true' if is_terminal and not workspace_creating else 'false' }}">
+  <header class="import-progress__header">
+    <div>
+      <p class="section-index">CHECK PHASE / {{ check_phase }}</p>
+      <h3 id="check-progress-heading">
+        {% if workspace_created %}运行已创建
+        {% elif workspace_creating %}正在创建运行
+        {% elif source_changed %}已检查快照与当前来源不同
+        {% elif can_import %}完整性检查通过
+        {% elif is_failed %}检查未通过
+        {% else %}正在检查本地导出
+        {% endif %}
+      </h3>
+    </div>
+    <div class="import-progress__status">
+      {% if workspace_created %}<span class="status-badge status-badge--running">已有运行</span><span class="checked-chip">✓ 已检查</span>
+      {% elif workspace_creating %}<span class="status-badge status-badge--running">正在创建运行</span><span class="checked-chip">✓ 已检查</span>
+      {% elif source_changed %}<span class="status-badge status-badge--paused">来源已变化</span>
+      {% elif can_import %}<span class="status-badge status-badge--succeeded">✓ 已检查</span>
+      {% elif is_failed %}<span class="status-badge status-badge--failed">{% if check_view.get('error_code') == 'IMPORT_CHECK_INTERRUPTED' %}检查中断{% else %}需修复{% endif %}</span>
+      {% else %}<span class="status-badge status-badge--{{ check_status }}">{{ status_labels.get(check_status, check_status) }}</span>
+      {% endif %}
+    </div>
+  </header>
+
+  <ol class="check-macro-rail" aria-label="完整性检查宏观阶段">
+    {% set snapshot_done = check_phase in ['VALIDATE_EXPORT', 'FINALIZE'] %}
+    {% set validate_done = check_phase == 'FINALIZE' %}
+    <li class="check-macro-step check-macro-step--{% if snapshot_done %}succeeded{% elif check_phase in ['QUEUED', 'SNAPSHOT_EXPORT'] %}running{% else %}pending{% endif %}" {% if check_phase in ['QUEUED', 'SNAPSHOT_EXPORT'] %}aria-current="step"{% endif %}><span>01</span><div><b>建立安全快照</b><small>枚举、复制并计算哈希</small></div></li>
+    <li class="check-macro-step check-macro-step--{% if validate_done %}succeeded{% elif check_phase == 'VALIDATE_EXPORT' %}running{% else %}pending{% endif %}" {% if check_phase == 'VALIDATE_EXPORT' %}aria-current="step"{% endif %}><span>02</span><div><b>验证导出包</b><small>Schema、引用、渲染与 checksums</small></div></li>
+    <li class="check-macro-step check-macro-step--{% if check_phase == 'FINALIZE' and is_failed %}failed{% elif check_phase == 'FINALIZE' %}succeeded{% else %}pending{% endif %}" {% if check_phase == 'FINALIZE' and not is_terminal %}aria-current="step"{% endif %}><span>03</span><div><b>汇总结果</b><small>冻结可导入状态与稳定错误</small></div></li>
+  </ol>
+
+  <div class="import-progress__body">
+    <section class="check-substeps" aria-labelledby="check-substeps-heading">
+      <div class="check-substeps__heading">
+        <span>当前工作组</span>
+        <b id="check-substeps-heading">{% if active_steps == snapshot_steps %}安全快照{% else %}导出验证{% endif %}</b>
+      </div>
+      <ol>
+        {% for name in active_steps %}
+          {% set terminal_step_status = 'failed' if is_failed and name == active_subphase else 'succeeded' %}
+          {% set step_status = terminal_step_status if check_phase == 'FINALIZE' and loop.index <= (substep.index or active_steps|length) else ('succeeded' if substep.index and loop.index < substep.index else ('running' if loop.index == substep.index else 'pending')) %}
+          <li class="check-substep check-substep--{{ step_status }}" {% if step_status == 'running' and not is_terminal %}aria-current="step"{% endif %}><span aria-hidden="true">{% if step_status == 'succeeded' %}✓{% elif step_status == 'failed' %}!{% elif step_status == 'running' %}●{% else %}○{% endif %}</span><b>{{ subphase_labels.get(name, name) }}</b></li>
+        {% endfor %}
+      </ol>
+    </section>
+
+    <section class="check-progress-meter" aria-labelledby="check-meter-heading">
+      <div><span id="check-meter-heading">当前子步骤</span><strong>{{ subphase_labels.get(active_subphase, active_subphase) }}</strong></div>
+      {% if total %}
+        <progress value="{{ completed }}" max="{{ total }}" aria-label="{{ subphase_labels.get(active_subphase, active_subphase) }}，已完成 {{ completed }}，共 {{ total }} {{ unit_label }}">{{ percent }}%</progress>
+        <p><b>{{ percent }}%</b> · {{ completed }} / {{ total }} {{ unit_label }}</p>
+      {% elif not is_terminal %}
+        <progress class="indeterminate-progress" aria-label="{{ subphase_labels.get(active_subphase, active_subphase) }}正在执行"></progress>
+        <p>{% if completed %}已处理 {{ completed }} {{ unit_label }}，总量仍在计算。{% else %}正在建立可报告的工作总量。{% endif %}</p>
+      {% else %}
+        <p>检查已结束；不再计算跨步骤全局百分比。</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <dl class="check-facts">
+    <div><dt>export_id</dt><dd><code>{{ check_view.get('export_id', '等待识别') }}</code></dd></div>
+    <div><dt>minecraft_version</dt><dd><code>{{ check_view.get('minecraft_version', 'unknown') }}</code></dd></div>
+    <div><dt>已检查文件</dt><dd>{{ check_view.get('checked_file_count', '处理中') }}</dd></div>
+    <div><dt>来源</dt><dd><code>{% if check_view.get('source_directory_ref') %}不透明本地引用{% else %}已冻结安全快照{% endif %}</code></dd></div>
+  </dl>
+
+  {% if issues or check_view.get('error_code') or workspace_failed or source_changed %}
+    <div class="issue-list" aria-label="检查问题">
+      {% if source_changed %}<article><b>EXPORT_CHANGED_SINCE_CHECK</b><p>已检查快照仍然保留，但当前导出来源已变化；请使用新的目录引用重新检查。</p></article>{% endif %}
+      {% if workspace_failed %}<article><b>{{ workspace.get('error_code', 'WORKSPACE_CREATE_FAILED') }}</b><p>工作区创建未完成；已检查快照仍可重新导入。</p></article>{% endif %}
+      {% if check_view.get('error_code') %}<article><b>{{ check_view.get('error_code') }}</b><p>{{ check_view.get('error_message', '检查未完成，请按错误码处理。') }}</p></article>{% endif %}
+      {% for issue in issues %}<article><b>{{ issue.get('code', 'IMPORT_INCOMPLETE') if issue is mapping else 'IMPORT_INCOMPLETE' }}</b><p>{{ issue.get('detail', issue.get('message', '导出内容不完整。')) if issue is mapping else issue }}</p></article>{% endfor %}
+    </div>
+  {% endif %}
+
+  {% if workspace_created %}
+    <div class="confirm-import confirm-import--created"><p><span aria-hidden="true">✓</span> 工作区已验证创建，可以直接进入保留运行。</p><a class="button button--primary" href="{{ check_view.get('run_url') or workspace.get('run_url') or ('/runs/' ~ workspace_run_id) }}">进入现有运行 <span aria-hidden="true">↗</span></a></div>
+  {% elif workspace_creating %}
+    <div class="workspace-creating" role="status"><span class="workspace-creating__mark" aria-hidden="true">↻</span><div><b>正在创建运行</b><p>已保留运行 <code>{{ workspace_run_id or '正在分配' }}</code>；验证完成后会出现直接入口。</p></div></div>
+  {% elif can_import and not source_changed %}
+    <form class="confirm-import" action="/api/imports" method="post" data-import-action data-check-url="{{ check_view.get('check_url') or ('/imports/checks/' ~ check_view.get('check_id', '')) }}">
+      <input type="hidden" name="check_id" value="{{ check_view.get('check_id', '') }}">
+      <input type="hidden" name="copy_mode" value="copy_to_workspace">
+      <p><span aria-hidden="true">◆</span> 已检查快照将以固定模式 <code>copy_to_workspace</code> 创建运行。</p>
+      <button class="button button--primary" type="submit">导入并进入运行 <span aria-hidden="true">→</span></button>
+    </form>
+  {% elif is_failed or source_changed %}
+    <div class="confirm-import"><p><span aria-hidden="true">!</span> 重试必须从当前 data-root 获取新的目录引用，不会复用旧引用。</p><a class="button button--quiet" href="/">返回导入工作台重新选择</a></div>
+  {% endif %}
+</section>
