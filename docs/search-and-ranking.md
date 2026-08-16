@@ -2,13 +2,13 @@
 
 ## 文档状态、优先级与关联规范
 
-本文定义 Blockpedia MVP 的 `QuerySpec`、硬过滤、FTS5 检索、确定性排序、联系表、同一个 OpenAI Responses 模型视觉重排和降级语义。精确数据字段形状由 `schemas/{workspace,provider,mcp}/` 下的真实 Schema 文件拥有；本文示例和行为规则不重复穷举字段。正文使用简体中文；字段名、Schema、状态、错误码、权重键和命令保持英文。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 为规范性关键字。
+本文定义 Blockpedia MVP 的 `QuerySpec`、硬过滤、FTS5 检索、确定性排序、联系表、同一个 release-bound OpenAI model/adapter 的视觉重排和降级语义。精确数据字段形状由 `schemas/{workspace,provider,mcp}/` 下的真实 Schema 文件拥有；本文示例和行为规则不重复穷举字段。正文使用简体中文；字段名、Schema、状态、错误码、权重键和命令保持英文。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 为规范性关键字。
 
 本文服从 [`../AGENTS.md`](../AGENTS.md)、[`roadmap.md`](roadmap.md) 和 [`decisions.md`](decisions.md)，并与 [`product-scope.md`](product-scope.md) 和 [`architecture.md`](architecture.md) 保持一致。原始稿 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 仅作历史背景和最低优先级参考，不与本契约一起执行；冲突内容禁止实现。字段事实来自 [`data-and-schemas.md`](data-and-schemas.md)、导出规则来自 [`export-contract.md`](export-contract.md)、工作/发布边界来自 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)。
 
 关联实现契约：
 
-- [`openai-provider.md`](openai-provider.md)：唯一 `OpenAI Responses` profile、strict Schema、重试和在线降级；
+- [`openai-provider.md`](openai-provider.md)：protocol-neutral `OpenAIProvider`、显式 adapter、strict Schema、重试和在线降级；
 - [`mcp-api.md`](mcp-api.md)：四个工具的 release 选择和输出映射；
 - [`webui-and-operations.md`](webui-and-operations.md)：搜索测试台、发布检查和写操作；
 - [`quality-and-testing.md`](quality-and-testing.md)：搜索 contract tests、MVP 门和后置黄金集；
@@ -43,44 +43,9 @@
 
 ### 2.1 语义层和来源
 
-自然语言解析由 Studio 新写任务的活动 profile，或 release-bound MCP 冻结 snapshot 中的同一个 `model_id` 完成，调用见 [`openai-provider.md`](openai-provider.md)。模型只能生成检索意图，不得产生候选 ID、SQL、路径或机器事实。真实 Responses wire 使用 `query-spec-output.v1`；本地可另有完整 Draft 2020-12 `QuerySpec` 内部 Schema，但不得把已删除的旧 ID或其他内部记录 ID当作 provider envelope。真实发送必须通过 strict `json_schema`：
+自然语言解析由 Studio 新写任务的 active profile，或 release-bound MCP 冻结 snapshot 中的同一个 `adapter`/`model_id` 完成，调用见 [`openai-provider.md`](openai-provider.md)。模型只能生成检索意图，不得产生候选 ID、SQL、路径或机器事实。两种 adapter 共用 `query-spec-output.v1`，其精确字段、required 集合、枚举和 nested object 约束唯一由 [`schemas/provider/query-spec-output.v1.json`](../schemas/provider/query-spec-output.v1.json) 定义；本节不复制整份字段定义。Responses 使用 `text.format`，Chat 使用 `response_format.json_schema`；真实发送必须通过所选 adapter 的 strict `json_schema`。
 
-```json
-{
-  "schema_id": "query-spec-output.v1",
-  "source": "llm",
-  "source_model_id": "runtime-model-id",
-  "source_prompt_version": "prompt.v1",
-  "hard": {
-    "minecraft_version": {"value": "26.2", "source": "request", "required": true},
-    "release_status": {"values": ["current"], "source": "system", "required": true},
-    "legal_state": {"values": ["true"], "source": "system", "required": true},
-    "exclude_behaviors": [{"name": "redstone_related", "source": "user_explicit", "required": true}],
-    "require_behaviors": [],
-    "support": [],
-    "transparency": [],
-    "emission": [],
-    "orientation": [],
-    "shape": []
-  },
-  "soft": {
-    "colors": [{"term": "yellow", "source": "user_inferred", "weight": 0.9}],
-    "materials": [{"term": "wood_like", "source": "user_inferred", "weight": 0.5}],
-    "uses": [{"term": "roof_detail", "source": "user_explicit", "weight": 0.8}],
-    "styles": [{"term": "east_asian", "source": "user_inferred", "weight": 0.4}],
-    "shape_terms": [{"term": "thin_sheet", "source": "user_inferred", "weight": 0.7}],
-    "keywords": [{"term": "屋檐", "source": "user_explicit", "weight": 0.6}]
-  },
-  "ambiguities": [
-    {"point": "横向和竖向薄片都可能符合", "candidates": ["horizontal", "vertical"]}
-  ],
-  "needs_user_choice": true,
-  "suggested_followups": ["是否必须水平放置？"],
-  "unknown_terms": []
-}
-```
-
-`source` 只能是 `llm`、`local_parser`、`user_explicit` 或 `system`；每个约束/术语必须带来源，来源不能被模型伪造为系统事实。在线本地补全时 `source=local_parser`，并必须在 warnings 说明 provider 不可用。`source_model_id`、prompt、wire Schema ID 和版本必须与活动 profile 或 release snapshot 一致，缺失或不匹配时不能使用缓存。wire Schema 的所有字段必须 required，所有 object `additionalProperties=false`，只使用能力探测证明支持的 Structured Outputs 子集。
+provider wire 的 `source` 只能是 Schema 固定的 `llm`。provider 不可用时的 `local_parser` 仅是本地降级路径，不能伪装成 `query-spec-output.v1` provider artifact；结果必须在 warnings 中说明降级。缓存和审计使用 active profile、provider envelope 或 release manifest snapshot 的可信 adapter/model/prompt/schema 版本，不从模型输出中猜测这些值。wire Schema 的所有字段必须 required，所有 object `additionalProperties=false`，只使用所选 adapter 能力探测证明支持的 Structured Outputs 子集；不得跨协议 fallback。
 
 ### 2.2 hard/soft 规则
 
@@ -88,19 +53,19 @@
 
 - 精确 `minecraft_version` 和 resolved current release status；
 - 合法状态/合法状态映射；
-- 明确排除的行为，例如 `redstone_related`；
+- 明确排除的行为，例如在 `hard.behaviors` 中使用 `field=redstone_related`、`operator=not_eq`、`value=true`；
 - 用户显式要求必须/不得具备的支撑方向；
 - 用户显式要求透明/不透明、发光/不发光；
 - 用户显式方向，例如 `horizontal`、`vertical`、`north`；
 - 用户显式形状，例如 `horizontal_thin_sheet`、`stair_like`。
 
-颜色、材质观感、建筑用途、风格、模糊形状描述和普通关键词默认只能进入 `soft`。模型不得把“看起来像”“适合”“大概”“类似”提升为硬约束；只有请求文本中的明确强制词或系统安全规则能提升。`hard` 的每个对象必须有 `source` 和 `required=true`，硬约束值必须来自真实 Schema 允许的 bounded semantic fields 或机器事实枚举。
+颜色、材质观感、建筑用途、风格、模糊形状描述和普通关键词默认只能进入 `soft`。模型不得把“看起来像”“适合”“大概”“类似”提升为硬约束；只有请求文本中的明确强制词或系统安全规则能提升。`hard` 的每个约束项必须遵守真实 Schema 的字段结构并带 `required=true`；行为约束使用 `value` 单值，不使用 `values` 数组。硬约束值必须来自真实 Schema 允许的 bounded semantic fields 或机器事实枚举。
 
 `unknown` 永远不能满足硬约束：要求 `true` 只接受 `true`，要求 `false` 只接受 `false`，排除行为时 `unknown` 不能当作安全的 `false`。视觉条件未由机器事实验证时，不能硬过滤为满足，必须保留候选并设置 `visual_constraints_verified=false` 和 warning。
 
 ### 2.3 明确排除与“必须”
 
-应用必须在本地重新解析用户原文中的否定和强制表达，不能只信任模型的 `hard` 列表。若用户明确要求“不要红石”，候选的 `redstone_related=true` 和 `unknown` 都必须排除；若用户要求“必须可支撑于下方”，只接受 `support.below=true`，`false` 和 `unknown` 都排除。若用户要求“不发光”，只接受 `emissive=false`，`unknown` 不能作为安全候选。排除和必须的实际字段路径必须写入 `hard_filter_reasons`。
+应用必须在本地重新解析用户原文中的否定和强制表达，不能只信任模型的 `hard` 列表。若用户明确要求“不要红石”，候选的 `redstone_related=true` 和 `unknown` 都必须排除；若用户要求“必须可支撑于下方”，只接受 `support` 中对应的 `direction=below` 且 `value=true`，`false` 和 `unknown` 都排除。若用户要求“不发光”，只接受 `emissive=false`，`unknown` 不能作为安全候选。排除和必须的实际字段路径必须写入 `hard_filter_reasons`。
 
 模型没有权限把 `excluded` 变为可选、把 skipped 变成候选、把非法状态变成合法状态或改变 current 版本解析。
 
@@ -221,7 +186,7 @@ behavior       0.05
 
 ## 6. 同一个模型视觉重排
 
-若 `rerank=auto` 且 Studio 活动 profile或 release-bound snapshot 能力通过，使用 [`openai-provider.md`](openai-provider.md) 中同一 `model_id` 的 Responses strict `rerank-output.v1` 请求。若 `rerank=required` 而 provider 不可用，返回可操作业务错误，不伪造重排；若 `auto` 失败，必须返回本地排序结果并设置 `reranked_by_llm=false`。
+若 `rerank=auto` 且 Studio 活动 profile 或 release-bound snapshot 的选定 adapter 能力通过，使用 [`openai-provider.md`](openai-provider.md) 中同一 `adapter`/`model_id` 的 strict `rerank-output.v1` 请求。若 `rerank=required` 而 provider 不可用，返回可操作业务错误，不伪造重排；若 `auto` 失败，必须返回本地排序结果并设置 `reranked_by_llm=false`，不得自动切换协议。
 
 模型输入只能是原始 query、已校验 QuerySpec、8–12 个候选联系表和每个候选的最小已验证机器/语义 metadata。模型输出只能重排现有 `candidate_id` 并提供理由；它不得新增、删除或改写候选、`block_id`、状态、图片、硬过滤结果、candidate qualification、release metadata 或机器事实。消费端必须检查输出集合与本地集合完全一致；失败进入 `PROVIDER_OUTPUT_ID_MISMATCH`/warning，并走本地降级。
 
@@ -272,11 +237,11 @@ MCP 等价在线搜索结构化结果使用 `mcp-search-blocks-output.v1`，至�
 
 ### 7.3 Provider 不可用
 
-`query_spec` 失败时，本地 parser 只能使用真实 Schema 允许的 bounded semantic fields 和用户显式词，未知内容进入 `unknown_terms`/soft keyword；无法安全解析硬约束时返回 `QUERY_PARSE_FAILED` 或明确未解析硬约束的安全空成功结果，不得猜测。`visual_rerank` 失败时使用本地排序，保留 warnings、`reranked_by_llm=false` 和 provider 错误码。若 Studio active profile 或 release-bound snapshot 的 `secret_reference` 无法从 Keyring/env 解析，在线查询只可本地降级并 warning，不得写状态、修改 profile 或缓存。若运行时能力不满足 release snapshot 的要求，也必须本地降级并 warning。降级不得增加候选、放宽过滤、改变 release 或写入数据。
+`query_spec` 失败时，本地 parser 只能使用真实 Schema 允许的 bounded semantic fields 和用户显式词，未知内容进入 `unknown_terms`/soft keyword；无法安全解析硬约束时返回 `QUERY_PARSE_FAILED` 或明确未解析硬约束的安全空成功结果，不得猜测。`visual_rerank` 失败时使用本地排序，保留 warnings、`reranked_by_llm=false` 和 provider 错误码。若 Studio active profile 或 release-bound snapshot 的 `secret_reference` 无法从 Keyring/env 解析，在线查询只可本地降级并 warning，不得写状态、修改 profile 或缓存。若运行时能力不满足 release snapshot 的要求，也必须本地降级并 warning，不得跨协议 fallback。降级不得增加候选、放宽过滤、改变 release 或写入数据。
 
 ## 8. 版本化缓存和可重复性
 
-在线 QuerySpec/重排缓存必须遵循 [`openai-provider.md`](openai-provider.md) 的 key：`image_hash`、`machine_metadata_hash`、`prompt_version`、`model_id`、`schema_version`、`base_url_stable_id`、`stage`，并额外绑定 `minecraft_version`、resolved release manifest hash、原始 query hash、QuerySpec hash、候选集合 hash 和 `search-ranking_version`。缓存只能保存通过 Schema 的最小 artifact，不保存完整 response、图片或 usage；MCP 进程不写此缓存。
+在线 QuerySpec/重排缓存必须遵循 [`openai-provider.md`](openai-provider.md) 的 key：`image_hash`、`machine_metadata_hash`、`adapter`、`prompt_version`、`model_id`、`schema_version`、`base_url_stable_id`、`stage`，并额外绑定 `minecraft_version`、resolved release manifest hash、原始 query hash、QuerySpec hash、候选集合 hash 和 `search-ranking_version`。缓存只能保存通过 Schema 的最小 artifact，不保存完整 response、图片或 usage；MCP 进程不写此缓存。
 
 同一 release、同一 QuerySpec、同一排序配置和同一 fixture 必须产生相同 Top-24、family 去重、tile mapping、候选 ID 和本地顺序；时间、request ID 和展示 `search_id` 不参与排序。
 

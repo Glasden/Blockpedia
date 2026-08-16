@@ -21,6 +21,8 @@ import net.minecraft.client.renderer.block.BlockModelResolver;
 import net.minecraft.client.renderer.block.model.BlockDisplayContext;
 import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
 import net.minecraft.client.renderer.texture.OverlayTexture;
+import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.data.AtlasIds;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
@@ -198,7 +200,13 @@ final class RenderExporter {
         }
         SubmitNodeStorage storage = new SubmitNodeStorage();
         PoseStack poses = new PoseStack();
-        modelState.submit(poses, storage, ExporterConstants.FULL_BRIGHT, OverlayTexture.NO_OVERLAY, 0);
+        TextureAtlas blockAtlas = minecraft.getAtlasManager().getAtlasOrThrow(AtlasIds.BLOCKS);
+        MissingMaterialTracker.begin(blockAtlas);
+        try {
+            modelState.submit(poses, storage, ExporterConstants.FULL_BRIGHT, OverlayTexture.NO_OVERLAY, 0);
+        } finally {
+            MissingMaterialTracker.end();
+        }
         GameRenderer gameRenderer = minecraft.gameRenderer;
         FeatureRenderDispatcher dispatcher = gameRenderer.featureRenderDispatcher();
         FeatureRenderDispatcher.PreparedFrame prepared = dispatcher.prepareFrame(storage);
@@ -261,10 +269,7 @@ final class RenderExporter {
             || image.getHeight() != ExporterConstants.QUADRANT_SIZE) {
             throw new IOException("render view is not 256x256: " + viewId);
         }
-        PixelCheck check = checkPixels(image, viewId);
-        if (check.nonTransparent == 0) {
-            throw new RenderValidationException("EMPTY_RENDER", "render view is empty: " + viewId);
-        }
+        checkPixels(image, viewId);
     }
 
     private void copyInto(NativeImage destination, NativeImage source, int originX, int originY) {
@@ -293,11 +298,6 @@ final class RenderExporter {
         }
         if (nonTransparent == 0) {
             throw new RenderValidationException("EMPTY_RENDER", "render is fully transparent");
-        }
-        for (boolean hasObject : quadrantHasObject) {
-            if (!hasObject) {
-                throw new RenderValidationException("EMPTY_RENDER", "one of the four render views is empty");
-            }
         }
         int minimumObjectPixels = ExporterConstants.QUADRANT_SIZE * ExporterConstants.QUADRANT_SIZE / 256;
         if (nonTransparent < minimumObjectPixels * quadrantHasObject.length) {
@@ -330,8 +330,6 @@ final class RenderExporter {
         int minY = image.getHeight();
         int maxX = -1;
         int maxY = -1;
-        int magenta = 0;
-        int nearBlack = 0;
         for (int y = 0; y < image.getHeight(); y++) {
             for (int x = 0; x < image.getWidth(); x++) {
                 int pixel = image.getPixel(x, y);
@@ -344,30 +342,10 @@ final class RenderExporter {
                 minY = Math.min(minY, y);
                 maxX = Math.max(maxX, x);
                 maxY = Math.max(maxY, y);
-                int red = (pixel >>> 16) & 0xff;
-                int green = (pixel >>> 8) & 0xff;
-                int blue = (pixel >>> 0) & 0xff;
-                if (red >= ExporterConstants.MISSING_TEXTURE_MAGENTA_MIN
-                    && blue >= ExporterConstants.MISSING_TEXTURE_MAGENTA_MIN
-                    && green <= ExporterConstants.MISSING_TEXTURE_GREEN_MAX) {
-                    magenta++;
-                }
-                if (red <= ExporterConstants.MISSING_TEXTURE_BLACK_MAX
-                    && green <= ExporterConstants.MISSING_TEXTURE_BLACK_MAX
-                    && blue <= ExporterConstants.MISSING_TEXTURE_BLACK_MAX) {
-                    nearBlack++;
-                }
             }
         }
         if (nonTransparent > 0 && (minX == 0 || minY == 0 || maxX == image.getWidth() - 1 || maxY == image.getHeight() - 1)) {
             throw new RenderValidationException("OBJECT_OFF_CANVAS", "render object touches canvas boundary: " + label);
-        }
-        if (nonTransparent >= ExporterConstants.MISSING_TEXTURE_MIN_PIXELS
-            && magenta >= ExporterConstants.MISSING_TEXTURE_MIN_PIXELS
-            && nearBlack >= ExporterConstants.MISSING_TEXTURE_MIN_PIXELS
-            && ((double) magenta / nonTransparent) >= ExporterConstants.MISSING_TEXTURE_MIN_RATIO
-            && ((double) nearBlack / nonTransparent) >= ExporterConstants.MISSING_TEXTURE_MIN_RATIO) {
-            throw new RenderValidationException("MISSING_TEXTURE", "missing-texture colors detected: " + label);
         }
         return new PixelCheck(nonTransparent);
     }

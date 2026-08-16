@@ -23,7 +23,7 @@ Python Studio:
 - [数据与 Schema](data-and-schemas.md)
 - [路线图](roadmap.md)
 - [冻结决策](decisions.md)
-- [OpenAI Responses 提供商接口](openai-provider.md)
+- [OpenAI Provider 接口](openai-provider.md)
 - [WebUI 与运行接口](webui-and-operations.md)
 - [MCP API 接口](mcp-api.md)
 - [质量与测试接口](quality-and-testing.md)
@@ -58,6 +58,7 @@ MCP                   → 只读根 current.json 与指定版本 release
 │   ├── generated/
 │   └── overrides/
 ├── cache/
+│   ├── provider-profiles.json          # 全局非秘密 profile authoritative file
 │   ├── renders/
 │   ├── features/
 │   └── ai/
@@ -70,6 +71,8 @@ MCP                   → 只读根 current.json 与指定版本 release
 ```
 
 这是唯一 data-root 布局；不得使用旧版工作目录或旧版发布目录作为高层目录名。不同精确 Minecraft 版本的 exports、workspace 和 releases 必须分目录，禁止跨版本复用状态、图片或数据库行。`<data_root>` 不得默认指向源码仓库；程序必须拒绝把原版 JAR、资源包、纹理、模型、字体、声音复制进源码或公共发布目录。
+
+全局非秘密 provider profiles 的唯一持久来源是 `<data-root>/cache/provider-profiles.json`，WebUI 必须以临时文件、flush/fsync 和原子替换保存它；文件不得包含 API key 或其它秘密。workspace 中的 `provider_profiles` 仅保存 run snapshot，供该 run 重放，不能作为全局 profile 配置来源。该生命周期收敛不引入新 Schema、服务或 migration。
 
 所有图片来自用户本地合法安装和 exporter 渲染。导出包、cache、workspace 和 release 可以保存生成的 PNG、对象蒙版和特征，但只能保存机器元数据与渲染产物的哈希，不保存原始资源。测试 fixture 必须由程序生成原创图/伪数据；真实集成测试依赖本地导出，缺失时必须明确输出 `SKIPPED_LOCAL_EXPORT_MISSING`，不能静默改用真实资源或伪造通过。
 
@@ -97,7 +100,7 @@ Fabric/Gradle 工具链由导出契约固定为 Minecraft Java `26.2`、Java `25
 4. exporter 已写入的策略版本和所有真实 JSON Schema 已加载并校验；Studio 只校验 exporter 已写入的策略版本，不执行状态选择或渲染。R1 外部 validator 的全量检查只执行一次。
 5. 资源包只有 vanilla 标识/哈希，没有原始资源副本；导出 scope 是 `minecraft` block registry。
 6. 计算 `run_id`、`input_signature`、工作库 Schema 版本和每阶段幂等键。
-7. 同一输入签名已有成功阶段产物时，验证哈希后复用，不重新执行；不存在 `store=false` 能力证明时停止，不允许 warning/ack 继续 provider 任务。
+7. 同一输入签名已有成功阶段产物时，验证哈希后复用，不重新执行；不存在所选 adapter 的 wire 能力证明时停止，不允许 warning/ack 继续 provider 任务。Responses 的 `store=false` 和 Chat 的省略 `store` 都不是远端 retention 证明。
 
 PREPARE 输出可恢复的 run spec、导出 manifest 快照、版本锁快照和阶段游标；失败时不创建可发布 release。
 
@@ -131,13 +134,20 @@ Python 导入只接受 passed check 的 `check_id` 和固定 `copy_mode=copy_to_
 
 ### 5.6 `AI_ANNOTATE`
 
-只把合格的可搜索变体、预览图和紧凑机器元数据发给唯一已配置的 OpenAI Responses 模型。导出器不调用 LLM，调用由 Worker 的 provider adapter 负责；请求必须 `store=false`、strict JSON Schema 和最小披露，规则见 [OpenAI Responses 提供商接口](openai-provider.md)。兼容 `base_url` 仍是用户批准的同一 `OpenAIResponsesProvider`，不是第二 provider；其完整 Responses 能力和 `store=false` 必须通过探测，否则 profile 禁用，不能 warning/ack 降级。离线标注批次建议 8～16 个变体；每个逻辑请求使用独立且全局唯一的 `provider-batch-envelope.v1`，并以 `stage` 绑定 wire Schema。`offline_annotation` envelope 必须包含 tile-to-variant 映射；`query_spec` 是不带候选映射的单查询 stage，使用 `query-spec-output.v1`；`visual_rerank` 只携带本地已召回候选映射，使用 `rerank-output.v1`，三者不得混用输出 Schema。
+只把合格的可搜索变体、预览图和紧凑机器元数据发给唯一已配置的 `OpenAIProvider` model。导出器不调用 LLM，调用由 Worker 的所选 protocol adapter/codec 负责；`openai_responses` 请求必须使用 `/responses`、`store=false`、`input_text/input_image`、strict JSON Schema，`openai_chat_completions` 请求必须使用 `/chat/completions`、省略 `store`、`text/image_url`、strict JSON Schema；两者都最小披露且不得自动协议 fallback，规则见 [OpenAI Provider 接口](openai-provider.md)。兼容 `base_url` 仍是用户批准的所选协议 endpoint，不是第二 provider。能力探测只验证所选协议 wire 形状，不证明远端 retention。离线标注批次建议 8～16 个变体；每个逻辑请求使用独立且全局唯一的 `provider-batch-envelope.v1`，并以 `stage` 绑定 wire Schema。`offline_annotation` envelope 必须包含 tile-to-variant 映射；`query_spec` 的 `input_summary` 精确只有 `query_sha256`，不能含候选映射，使用 `query-spec-output.v1`；`visual_rerank` 只携带本地已召回候选的完整映射，使用 `rerank-output.v1`，三者不得混用输出 Schema。
+
+#### 5.6.0 Prompt version 与诊断边界
+
+`prompt.v1` 和其它历史 prompt version string 必须保持 exact legacy behavior，可 replay；只有 exact `prompt.v2` 使用 slim model-visible text，且必须来自新的 run/profile snapshot。v2 保留 contact sheet/tile labels，trusted instruction 只要求 annotate existing tiles、复制每个 tile 的 exact existing `variant_id`、不创建/修改 ID 或 machine facts；model-visible `tiles` 只含 `tile_id`/`variant_id`，per-tile metadata 只含 `tile_id` 和去重有界 `geometry_classes`。v2 移除 image/machine hashes、`block_id`、`canonical_state_id`、exact dimensions/volume、behavior booleans/emission、`machine_tags`、feature metrics/version/input hash 和重复 feature geometry/tags。完整 machine metadata、hash、source image、envelope/cache/signature/release lineage 仍在本地，校验不减弱；current pending v1 jobs 不迁移、re-sign、cancel 或 delete。
+
+D-042 不改变 current output wire/Schema；模型仍返回 `schema_id`、`variant_id` 和全部 13 个 required item fields。local `schema_id` injection、`tile_id` codec 和 semantic-field reduction 保持 deferred，除非 diagnostics 足以支持另一个 owner-approved/materialized Schema decision。只有 FINAL `offline_annotation` validation 在总 retry budget 用尽后仍失败时，才将六字段 sanitized diagnostic 通过 internal `ProviderResult` 追加至既有 `PROVIDER_FAILURE` review task 的 `evidence_json`，保留 job/provider request refs；不新增 provider envelope field、`provider_requests` column、table/report、migration 或 Schema ID。Provider/Worker full validation、ID/hash/cache/record/variant/`VALIDATE`/release gates、local `uniqueItems` 和 max-one-retry 保持不变；只移除 freshly produced by `_hash_json` hash 上的 tautological regex check，classification 不得改变。
 
 缓存键至少为（`schema_version` 随 stage 绑定）：
 
 ```text
 image_hash
 + machine_metadata_hash
++ adapter
 + prompt_version
 + model_id
 + schema_version
@@ -145,7 +155,19 @@ image_hash
 + stage
 ```
 
-已有通过 Schema 且输入完全相同的结果不得再次请求。MVP **MUST NOT** 记录或展示 Token usage、费用、预算或价格字段；请求审计只保存 `provider-batch-envelope.v1` 的非秘密引用、stage、wire Schema、输入摘要、request ID（如契约允许）和结果哈希，不保存 Token 数值。模型只能生成语义字段；Schema 冲突或一次修复失败进入高优先级审核。置信度门控固定为 `>=0.80` 自动通过、`0.65–<0.80` 普通审核、`<0.65` 高优先级；Schema 冲突/修复失败始终高优先级。
+已有通过 Schema 且 adapter、输入完全相同的结果不得再次请求。MVP **MUST NOT** 记录或展示 Token usage、费用、预算或价格字段；请求审计只保存 `provider-batch-envelope.v1` 的非秘密引用、adapter、stage、wire Schema、输入摘要、request ID（如契约允许）和结果哈希，不保存 Token 数值、完整 request/response 或 retention 判断。模型只能生成语义字段；Schema 冲突或一次修复失败进入高优先级审核。置信度门控固定为 `>=0.80` 自动通过、`0.65–<0.80` 普通审核、`<0.65` 高优先级；Schema 冲突/修复失败始终高优先级。
+
+#### 5.6.1 批次授权、顺序提交和 drain 语义
+
+手动 per-batch approval 是默认。用户确认前，WebUI 必须让全部 planned batches 保持可 inspect；确认只对 unchanged frozen remaining plan 生效，并绑定 D-040 定义的 immutable plan hash、run-frozen provider 和 requested `model_id`。plan hash 只包含 `run_id`、`effective_config_hash` 和按计划顺序排列的 `job_id`/`logical_key`/recomputed payload signature；精确 canonical 形状见 [`decisions.md`](decisions.md)。
+
+一次 aggregate confirmation transaction 使用并验证已经持久化的 pending identity：`jobs.input_signature`、cursor `payload_signature`/`input_hash`、`tile_ids`/`variant_ids`、run `effective_config_hash` 和 frozen provider snapshot；aggregate path 不为全部 jobs rebuild images、contact sheets、prompt text 或 machine metadata。既有 plan-hash object/field name `recomputed_payload_signature` 保持不变，其 plan-time value 是 validated persisted payload signature。任一持久化 hash 缺失、冲突、无效，或 pending 集合/provider/config lineage 发生 TOCTOU mismatch 时 approve none；全部一致时，使用现有 job `cursor_json` 的 `approved` 标记批准所有 included pending jobs，并写 one plan audit 与 per-job approval audits。不得增加 auto-mode field、stage cursor、config snapshot、数据库字段或 Schema。
+
+每个 planned batch 在 aggregate confirmation 前仍通过既有 safe preview lazy inspect；one-batch preview 可以重建其 bounded payload。Immediately before **every** actual external send，Worker 必须从 frozen run profile rebuild complete one-batch payload/contact sheet/prompt/machine metadata，recompute full signature，并与 approved job signature 比较。任一 mismatch 必须 revoke 该 job 的 approval、在任何 HTTP request 前 pause，并不得发送；不能用 aggregate persisted identity shortcut 绕过该 final TOCTOU gate。D-041 不改变 manual mode/default、send concurrency `1`、item-local continue、fatal stop、retry 或 audit。
+
+确认后的 automatic submission 严格按冻结顺序运行，send concurrency 固定为 `1`。Worker 只能使用 run-frozen profile；mutable global active profile 仅适用于新的 Studio work/profile management，不能替换已有 run。item-local Provider failure 变成 high `needs_review` 后继续下一个 approved batch；fatal provider/config/auth/capability failure 必须 atomically 写入 request evidence、review、job/stage/run failure 和 audit，并在后续 send 前停止。`needs_review` item 不阻塞 AI_ANNOTATE drain：valid low-confidence 和 item-local failure 继续进入 `VALIDATE`、`HUMAN_REVIEW`；fatal 才停止 stage/run。
+
+Provider retry source 必须是 terminal `needs_review|failed` 的 AI job，且 error 属于 eligible item-local Provider error；fatal、`PROVIDER_CANCELLED` 和没有 Provider error 的 job 不 eligible。variant review 不是 source。source 必须为 leaf；child cursor 包含 `retry_of_job_id`，nonce 由 source `job_id + input_signature` 确定性生成，每个 source 只能生成一个 child；failed child 可作为下一次显式 generation。row/bulk action 在同一 transaction 创建 child、resolve source 的 open provider-review siblings，并保留 source rows、evidence 和 provider request；重复 POST 幂等，legacy retry rows 只兼容读取、不重写。bulk action 只 retry eligible failed leaf batches 并 auto-approve retry wave；generic `retry-failed` 排除 fatal/provider AI jobs，不能绕过同一逻辑请求的两次总尝试预算。
 
 ### 5.7 `VALIDATE`
 
@@ -157,7 +179,7 @@ image_hash
 
 只处理渲染异常、机器与 AI 冲突、低置信度/Schema 高优先级项、经配置的抽样质检以及特殊状态覆盖。审核员可以接受/编辑受控语义、声明跳过、重新请求 AI 或要求 exporter 按策略重新导出，但不能在 Studio 内重选状态或重渲染。人工语义修改写 `manual-override.v1`，资格修改写 `qualification-review.v1`，跳过写 `skip-review.v1`；默认按 `variant_id`，family/global 必须显式 scope 和批准。
 
-阶段只有在所有高优先级任务为零、所有 skip/excluded 审计已审核、所有可搜索变体有合规 AI 或等价人工语义后才是 `succeeded`。存在待处理任务时为 `needs_review`，不能进入 `BUILD_RELEASE`。
+AI_ANNOTATE 的 item `needs_review` 不会阻塞该阶段 drain，也不会阻止后续 `VALIDATE` 和 `HUMAN_REVIEW` 消费有效低置信度结果及 item-local provider failure；fatal 才使 stage/run 立即 `failed`。最终 `HUMAN_REVIEW`/candidate-build 仍要求所有高优先级任务为零、所有 skip/excluded 审计已审核、所有可搜索变体有合规 AI 或等价人工语义；存在待处理任务时不能进入 `BUILD_RELEASE`。
 
 ### 5.9 `BUILD_RELEASE`
 
@@ -179,7 +201,112 @@ Worker 在用户 WebUI 显式请求后，只能从工作库构建单个 release 
 
 禁止旧版发布目录、YAML override、旧版 release checksum 文件、contact sheet 目录契约名和任何 symlink/hardlink。JSON、Schema 字段、metadata、manifest、current 和 release 中的 hash 字符串采用 `sha256:<64 lowercase hex>`；`checksums.sha256` 与 `schemas.sha256` 文本行首 digest 是唯一无前缀例外。`checksums.sha256` 每行格式为 `<64hex><two spaces><release-relative-posix-path>\n`，按路径排序；`schemas.sha256` 每行格式为 `<64hex><two spaces><schema-id><two spaces><canonical-repository-relative-posix-path>\n`，按 schema-id UTF-8 字节序排序，且不声称这些路径位于 release。
 
-### 5.10 `ACTIVATE_RELEASE`
+### 5.9.1 R3 Phase C cache、snapshot 和 candidate commit（本节为 pipeline owner）
+
+R3 Phase C 的 release check cache 只使用以下布局；它不是 import check cache，也不建立第二个列表索引：
+
+```text
+<data_root>/cache/release-checks/<check_id>/
+├── state.json
+└── quality_report.json
+```
+
+Phase C owned ID 使用 `secrets.token_hex(16)` 的等价规则：前缀之后必须恰好 32 个小写十六进制字符，不得使用 UUID、ULID、时间戳或大写字符：
+
+```text
+check_id        = check_<32 lowercase hex>
+release_build_id = build_<32 lowercase hex>
+release_id      = rel_<32 lowercase hex>
+staging_dir     = .rel_<32 lowercase hex>.staging
+```
+
+`state.json` 是严格的非 Schema JSON 文件，顶层字段必须且只能是：`format_version`（整数 `1`）、`check_id`、`release_build_id`、`run_id`、`minecraft_version`、`source_export_id`、`status`、`can_build`、`snapshot_fingerprint`、`quality_report_sha256`、`release_id`、`created_at`、`updated_at`、`error_code`。`status` 只能是 `passed|failed|stale|built`；`passed` 的 `can_build` 可为 true/false，`failed|stale` 必须为 false，`built` 必须为 true；尚未 build 时 `release_id=null`，无错误时 `error_code=null`。同步 check 不持久化 `pending`/`running`，build 成功才把同一 state 原子更新为 `built`；质量报告字段和 item 结构唯一由 [`quality-and-testing.md`](quality-and-testing.md) 拥有。`state.json` 与质量报告均不得包含绝对路径、chooser ref、secret、WAL bytes、worker ID、cursor 或完整 provider response。
+
+`quality_report.json` 在 check 结束时写入一次临时文件、flush/fsync 后 atomic replace，随后视为不可修改。check 的报告永远留在原 check 目录；build 不回写它，而是从相同逻辑 snapshot 派生 release 内新的 `quality_report.json`。失败或 stale 只更新 `state.json` 的状态/时间/错误，不修改历史报告。
+
+#### 最新 check、逻辑 snapshot fingerprint 与 TOCTOU
+
+对精确 `(run_id, minecraft_version)`，最新 check 是所有合法 `state.json` 中按 `(created_at, check_id)` 的 UTF-8 字节序升序取最大值；损坏、越界、链接/reparse 或未知字段的目录不是可用 check。每次新的同步 check 都产生新的 `check_id`；build 只接受该键的最新 state，旧 check 即使 `can_build=true` 也返回 `RELEASE_CHECK_STALE`。已 `built` 的 check 仍是历史状态，不得再次 build。
+
+`snapshot_fingerprint` 必须对逻辑数据做 canonical JSON（JCS）后计算 SHA-256，不得对 `work.sqlite3`、`-wal`、`-shm` 或任何 SQLite 文件 bytes 取 hash。输入固定包括：精确 `run_id`/`minecraft_version`/`source_export_id`、已验证 export manifest 与工具链锁定摘要、`workspace.v1.sql` 的已冻结版本标识、参与发布的 blocks/states/variants/features/annotations 的 allowlisted 逻辑列、完整人工三类记录、有效 provider snapshot、每个被引用普通 artifact 的规范相对路径与内容摘要，以及实际使用的 Schema ID inventory。数组按稳定主键排序，SQLite rowid、列返回顺序和 WAL checkpoint 状态不参与结果。
+
+fingerprint 明确排除：`work.sqlite3`/WAL/SHM 原始 bytes、mtime/ctime、worker heartbeat、job cursor/worker ID、日志、缓存文件、source absolute path/chooser token、临时目录名、质量报告、`release_id`/`release_build_id`、`built_at`、`current.json`、MCP 数据和任何后续 activation 输入。人工记录中的业务时间、原因、证据和 input signature 属于逻辑输入，不因其来自审核而排除。
+
+check 读取 workspace 时必须在只读一致性事务中取得 allowlisted 逻辑行和 artifact 引用，并对每个 artifact 做安全 `lstat`/open/hash；每个文件在读取前后重新检查身份、大小和链接属性。build 在开始 staging 前、完成 staging hash 后各重算一次 fingerprint；任一结果不同、出现新 check、目标版本/源 export 改变或任何引用被替换，必须只清理本次 staging、将 state 标为 `stale`，且返回 `RELEASE_CHECK_STALE`，绝不 rename 半成品。check cache 报告不因 TOCTOU 重写。
+
+#### 独立 release index、layout 与 preview mapping
+
+release 使用独立的 `release-index.v1.sql` 投影契约；它不是 JSON Schema ID，不改变 `workspace.v1.sql`，也不通过通用 migration 从工作库升级。新建 `index.sqlite3` 时 `schema_meta` 必须恰有 `format_version=1`；该列/值是 release index 格式版本，不得写成 `schema_version` 或伪装成 D-030 Schema。最小表、列和索引固定为：
+
+```sql
+CREATE TABLE schema_meta (
+  format_version INTEGER PRIMARY KEY CHECK (format_version = 1)
+);
+CREATE TABLE blocks (
+  block_id TEXT PRIMARY KEY,
+  minecraft_version TEXT NOT NULL,
+  translation_key TEXT,
+  name_zh TEXT,
+  name_en TEXT,
+  default_state_id TEXT NOT NULL,
+  machine_facts_json TEXT NOT NULL
+);
+CREATE TABLE states (
+  state_id TEXT PRIMARY KEY,
+  block_id TEXT NOT NULL REFERENCES blocks(block_id),
+  properties_json TEXT NOT NULL,
+  is_default INTEGER NOT NULL CHECK (is_default IN (0, 1))
+);
+CREATE TABLE visual_variants (
+  variant_id TEXT PRIMARY KEY,
+  block_id TEXT NOT NULL REFERENCES blocks(block_id),
+  canonical_state_id TEXT NOT NULL REFERENCES states(state_id),
+  represented_state_ids_json TEXT NOT NULL,
+  preview_path TEXT NOT NULL,
+  mask_path TEXT NOT NULL,
+  render_metadata_path TEXT NOT NULL,
+  image_sha256 TEXT NOT NULL,
+  mask_sha256 TEXT NOT NULL,
+  render_metadata_sha256 TEXT NOT NULL,
+  candidate_qualification TEXT NOT NULL,
+  warnings_json TEXT NOT NULL
+);
+CREATE TABLE annotations (
+  variant_id TEXT PRIMARY KEY REFERENCES visual_variants(variant_id),
+  semantic_json TEXT NOT NULL
+);
+CREATE INDEX states_block_id_idx ON states(block_id);
+CREATE INDEX visual_variants_block_id_idx ON visual_variants(block_id);
+CREATE INDEX visual_variants_qualification_idx
+  ON visual_variants(candidate_qualification);
+```
+
+FTS 只有一个实现分支：SQLite 支持时建立 `search_fts(variant_id UNINDEXED, normalized_text)` 的 FTS5 `trigram` virtual table；不支持时不建该 virtual table，改建 `search_text(variant_id PRIMARY KEY, normalized_text)` 和 `search_text_normalized_idx` 普通索引。两种分支都必须由 Gate C 的 `FTS_READY` 证明，不能增加 vector 列或外部服务。release index 只保存上述发布投影，不复制三类原始审核记录；原始记录包由 [`data-and-schemas.md`](data-and-schemas.md) 定义。
+
+candidate staging 与最终 release 都只能拥有以下八类顶层项，`release-index.v1.sql` 是构建时的独立格式契约，不是 release 内第九个文件：
+
+```text
+release.json
+manifest.json
+index.sqlite3
+previews/
+quality_report.json
+manual-overrides.json
+schemas.sha256
+checksums.sha256
+```
+
+每个发布视觉变体的 `variant_id=minecraft:<suffix>` 必须映射为同一 release 内：`previews/minecraft/<suffix>/preview.png`、`previews/minecraft/<suffix>/mask.png`、`previews/minecraft/<suffix>/render.json`。`suffix` 保持 canonical block ID 的原始安全 segment，不做隐式 slug、冲突覆盖或外部映射表；index 中三列 preview ref 必须是这些 release-relative POSIX 路径。preview、mask、render metadata 是普通文件，不得是 symlink/hardlink，所有路径必须通过安全相对路径规则。
+
+`schemas.sha256` 只列本次 candidate 实际使用的 Schema，按 Schema ID UTF-8 字节序排序；Phase C 的可用集合为 exporter 的 `export-manifest.v1`、`export-block.v1`、`export-state.v1`、`export-variant.v1`、`export-failure.v1`、`render-metadata.v1`，workspace/release 的 `block-record.v1`、`state-record.v1`、`visual-variant-record.v1`、`annotation-record.v1`、`manual-override.v1`、`skip-review.v1`、`qualification-review.v1`、`release-manifest.v1`、`release.v1`，以及实际离线标注使用的 provider `provider-batch-envelope.v1`、`annotation-batch-output.v1`、`annotation-wire-item.v1`。`query-spec-output.v1`、`rerank-output.v1`、全部 MCP Schema 和 `current-pointer.v1` 不属于 Phase C inventory；若某个实际输入未使用则不得列入。
+
+#### hash DAG、checksum 和单 candidate 成功边界
+
+发布 hash DAG 固定为：逻辑 workspace/export/provider 输入 → `snapshot_fingerprint` → index/preview/semantic/人工原始记录包等 functional artifacts → release `quality_report.json` → `manifest.json`（包含 functional inputs/artifacts 与 quality report hash）→ `release.json`（包含 manifest hash）→ `schemas.sha256` 与 `checksums.sha256`。`manifest.json` 不哈希自身、`release.json`、`schemas.sha256` 或 `checksums.sha256`；`release.json` 不哈希自身。`checksums.sha256` 必须按路径排序并覆盖 release 内除自身外的**全部普通文件**，包括 `release.json`、`manifest.json`、`index.sqlite3`、`previews/` 下文件、`quality_report.json`、`manual-overrides.json` 和 `schemas.sha256`，不列目录、symlink 或 hardlink。
+
+一次 build 只能为一个 `release_build_id` 建立一个 staging 和一个最终 candidate：先确认最终目标不存在，再在同一版本 release 父目录创建 `.rel_<32hex>.staging`，写完并验证完整 layout、index、质量报告、manifest、schemas inventory 和 checksums，完成文件/目录 durability 后做一次同卷原子 rename 为 `rel_<32hex>`。目标已存在、hash/完整性复核失败或任意 TOCTOU 失败都不得覆盖目标；失败只清理本次精确 staging。成功边界是 rename 后重新打开/校验完整 release、state 原子更新为 `built` 并完成 WebUI audit/status transaction；此后 release 内容不可变，后续只允许更新 release 外 cache/audit，不得回写 release。
+
+### 5.10 `ACTIVATE_RELEASE`（R4/R5 后续边界，不属于 Phase C）
 
 activation gate 才检查目标版本已有至少两个独立、均通过 candidate-build gate 的不可变 release；activation-check/apply 的前置才要求 R0-R4、activation gate 和用户确认。它使用临时测试 data-root/current fixture 完成四工具 MCP smoke，复核 candidate 报告及其 hash，并检查 current 原子切换准备，但不把测试指针写入生产根，也不首次补做资格审计。通过后由 WebUI 用户人工确认 ACTIVATE；WebUI 才能原子更新根 `current.json`。R3 可以提供未激活 candidate 给 R4，R5 完成第二个 candidate、MCP smoke 和激活。
 
@@ -213,7 +340,7 @@ item: needs_review → pending（WebUI 显式处理）
 item: failed → pending（WebUI 显式重试）
 ```
 
-启动时只检测 stale `running` 并在内存/展示层标示，不修改数据库状态。只有 WebUI `recover` 操作可以把 stale item 写回 `pending` 或 `needs_review`；成功 item 不重跑。自动重试只影响 item 的 `auto_attempt`，每个逻辑 item 最多一次总自动重试。状态变更必须在 SQLite 事务中与产物引用、错误码、游标和审计记录一起提交。
+启动时只检测 stale `running` 并在内存/展示层标示，不修改数据库状态。只有 WebUI `recover` 操作可以把 stale item 写回 `pending` 或 `needs_review`；成功 item 不重跑。auto-approved cursor 在重启后保持，不因 stale 检测被清除。自动 retry 只影响 item 的 `auto_attempt`，每个逻辑 provider request 最多一次总自动重试；D-040 的 retry child 是新的显式 generation，不是追加到 source 的第三次 attempt。状态变更必须在 SQLite transaction 中与产物引用、错误码、游标和 audit 记录一起提交。pause/cancel 只停止 future sends；SSE/browser disconnect 不改变 Worker。
 
 ### 6.2 最小任务字段
 
@@ -226,13 +353,13 @@ cursor_json, output_hash, error_code, error_message,
 created_at, started_at, finished_at
 ```
 
-`runs`、`stage_runs` 和 `jobs` 分别保存三套状态；AI 任务只保存 provider、model、prompt/schema 版本、request ID（如可用）、响应哈希、响应缓存键和审计状态，**MUST NOT** 保存 Token usage、费用、预算或价格字段。任务唯一约束是 `(run_id, stage, logical_key, input_signature)`；成功产物的 `output_hash` 必须可从文件/数据库重算。
+`runs`、`stage_runs` 和 `jobs` 分别保存三套状态；AI 任务只保存 provider、adapter、model、prompt/schema 版本、request ID（如可用）、响应哈希、响应缓存键和审计状态，**MUST NOT** 保存 Token usage、费用、预算或价格字段。任务唯一约束是 `(run_id, stage, logical_key, input_signature)`；成功产物的 `output_hash` 必须可从文件/数据库重算。
 
 ### 6.3 游标、幂等和缓存
 
-每阶段保存 `stage_cursor`：已枚举输入的排序键、已完成数量、当前 logical key、策略/输入哈希和最后心跳。Worker 领取任务使用事务锁；完成时先将临时产物 fsync/rename，再在同一事务写成功状态和 hash。进程崩溃时没有成功事务的产物视为未提交。启动检测 stale 只展示，不推进游标或写状态。
+每阶段保存 `stage_cursor`：已枚举输入的排序键、已完成数量、当前 logical key、策略/输入哈希和最后心跳。批次 approval 使用现有 job `cursor_json.approved`，不是新的 stage cursor 或持久 mode。Worker 领取任务使用 transaction lock；完成时先将临时产物 fsync/rename，再在同一 transaction 写成功状态和 hash。进程崩溃时没有成功 transaction 的产物视为未提交。启动检测 stale 只展示，不推进游标或写状态；Worker 仍须在每次 send 前立即复核 approval 和 recomputed payload signature。
 
-幂等键命中且输出校验通过时直接复用，绝不重复请求或覆盖成功产物。命中但 hash 不一致时报告 `IDEMPOTENCY_CONFLICT` 并停在 `needs_review`/`failed`，不能自选一个文件继续。
+幂等键命中且输出校验通过时直接复用，绝不重复请求或覆盖成功产物。命中但 hash 不一致时报告 Worker-local `IDEMPOTENCY_CONFLICT` 并停在 high `needs_review`/`failed`，不能自选一个文件继续。Provider retry child 使用 source job/input signature 的 deterministic nonce，重复 row/bulk action 只能命中既有 child；source 的原始 evidence/provider request 不被覆盖。
 
 ### 6.4 遗留 `running` 检测与 WebUI recover
 
@@ -248,7 +375,7 @@ recover 不能删除成功产物，也不能把未知结果当作 AI 已返回�
 
 ### 6.5 provider 配置冻结
 
-`AI_ANNOTATE` 和在线 query lane 使用同一个已启用的 `OpenAIResponsesProvider`。release candidate 必须冻结以下非秘密 provider 引用和版本：`profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、`prompt_version`、各 wire/record Schema version、`search_ranking_version`。MCP 只能从 release metadata 读取这些值，并按 `secret_reference` 从 Keyring 或允许的环境变量读取秘密；MCP **MUST NOT** 读取 workspace 数据库、可变 provider profile 或缓存。compatible `base_url` 仍属于同一 Responses provider；能力探测和 `store=false` 未完全通过时不得冻结为可用配置。
+`AI_ANNOTATE` 和在线 query lane 使用同一个已启用的 protocol-neutral `OpenAIProvider`、`adapter` 和 `model_id`。release candidate 的 `manifest.json` 必须冻结以下非秘密 provider snapshot 引用和版本：`adapter`、`profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、`prompt_version`、各 wire/record Schema version、`search_ranking_version`。MCP 只能从 `manifest.json` 读取这些值，并按 `secret_reference` 从 Keyring 或允许的环境变量读取秘密；MCP **MUST NOT** 读取 workspace 数据库、可变 provider profile 或缓存；不得跨协议 fallback。compatible `base_url` 仍属于所选 OpenAI 协议 endpoint；能力探测必须按所选 adapter 通过，但不证明远端 retention。既有 `openai_responses` release 不迁移、不改写。
 
 ### 6.6 Import state and workspace reconciliation
 
@@ -268,14 +395,17 @@ check 的 progress callback 只观察既有循环：snapshot 阶段接 copy/hash
 | `POLICY_INVALID` | `failed` | 修正策略并产生新输入签名 |
 | `RENDER_*` | `needs_review` | 自动最多重试一次，随后人工审核或声明 skip |
 | `SCHEMA_INVALID` | `needs_review` 高优先级 | 只允许一次修复尝试，之后人工覆盖或失败 |
-| `PROVIDER_RATE_LIMITED` | `needs_review` | 依契约人工/显式新 attempt，不重复成功任务 |
-| `PROVIDER_AUTH_FAILED` | `failed` | 修复 secret reference 后恢复未成功任务 |
+| `PROVIDER_NETWORK_ERROR`、`PROVIDER_TIMEOUT`、`PROVIDER_RATE_LIMITED`、`PROVIDER_SERVER_ERROR` | high `needs_review` | 保留 evidence，继续下一个 approved batch；Provider retry 使用显式 child generation |
+| `PROVIDER_SCHEMA_INVALID_REPAIRABLE`、`PROVIDER_SCHEMA_INVALID`、`PROVIDER_REQUEST_INVALID`、`PROVIDER_PAYLOAD_TOO_LARGE`、`PROVIDER_REFUSAL`、`PROVIDER_INCOMPLETE` | high `needs_review` | 不阻塞 AI_ANNOTATE drain，进入 `VALIDATE`/`HUMAN_REVIEW` |
+| `PROVIDER_OUTPUT_ID_MISMATCH`、`PROVIDER_MACHINE_FACT_CONFLICT`、`PROVIDER_UNKNOWN`、`PROVIDER_STORAGE_UNSUPPORTED` | high `needs_review` | `PROVIDER_STORAGE_UNSUPPORTED` 按 unknown 处理；保留原始 evidence |
+| `PROVIDER_CACHE_KEY_INVALID`、`IDEMPOTENCY_CONFLICT` | high `needs_review` | Worker-local failure；禁止覆盖或伪造成功，继续非 fatal drain |
+| `PROVIDER_NOT_CONFIGURED`、`PROVIDER_CONFIG_INVALID`、`PROVIDER_CAPABILITY_MISSING`、`PROVIDER_AUTH_FAILED`、`PROVIDER_PERMISSION_DENIED`、`PROVIDER_MODEL_UNAVAILABLE` | `failed` | 同一 transaction 写 request evidence/review/job/stage/run/audit，并停止 later sends |
+| `PROVIDER_CANCELLED` | control | 停止 future sends，不属于 bulk retry；不把取消伪装成 provider failure |
 | `FTS_BUILD_FAILED` | `failed` | 修复数据库/Schema 后重建发布候选 |
 | `MCP_SMOKE_FAILED` | `failed` | 不切换 current，修复 release 候选 |
-| `IDEMPOTENCY_CONFLICT` | `needs_review` | 检查输入/资产，禁止覆盖 |
 | `PUBLISH_ATOMIC_REPLACE_FAILED` | `failed` | 保留旧 current，修复后重试切换 |
 
-每个外部模型请求最多一次总自动重试；人工重新构建必须以新输入签名审计。provider 超时、未知响应或进程崩溃不能默认视为成功，必须校验响应 Schema、缓存和哈希后决定。
+每个外部模型 request 最多一次总自动重试；人工/Provider retry generation 必须以 source lineage 和 audit 明确区分，不能把同一 source 重跑到两次之外。provider 超时、未知响应或进程崩溃不能默认视为成功，必须校验响应 Schema、缓存和 hash 后决定。fatal provider/config/auth/capability failure 必须停止 later sends；item-local provider failure 则继续当前 approved plan 的顺序 drain。
 
 ## 8. SQLite 工作库与 release 视图
 
@@ -301,9 +431,9 @@ check 的 progress callback 只观察既有循环：snapshot 阶段接 copy/hash
 └── checksums.sha256
 ```
 
-`index.sqlite3` 是为只读 MCP 构建的发布投影，包含 FTS 索引和仅 `eligible`/满足条件的 `conditional` 视觉候选；可以保留用于详情查看的完整 Block/状态事实，但不得把 skipped 或 `excluded` 项伪装成可搜索图片。release 不包含原版资源。MCP 所需 provider snapshot 也必须冻结在 release metadata 中：`profile_id`、`model_id`、`base_url_stable_id`、不可逆 `secret_reference`、prompt/Schema/search 版本；MCP 不读 workspace provider profile，也不把该 snapshot 视为新的 active profile。
+`index.sqlite3` 是为只读 MCP 构建的发布投影，包含 FTS 索引和仅 `eligible`/满足条件的 `conditional` 视觉候选；可以保留用于详情查看的完整 Block/状态事实，但不得把 skipped 或 `excluded` 项伪装成可搜索图片。release 不包含原版资源。MCP 所需 provider snapshot 必须冻结在同目录 `manifest.json` 的 `release-manifest.v1` 中：`adapter`、`profile_id`、`model_id`、`base_url_stable_id`、不可逆 `secret_reference`、prompt/Schema/search 版本；MCP 不读 workspace provider profile，也不把该 snapshot 视为新的 active profile。`adapter` 只允许 `openai_responses` 或 `openai_chat_completions`，并决定唯一 wire codec。
 
-`release.json` 使用 `release.v1`，至少记录；同目录 `manifest.json` 使用独立的 `release-manifest.v1`，只记录功能输入/产物和 Schema inventory 引用。精确字段形状由 `schemas/workspace/` 下的真实 Schema 文件拥有，以下仅为说明性示例。`release-manifest.v1` 的顶层 `schema_version` 必须为 `release-manifest.v1`，其功能哈希不得包含 `release.json`、`manifest.json`、`schemas.sha256` 或 `checksums.sha256`，避免自引用和循环；`release.json` 仅保存 `manifest_sha256`，不保存自身或 checksum 的摘要：
+`release.json` 使用 `release.v1`，只保存该 Schema 允许的 release identity、`manifest_sha256`、record schema versions、quality report ref 和 immutable 标记；它不承载 provider snapshot。同目录 `manifest.json` 使用独立的 `release-manifest.v1`，并且是 provider snapshot、功能输入/产物和 Schema inventory 引用的唯一位置。精确字段形状由 `schemas/workspace/` 下的真实 Schema 文件拥有，以下仅为说明性示例。`release-manifest.v1` 的顶层 `schema_version` 必须为 `release-manifest.v1`，其功能哈希不得包含 `release.json`、`manifest.json`、`schemas.sha256` 或 `checksums.sha256`，避免自引用和循环；`release.json` 不保存自身或 checksum 的摘要：
 
 ```json
 {
@@ -312,7 +442,36 @@ check 的 progress callback 只观察既有循环：snapshot 阶段接 copy/hash
   "minecraft_version": "26.2",
   "built_at": "2026-08-13T12:00:00Z",
   "source_export_id": "export_20260814T165501Z",
+  "manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "record_schema_versions": {
+    "block": "block-record.v1",
+    "state": "state-record.v1",
+    "variant": "visual-variant-record.v1",
+    "annotation": "annotation-record.v1",
+    "manual_override": "manual-override.v1",
+    "skip_review": "skip-review.v1",
+    "qualification_review": "qualification-review.v1"
+  },
+  "quality_report_path": "quality_report.json",
+  "immutable": true
+}
+```
+
+release 创建成功后目录内容和数据库权限/应用层均视为只读。所有普通文件必须复制到 staging 后逐文件计算 `sha256:<64 lowercase hex>`，不得使用 symlink/hardlink；完成 flush/fsync 后原子 rename 为 release ID，并由 `release.json` 的 `immutable: true` 记录不可变语义，不得额外写入契约外的 marker 文件。`manifest.json` 记录 provider snapshot、功能输入/产物和 Schema inventory，不记录自身、`release.json` 或 `checksums.sha256` hash；`release.json` 保存其 Schema 允许的 identity 字段和 `manifest_sha256`，而 `checksums.sha256` 独立列出并校验 release 内其它普通文件。`schemas.sha256` 是按 schema-id UTF-8 字节序排序的 Schema inventory，每行严格为 `<64hex><two spaces><schema-id><two spaces><canonical-repository-relative-posix-path>\n`，路径必须是仓库规范相对 POSIX 路径且不声称位于 release；它和 `checksums.sha256` 都不被自身或 release metadata 反向哈希。任何修订都新建 `release_id`，即使只改变 Schema、semantic constraints、prompt、模型、图片或人工覆盖也不能更新旧 release。
+
+`manifest.json` 示例至少包含：
+
+```json
+{
+  "schema_version": "release-manifest.v1",
+  "release_id": "rel_01J...",
+  "minecraft_version": "26.2",
+  "source_export_id": "export_20260814T165501Z",
+  "source_export_manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "toolchain_lock_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "schemas_inventory_path": "schemas.sha256",
   "provider_snapshot": {
+    "adapter": "openai_responses",
     "profile_id": "default",
     "model_id": "configured-model-id",
     "base_url_stable_id": "https://api.openai.com/v1",
@@ -326,35 +485,6 @@ check 的 progress callback 只观察既有循环：snapshot 阶段接 copy/hash
     },
     "search_ranking_version": "search-ranking.v1"
   },
-  "manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "record_schema_versions": {
-    "block": "block-record.v1",
-    "state": "state-record.v1",
-    "variant": "visual-variant-record.v1",
-    "annotation": "annotation-record.v1",
-    "manual_override": "manual-override.v1",
-    "skip_review": "skip-review.v1",
-    "qualification_review": "qualification-review.v1"
-  },
-  "toolchain_lock_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "quality_report_path": "quality_report.json",
-  "immutable": true
-}
-```
-
-release 创建成功后目录内容和数据库权限/应用层均视为只读。所有普通文件必须复制到 staging 后逐文件计算 `sha256:<64 lowercase hex>`，不得使用 symlink/hardlink；完成 flush/fsync 后原子 rename 为 release ID，并由 `release.json` 的 `immutable: true` 记录不可变语义，不得额外写入契约外的 marker 文件。manifest 只记录功能输入/产物 hash，不记录自身、`release.json` 或 `checksums.sha256` hash；`release.json` 只记录 `manifest_sha256`，而 `checksums.sha256` 独立列出并校验 release 内其它普通文件。`schemas.sha256` 是按 schema-id UTF-8 字节序排序的 Schema inventory，每行严格为 `<64hex><two spaces><schema-id><two spaces><canonical-repository-relative-posix-path>\n`，路径必须是仓库规范相对 POSIX 路径且不声称位于 release；它和 `checksums.sha256` 都不被自身或 release metadata 反向哈希。任何修订都新建 `release_id`，即使只改变 Schema、semantic constraints、prompt、模型、图片或人工覆盖也不能更新旧 release。
-
-`manifest.json` 示例至少包含：
-
-```json
-{
-  "schema_version": "release-manifest.v1",
-  "release_id": "rel_01J...",
-  "minecraft_version": "26.2",
-  "source_export_id": "export_20260814T165501Z",
-  "source_export_manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "toolchain_lock_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "schemas_inventory_path": "schemas.sha256",
   "functional_inputs": {},
   "functional_artifacts": {},
   "quality_report_path": "quality_report.json",

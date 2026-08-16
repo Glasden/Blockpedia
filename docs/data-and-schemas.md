@@ -11,7 +11,7 @@
 - [流水线、存储与发布](pipeline-storage-and-publishing.md)
 - [roadmap.md](roadmap.md)
 - [decisions.md](decisions.md)
-- [OpenAI Responses 提供商接口](openai-provider.md)
+- [OpenAI Provider 接口](openai-provider.md)
 - [WebUI 与运行接口](webui-and-operations.md)
 - [搜索与排序接口](search-and-ranking.md)
 - [MCP API 接口](mcp-api.md)
@@ -56,12 +56,15 @@ current-pointer.v1
 
 ```text
 state-policy.v1
-render.v1
+render.v2 (current exporter policy)
+render.v1 (historical record/run policy)
 fixture.v1
 dedupe.v1
 ```
 
-JSON Schema 使用 Draft 2020-12；每个 root object 拒绝未知字段，重要 nested objects 关闭未知字段。R0 只做 inventory、fixtures 和 provider wire 基础验证；不引入通用规则引擎。当前 ID 仅使用 exporter、workspace/release、provider 和 MCP 冻结命名空间中的标识；旧 ID 不作为新规范当前 ID。真实 Responses wire 使用 `annotation-batch-output.v1`、`query-spec-output.v1` 和 `rerank-output.v1`，其 `text.format.name` 分别固定为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`；标注批次中的元素使用独立的 `annotation-wire-item.v1`。未知字段必须拒绝，不得静默发布。
+`render.v1` 和 `render.v2` 都是现有 v1 Schema 中合法的 `render_policy_version`。未修改的历史 `render.v1` records、workspace/release data 在当前 v1 Schema ID 下保持 valid，并只在其 record/run context replay；新导出、current fixtures 和 workspace fixture 默认使用 `render.v2`。preserved old export package 在 repository Schema bytes 变化后不由 current external validator 重新验证；其 embedded `schemas.sha256`/`schema_inventory` 是 binding evidence，current validation 必须报告 `SCHEMA_INVENTORY_HASH_MISMATCH`。不得 bypass hash、自动迁移、增加 historical Schema snapshot layer 或使用 version-aware validator fallback；旧 package bytes/reports 只作为历史证据保留。Schema ID 不因本次 policy 修订而增加。
+
+JSON Schema 使用 Draft 2020-12；每个 root object 拒绝未知字段，重要 nested objects 关闭未知字段。R0 只做 inventory、fixtures 和 provider wire 基础验证；不引入通用规则引擎。当前 ID 仅使用 exporter、workspace/release、provider 和 MCP 冻结命名空间中的标识；旧 ID 不作为新规范当前 ID。两种 OpenAI adapter 共用 `annotation-batch-output.v1`、`query-spec-output.v1` 和 `rerank-output.v1`，其 wire `name` 分别固定为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`；Responses 使用 `text.format`，Chat 使用 `response_format.json_schema`；标注批次中的元素使用独立的 `annotation-wire-item.v1`。未知字段必须拒绝，不得静默发布。
 
 Schema inventory 的规范仓库路径固定为 `schemas/<namespace>/<schema-id>.json`，其中 `<namespace>` 只能是 `exporter`、`workspace`、`provider` 或 `mcp`；路径使用相对仓库根的 POSIX 写法，不含 `./`、`..`、反斜杠或绝对路径。release 内的 `schemas.sha256` 每行必须严格为：
 
@@ -203,6 +206,14 @@ Schema 变更时，旧 release 只读不改；工作库以新版本从导出包�
 
 `subject_type` MVP 允许 `block` 或 `visual_variant`，但搜索发布的语义必须能解析到具体可发布 `variant_id`。同义词与官方名称严格分离；AI 与人工也分别作为不同 Annotation 或 override 层保存，人工值不能回写成 AI 结果。持久化语义记录使用 `annotation-record.v1`；provider 批次中的元素使用 `annotation-wire-item.v1`，只能对应请求中预先存在的 `tile_id`/`variant_id` 映射，不携带持久记录的 `annotation_id`、`source` 或审核字段，且不得创建新的 ID、状态或机器事实。
 
+### 3.3.1 Prompt version 与最终诊断
+
+frozen run/release 的 `prompt_version` 是 annotation 的 replay lineage。`prompt.v1` 和已有历史 version string 必须保持 exact legacy behavior；`prompt.v2` 只能由新的 run/profile snapshot 选择，改变 signature/cache identity，不能原地迁移、re-sign 或删除当前 pending v1 jobs。v2 的 model-visible projection 只包含 existing tile 的 trusted instruction、contact-sheet tile labels、`tile_id`/exact existing `variant_id` 和去重有界 `geometry_classes`；完整 machine metadata、hashes、source images、envelope/cache/signature/release lineage 仍是本地事实，不改变持久 Annotation 或 machine-fact Schema。
+
+D-042 不改变 `annotation-batch-output.v1`、`annotation-wire-item.v1` 或 `annotation-record.v1`。模型仍返回 `schema_id`、`variant_id` 和当前 `annotation-wire-item.v1` 的全部 13 个 required item fields；local `schema_id` injection、`tile_id` codec 和 semantic-field reduction 保持 deferred，除非 diagnostics 足以支持另一个 owner-approved/materialized Schema decision。
+
+最终 `offline_annotation` validation 在总 retry budget 用尽后失败时，sanitized diagnostic 只能作为既有 `PROVIDER_FAILURE` review task 的 `evidence_json` 子对象传递；它不是 provider envelope、`provider_requests` column、Schema、table 或报告。该对象只能包含 `stage`、`phase`、`path`、`keyword`、`observed_type`、`observed_length` 六个 allowlisted fields；不得保存 raw value/prefix、provider message、exception、repair context、prompt/image/secret 或 response/value hash。successful repair 不保存 diagnostic，既有 evidence rows 仍有效。
+
 ## 4. 事实来源边界
 
 ### 4.1 机器事实
@@ -223,9 +234,12 @@ has_item、has_block_entity
 运行时 tags
 代表状态与状态映射
 固定夹具、相机、光照、资源包哈希
+实际 renderer options/environment identity，包括固定 resolver seed `42L`、atlas reload/freeze 控制和其它影响动画确定性的控制
 ```
 
 `machine_facts` 的行为值统一使用 `true`、`false`、`unknown`。采集失败或证据不足时必须是 `unknown`，不能默认 `false`。`unknown` 不满足硬约束：要求 `true` 只接受 `true`；排除某行为时 `unknown` 也不能被当作安全的 `false`。
+
+渲染材料的机器真相来自 Java resolved submission：whole-model/material missing、missing model、vanilla material/quads 和 Fabric mesh（通过 block-atlas missing sprite、`SpriteFinder` 与 missing-sprite UV bounds）均由 exporter 判断。`#F800F8`/`#000000` 四象限只描述 `minecraft:missingno` 的 source checker；渲染颜色不是 authority。Python 不使用宽松全局 magenta/black 比例，只能以严格 canonical checker 作 defense-in-depth，ambiguous pixels 不能单独形成 missing-material 事实。
 
 ### 4.2 AI 语义
 
@@ -305,7 +319,9 @@ applies_to:
   input_signature: sha256:0000000000000000000000000000000000000000000000000000000000000000
 ```
 
-`provider-batch-envelope.v1` 是 provider 请求审计/输入 envelope，不是 AI 语义记录。每个 envelope 必须绑定一个 `stage`：`offline_annotation`、`query_spec` 或 `visual_rerank`，并包含 `request_id`、`profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、`prompt_version`、`wire_schema_id`、`minecraft_version`、适用的 `export_id` 或 `release_id`、输入摘要和 `store: false`；在线 stage 还必须绑定 resolved release manifest hash。`offline_annotation` 必须有唯一 `tile_id` 到已有 `variant_id` 的映射；`query_spec` 只允许当前查询摘要且不得携带候选 ID；`visual_rerank` 只能携带本地已召回候选的完整映射。`wire_schema_id` 必须分别为 `annotation-batch-output.v1`、`query-spec-output.v1` 或 `rerank-output.v1`，stage 与 Schema 不匹配、映射新增/缺失或出现秘密正文均拒绝。envelope 不保存完整 provider response、原始 prompt、图片内容、Authorization、Token usage、费用或预算。
+`provider-batch-envelope.v1` 是 provider 请求审计/输入 envelope，不是 AI 语义记录。每个 envelope 必须绑定一个 `stage`：`offline_annotation`、`query_spec` 或 `visual_rerank`，并包含 required `adapter`（`openai_responses|openai_chat_completions`）、`request_id`、`profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、`prompt_version`、`wire_schema_id`、`minecraft_version`、适用的 `export_id` 或 `release_id` 和输入摘要。`adapter=openai_responses` 时 envelope 必须包含 `store: false`；`adapter=openai_chat_completions` 时 **MUST NOT** 包含 `store`；二者都不表示远端 retention 已验证。在线 stage 还必须绑定 resolved release manifest hash。`offline_annotation` 必须有唯一 `tile_id` 到已有 `variant_id` 的映射；`query_spec` 的 `input_summary` 精确只能是 `query_sha256`，不得含 `candidate_map`；`visual_rerank` 只能携带本地已召回候选的完整映射。`wire_schema_id` 必须分别为 `annotation-batch-output.v1`、`query-spec-output.v1` 或 `rerank-output.v1`，stage 与 Schema 不匹配、映射新增/缺失或出现秘密正文均拒绝。envelope 不保存完整 provider response、原始 prompt、图片内容、Authorization、Token usage、费用或预算。
+
+provider snapshot 只属于 `release-manifest.v1` 的 `manifest.json`，并必须冻结 `adapter` 作为 protocol lineage；`release.v1` 对应的 `release.json` 只使用其真实 Schema 允许的 release identity、`manifest_sha256` 和其它 release 元数据，不复制 provider snapshot。既有 Responses snapshot/release 不迁移、不改写。
 
 `operations` 只能是语义字段；下列操作名永远非法：`set_block_id`、`set_state`、`set_default_state`、`set_shape`、`set_collision`、`set_behavior`、`set_tags`、`set_minecraft_version`、`set_image`、`set_candidate_qualification`、`set_warnings`。发现机器事实错误必须修复 exporter/运行时探测并生成新导出包，不能用人工修正隐藏。
 
@@ -329,6 +345,25 @@ applies_to:
 ```
 
 `qualification-review.v1` 复用同样的 `target_id`、`minecraft_version`、`reviewer`、`reviewed_at`、`reason_code`、`note`、`evidence`、`source_version` 字段，另要求 `qualification` 和 `warnings`；资格审核不能引用 skip 作为替代。两种审核记录必须逐字段 Schema 校验，发布后只读。
+
+## 7.1 R3 Phase C `manual-overrides.json` 原始记录包（data owner）
+
+release 根的 `manual-overrides.json` 是 Phase C 的记录归档文件，不是新的 JSON Schema。它的顶层字段必须且只能是：
+
+```json
+{
+  "format_version": 1,
+  "release_id": "rel_<32 lowercase hex>",
+  "version": "26.2",
+  "manual_overrides": [],
+  "skip_reviews": [],
+  "qualification_reviews": []
+}
+```
+
+三个数组必须分别只包含原样、完整、通过对应真实 Schema 的 `manual-override.v1`、`skip-review.v1`、`qualification-review.v1` 记录；不得扁平化、删字段、改字段名、把有效值合并成机器列，或加入 release index 专用字段。数组稳定排序分别按 `override_id`、`review_id`、`review_id` 的 UTF-8 字节序；同 ID 的异常重复也必须阻断，不能以最后一条覆盖前一条。`format_version` 是文件格式版本，`version` 是精确 `minecraft_version` 的 owner 字段；这两个字段均不是 Schema ID。
+
+写入 release 前必须重新逐条校验三类原始记录：未知字段、Schema 不通过、`minecraft_version` 不等于 `version`、目标不存在、跨版本目标、`machine_failure_ref` 不存在或不属于当前 export、以及任何 orphan review 都必须阻断 build。不得因为记录无法投影到 release index 就静默丢弃。人工记录的完整值只在本文件保留；release index 的有效语义/资格/搜索 projection 只能引用 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md) 的独立 `release-index.v1.sql` 边界，不在本文复制 SQL 表或列，也不能把 SQL projection 当作人工审计来源。
 
 ## 8. 数据不变量和发布视图
 
@@ -358,4 +393,4 @@ Schema 实现验收必须包含正例和拒绝例：
 - 无效 variant/family/global override、越权机器字段或过期输入签名必须阻断重建。
 - Schema 或语义字段约束变化不会修改现有 release，而是使新构建使用新版本并重新跑完整门禁。
 
-具体字段、接口错误码和版本协商由 [OpenAI Responses 提供商接口](openai-provider.md)、[WebUI 与运行接口](webui-and-operations.md)、[搜索与排序接口](search-and-ranking.md)、[MCP API 接口](mcp-api.md) 和 [质量与测试接口](quality-and-testing.md) 继续细化；本文件规定不可违背的分层和来源边界。
+具体字段、接口错误码和版本协商由 [OpenAI Provider 接口](openai-provider.md)、[WebUI 与运行接口](webui-and-operations.md)、[搜索与排序接口](search-and-ranking.md)、[MCP API 接口](mcp-api.md) 和 [质量与测试接口](quality-and-testing.md) 继续细化；本文件规定不可违背的分层和来源边界。

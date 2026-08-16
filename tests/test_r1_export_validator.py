@@ -11,8 +11,10 @@ import pytest
 from tools.validate_r1_export import (
     EXPORT_ID_RE,
     _PngAnalysis,
+    _analyze_png_pixels,
     _check_image_quality,
     _jcs_canonical,
+    _parse_png,
     _read_png,
     _render_reference_paths,
     Validator,
@@ -392,3 +394,117 @@ def test_r1_inventory_does_not_follow_root_symlink(tmp_path: Path) -> None:
 
     assert any(issue.code == "INVENTORY_SYMLINK_REJECTED" for issue in validator.issues)
     assert not validator._files
+
+
+def _analysis_from_pixels(width: int, height: int, pixels: bytes) -> _PngAnalysis:
+    raw = _rgba_png(width, height, pixels)
+    parsed_width, parsed_height, bit_depth, color_type, interlace, idat = _parse_png(raw)
+    assert (parsed_width, parsed_height, bit_depth, color_type, interlace) == (width, height, 8, 6, 0)
+    decoded = zlib.decompress(idat)
+    return _analyze_png_pixels(decoded, width, height, width * 4)
+
+
+def test_r1_transparent_edge_on_quadrant_is_accepted() -> None:
+    width = height = 8
+    pixels = bytearray(width * height * 4)
+    for x, y in ((1, 1), (2, 1), (1, 2), (2, 2), (5, 1), (6, 1), (5, 2), (6, 2), (5, 5), (6, 5), (5, 6), (6, 6)):
+        pixels[(y * width + x) * 4 : (y * width + x + 1) * 4] = bytes((80, 80, 80, 255))
+
+    analysis = _analysis_from_pixels(width, height, bytes(pixels))
+    validator = Validator(Path.cwd(), Path.cwd())
+
+    _check_image_quality(analysis, validator, "minecraft:edge_on")
+
+    assert analysis.quadrant_nontransparent == (4, 4, 0, 4)
+    assert not validator.issues
+
+
+def test_r1_entirely_transparent_composite_is_rejected() -> None:
+    analysis = _analysis_from_pixels(8, 8, bytes(8 * 8 * 4))
+    validator = Validator(Path.cwd(), Path.cwd())
+
+    _check_image_quality(analysis, validator, "minecraft:empty")
+
+    assert any(issue.code == "BACKGROUND_ONLY_RENDER" for issue in validator.issues)
+
+
+def test_r1_canonical_missing_checker_is_strict() -> None:
+    width = height = 8
+    pixels = bytearray()
+    for y in range(height):
+        for x in range(width):
+            pixels.extend(bytes((0, 0, 0, 255) if ((x < 4) == (y < 4)) else (248, 0, 248, 255)))
+
+    analysis = _analysis_from_pixels(width, height, bytes(pixels))
+
+    assert analysis.missing_texture
+
+    inverted = bytearray()
+    for y in range(height):
+        for x in range(width):
+            inverted.extend(bytes((248, 0, 248, 255) if ((x < 4) == (y < 4)) else (0, 0, 0, 255)))
+
+    assert not _analysis_from_pixels(width, height, bytes(inverted)).missing_texture
+
+
+@pytest.mark.parametrize(
+    "colors",
+    [
+        ((248, 0, 248, 255), (248, 0, 248, 255)),
+        ((0, 0, 0, 255), (0, 0, 0, 255)),
+        ((180, 48, 180, 255), (32, 24, 24, 255)),
+        ((17, 93, 41, 255), (201, 19, 77, 255)),
+    ],
+)
+def test_r1_ambiguous_or_nonchecker_colors_do_not_fail(colors: tuple[tuple[int, ...], tuple[int, ...]]) -> None:
+    width = height = 8
+    pixels = bytearray()
+    for y in range(height):
+        for x in range(width):
+            pixels.extend(bytes(colors[0] if ((x < 4) == (y < 4)) else colors[1]))
+
+    analysis = _analysis_from_pixels(width, height, bytes(pixels))
+
+    assert not analysis.missing_texture
+
+
+def test_r1_random_color_mixture_does_not_fail() -> None:
+    width = height = 8
+    pixels = bytearray()
+    for index in range(width * height):
+        pixels.extend(bytes(((index * 73) % 256, (index * 151) % 256, (index * 29) % 256, 255)))
+
+    analysis = _analysis_from_pixels(width, height, bytes(pixels))
+
+    assert not analysis.missing_texture
+
+
+def test_r1_current_render_policy_is_v2_and_records_controls() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    constants = (repo_root / "src/main/java/com/blockpedia/exporter/ExporterConstants.java").read_text()
+    environment = (repo_root / "src/main/java/com/blockpedia/exporter/RenderEnvironment.java").read_text()
+    renderer = (repo_root / "src/main/java/com/blockpedia/exporter/RenderExporter.java").read_text()
+
+    assert 'RENDER_POLICY_VERSION = "render.v2"' in constants
+    assert "block_model_resolver_seed=42L" in environment
+    assert "block_atlas_reload=awaited_before_prepare" in environment
+    assert "block_atlas_animation=cycleAnimationFrames_cancelled_while_exporting" in environment
+    assert "getAtlasOrThrow(AtlasIds.BLOCKS)" in renderer
+    assert "getAtlasOrThrow(TextureAtlas.LOCATION_BLOCKS)" not in renderer
+
+
+def test_r1_dynamic_block_entity_fixture_skips_are_exact_and_pre_render() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    constants_source = (repo_root / "src/main/java/com/blockpedia/exporter/ExporterConstants.java").read_text()
+    package_source = (repo_root / "src/main/java/com/blockpedia/exporter/ExportPackage.java").read_text()
+
+    token = "pre-render-skip.v1;reason=BLOCK_ENTITY_FIXTURE_UNSUPPORTED;ids=minecraft:end_gateway,minecraft:end_portal"
+    assert f'PRE_RENDER_SKIP_POLICY_TOKEN = "{token}"' in constants_source
+    assert '"minecraft:end_portal"' in package_source
+    assert '"minecraft:end_gateway"' in package_source
+    assert '"BLOCK_ENTITY_FIXTURE_UNSUPPORTED"' in package_source
+    assert "TextureAtlas" not in package_source
+    render_flow = package_source[package_source.index("boolean renderVariantStep()") :]
+    assert render_flow.index("isUnsupportedDynamicBlockEntity") < render_flow.index("RenderPaths.forBlockId(block.blockId.toString())")
+    signature = package_source[package_source.index("String logicalInputSignature = JsonCanonical.sha256Framed") :]
+    assert signature.index("ExporterConstants.DEDUPE_POLICY_VERSION") < signature.index("ExporterConstants.PRE_RENDER_SKIP_POLICY_TOKEN") < signature.index("snapshot.hash()")

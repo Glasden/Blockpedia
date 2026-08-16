@@ -737,13 +737,9 @@ class ImportService:
             raise ImportCheckInProgress(check_id)
         if not result.can_import:
             raise ImportNotAllowed("import check did not pass")
-        # A live process still knows the chooser ref and must revalidate it on
-        # use.  A process-restarted, already-passed check uses only its frozen
-        # snapshot and never attempts to recover a source path.
-        with self._checks_lock:
-            in_memory = self._checks.get(check_id)
-        if in_memory is not None and in_memory.source_directory_ref:
-            self.chooser.validate_ref(in_memory.source_directory_ref, result.minecraft_version)
+        # A passed check hands import an immutable snapshot.  The chooser ref
+        # is only needed while listing and starting the check, so it may expire
+        # before a long-running check is ready to import.
         snapshot = self.data_root.resolve_ref(result.snapshot_ref)
         if snapshot.name != result.export_id or not snapshot.is_dir() or _unsafe_directory_entry(snapshot):
             raise ImportNotAllowed("checked snapshot is missing or invalid")

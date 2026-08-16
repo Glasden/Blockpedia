@@ -18,7 +18,7 @@ MVP 必须退出的质量范围只有：
 
 1. 确定性导出/导入、100% `minecraft` registry 登记、合法状态、图片和不可变 release 完整性；R1 只负责 exporter 产物完整性，release 完整性属于后续 candidate/activation gate；
 2. 机器事实/AI 语义/人工 override 分层、strict JSON Schema 和引用边界；
-3. OpenAI Responses 三阶段请求、严格一次总重试、错误分类、离线审核和在线本地降级；
+3. 两种显式 OpenAI adapter 的三阶段请求、严格一次总重试、错误分类、离线审核和在线本地降级；
 4. MCP stdio 四工具、结构化输出/等价 TextContent、PNG 联系表/四视角图片和 stdout 纯净；
 5. WebUI loopback、任务 pause/resume/recover、普通/高优审核、声明式覆盖、publish/rollback/cleanup；
 6. Windows 11 x86_64 与 Linux x86_64（`manylinux_2_17` / glibc `>=2.17`）的源码锁依赖可复现运行；其中 Linux 安装、运行和平台行为统一由 R5 验证。
@@ -30,7 +30,7 @@ MVP **MUST NOT** 把黄金查询集、Top-5 指标、硬约束统计目标、排
 
 - **R1**：以现有 Windows Java 25 构建、实际 Minecraft 26.2 exporter 导出和外部 validator 证据验收 exporter 的完整注册表/合法状态/机器事实、唯一 default representative、按 `block_id` 推导的 isolated 四视角 preview/mask、pending failure/skip、exporter commit gate 与外部 validator 的分工、checksum 和 fresh staging 原子提交。
 - **R2**：验收 Index Studio、导入验证、SQLite、任务状态、WebUI loopback 和进程内 Worker。
-- **R3**：验收 OpenAI Responses、`store=false` 能力门、strict wire Schema、人工审核/覆盖和 candidate-build gate。
+- **R3**：验收所选 OpenAI adapter、协议条件 `store` 行为、strict wire Schema、人工审核/覆盖和 candidate-build gate；Responses 发送 `store=false`，Chat Completions 省略 `store`，不验证远端 retention 或第三方实际模型身份。
 - **R4**：验收临时 candidate/current fixture 上的 MCP stdio 四工具、搜索/排序和本地降级；不激活生产 current。
 - **R5**：统一验收 Linux CPython `3.14.7` hash-lock 安装/`pip check`/Web 和平台行为、Linux MCP stdio、Linux wheel/ABI、Linux Java 25/runtime/exporter 独立重跑和最终双平台源码锁依赖/运行时复现，以及双 release、activation gate、current 原子切换、回滚和首发清单。
 
@@ -71,7 +71,7 @@ test summary/report path
 
 ### 4.1 strict Schema
 
-静态测试必须区分本地完整 JSON Schema Draft 2020-12 与 Responses Structured Outputs wire 子集；以下本地 strict Schema 对象均拒绝未知字段：
+静态测试必须区分本地完整 JSON Schema Draft 2020-12 与两种 OpenAI Structured Outputs wire 子集；以下本地 strict Schema 对象均拒绝未知字段：
 
 ```text
 export-manifest.v1 / export-block.v1 / export-state.v1 / export-variant.v1
@@ -87,7 +87,7 @@ mcp-compare-blocks-output.v1 / mcp-error.v1
 
 `SearchRequest`、各 MCP tool input 和 WebUI 请求是输入契约，不另占用 D-030 当前 Schema ID；它们仍必须通过各自 strict 输入校验。
 
-必须验证枚举、正则、长度、数值范围、`additionalProperties=false`、引用存在性、版本一致性和重复数组。真实 Responses wire Schema 只允许并必须测试 `annotation-batch-output.v1`（元素 `annotation-wire-item.v1`）、`query-spec-output.v1`、`rerank-output.v1`；同时校验对应 `text.format.name` 为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`，name 只能匹配 `[A-Za-z0-9_-]{1,64}`。每个字段 required、每个 object `additionalProperties=false`，只使用 endpoint probe 实际证明支持的关键字。不得把任意 Draft 2020-12 Schema 直接假定可发送。`QuerySpec` 必须检查 `source`、hard/soft 业务规则；`unknown` 不满足硬约束。LLM 输出 `block_id`、状态、几何、机器行为、透明/发光/支撑或发布状态必须被拒绝并创建 high review。machine/AI/override 三层不得互写；override 必须可重放并引用真实 target。
+必须验证枚举、正则、长度、数值范围、`additionalProperties=false`、引用存在性、版本一致性和重复数组。两种 adapter 共用并必须测试 `annotation-batch-output.v1`（元素 `annotation-wire-item.v1`）、`query-spec-output.v1`、`rerank-output.v1`；wire `name` 分别为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`，name 只能匹配 `[A-Za-z0-9_-]{1,64}`。Responses 请求位置必须是 `text.format`，Chat 请求位置必须是 `response_format.json_schema`；每个字段 required、每个 object `additionalProperties=false`，只使用所选 adapter probe 实际证明支持的关键字。不得把任意 Draft 2020-12 Schema 直接假定可发送。`QuerySpec` 必须检查 `source`、hard/soft 业务规则；`unknown` 不满足硬约束。LLM 输出 `block_id`、状态、几何、机器行为、透明/发光/支撑或发布状态必须被拒绝并创建 high review。machine/AI/override 三层不得互写；override 必须可重放并引用真实 target。
 
 ### 4.2 导出和导入
 
@@ -107,25 +107,35 @@ R1 exporter 验收只覆盖最小确定性边界：完整 `minecraft` registry �
 
 R1 validator 对 1000 renders 的验收必须采用单次读取/解码；真实旧 validator 已超过 600 秒，不得延长 timeout、增加并行框架或磁盘缓存。目录名必须等于 `export_id` 且不是 staging；旧 `exp_...`/`vv_<hash>` 身份（已删除）的导出直接作废重导。
 
+Java 的 material/framing/PNG semantic checks 属于 per-variant render acceptance，必须在写入 `variants.jsonl` record 前完成；package commit gate 仍只执行第 4.2 节规定的 structural/basic PNG/package checks，Java material identity 保持 authoritative，Python strict canonical checker 只作 defense-in-depth。
+
+Oracle Gate 3：`PASS`。该 closure 只关闭 D-043/R1 P0，不代表 R3、candidate 或人工审核完成。
+
+Phase 1 的当前渲染策略为 `render.v2`；未修改的历史 `render.v1` records、workspace/release data 在当前 v1 Schema ID 下保持 valid，并只在其 record/run context replay，new/current fixtures 默认使用 v2。preserved old export package 在 repository Schema bytes 变化后不由 current external validator 重新验证；其 embedded `schemas.sha256`/`schema_inventory` 是 binding evidence，current validation 必须报告 `SCHEMA_INVENTORY_HASH_MISMATCH`。不得 bypass hash、自动迁移、增加 historical Schema snapshot layer 或使用 version-aware validator fallback；旧 package bytes/reports 只作为历史证据保留。PNG 质量判断允许一个或多个透明 edge-on quadrant，但 entirely transparent composite 仍失败，`nether_portal` 在 composite 非空时保留。Java resolved submission 的 material identity 是 missing-texture authority，覆盖 whole-model/material missing、missing model、vanilla material/quads 和 Fabric mesh（`SpriteFinder` + block-atlas missing-sprite UV bounds）；`minecraft:missingno` source checker 的精确颜色为四象限 `#F800F8`/`#000000`，rendered colors 不具权威性。Python 移除宽松全局 magenta/black ratio，只保留严格 canonical-checker defense-in-depth，ambiguous pixels 不是 proof。
+
+本项不增加 block-entity fixture；`minecraft:end_portal` 与 `minecraft:end_gateway` 必须继续登记全部合法 states，并在进入渲染前以既有 `BLOCK_ENTITY_FIXTURE_UNSUPPORTED` 写入 ordinary auditable pending skip，不生成 preview、mask 或 render directory，后续需要 human review，绝不静默过滤。D-043 Gate 3/R1 P0 closure 已验证最终 pair：`run/blockpedia-data/exports/26.2/export_20260816T091512Z/` 与 `run/blockpedia-data/exports/26.2/export_20260816T093009Z/` 均有 `1196` blocks/variants、`32366` states、`1140` selected、`56` pending skips；validator reports 均通过，SHA-256 分别为 `d7c6c166695ac4b56ae3f2720aa972b749429f2ed4d89c1738a4293891c2aa3d` 和 `5ffaccdfb35e010bc2333504e4d223635b76e4d6afb7a88d3d8111a7c3d3904b`。pairwise report `run/blockpedia-data/reports/export_20260816T091512Z--export_20260816T093009Z-pairwise.json` SHA-256 为 `a328dc6e64ce3423995ec268d760d8108c2bf79dd0ff9d2ee7b8afe7d8254699`、status=`passed`，全部 `3420` 个 render artifacts match；pair signatures 以 `f39a...` 与 `fbd3...` 报告，在 pair 内一致且不同于 pre-amendment signatures。预期仍为 `43` 个 block-entity fixture skips 与 `10` 个 invisible/technical skips；`melon_stem`、`pumpkin_stem`、`tripwire` 的 `OBJECT_TOO_SMALL` 仍是 ordinary reviewable R3 pending items，不是 R1 blocker。既有旧导出、validator reports、R3 run 和 `152` 个 rerender events 保持历史证据，不执行旧 rerender events；R3、candidate、human review 和 Linux R5 义务不因本 closure 改变。
+
+动画确定性测试必须验证 scoped client-only gate：await resource reload 后只取消 `TextureAtlas.LOCATION_BLOCKS` 的 `cycleAnimationFrames`，成功/失败均 clear gate，不修改 private field；固定 resolver seed `42L` 保持不变，实际控制记录在 renderer options/environment identity 中。不得以记录观察到的动画相位代替控制。
+
 ## 5. R3 OpenAI provider contract tests
 
-Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixture，不发送真实 key，覆盖：
+Provider 测试必须使用本地 fake endpoint 或脱敏协议 fixture，不发送真实 key，分别覆盖两种显式 adapter 的 wire 形状和共享语义：
 
-1. `offline_annotation`、`query_spec`、`visual_rerank` 均使用同一个 Studio active profile 的同一个 runtime `model_id`；可保存多个非活动 profile，但全局最多一个 active；release-bound MCP 使用 release 冻结 snapshot，不读取或比较可变 active profile；
-2. 请求 strict `text.format.type=json_schema`、`strict=true`，Schema ID/name 分别为 `annotation-batch-output.v1`/`annotation_batch_output_v1`、`query-spec-output.v1`/`query_spec_output_v1`、`rerank-output.v1`/`rerank_output_v1`，没有 `json_object`/自由文本正常 fallback；
-3. 能力 probe 实际发送上述三个 Schema、图片、错误分类和实际 `store=false`；任何能力不能证明（包括 `store=false`）都 probe fail 并禁止 enable，不得提供确认或豁免绕过硬门；
+1. `offline_annotation`、`query_spec`、`visual_rerank` 均使用同一个 Studio active profile 的同一个 configured/requested `model_id` 和所选 `adapter`；成功响应必须有 string `model`，但 model echo mismatch 不失败、不持久化且不替换 requested `model_id`；可保存多个非活动 profile，但全局最多一个 active；release-bound MCP 使用 release 冻结 snapshot，不读取或比较可变 active profile；
+2. 两种 adapter 都发送图片、strict JSON Schema 和稳定错误分类；Schema ID/name 分别为 `annotation-batch-output.v1`/`annotation_batch_output_v1`、`query-spec-output.v1`/`query_spec_output_v1`、`rerank-output.v1`/`rerank_output_v1`，没有 `json_object`/自由文本正常 fallback。Responses 使用 `text.format`、`input_text`/`input_image`；Chat 使用 `response_format.json_schema`、`text`/`image_url`；
+3. Responses wire 必须是 `POST /responses` 并发送 `store=false`；Chat wire 必须是 `POST /chat/completions` 且省略 `store`。能力 probe 只验证所选 adapter 的 endpoint、图片、strict output、错误分类和 string model structural validity；probe 不验证 model echo equality、第三方实际模型身份或远端 retention，不能自动改用另一协议；
 4. R3 provider 请求的总尝试最多 2 次；仅已观察的可恢复错误最多补试一次，不能据此为 R1 exporter 预建通用重试框架；
-5. `refusal`、`incomplete`、认证、权限、能力缺失和不可修复请求错误不重试；
+5. Chat 只接受 `choices[0]` 的非流式 JSON 字符串内容、`finish_reason=stop` 和无 refusal；Responses/Chat 的 refusal、incomplete、认证、权限、能力缺失和不可修复请求错误不重试；
 6. 离线最终失败创建 high `needs_review`；在线最终失败保留本地结果、warning 和 `reranked_by_llm=false`；
 7. usage、完整 response、图片、Authorization、key、绝对路径不进入返回对象、SQLite 或日志；只留脱敏 request ID；
-8. cache key 缺任一字段即失败：`image_hash`、`machine_metadata_hash`、`prompt_version`、`model_id`、`schema_version`、`base_url_stable_id`、`stage`；
-9. artifact 与 profile/model/prompt/wire schema/search/base URL stable ID/secret reference、input hash 和 cache key 在 release freeze 中可复核；不出现 Token usage、费用或预算字段；Keyring/env 无法解析时在线只本地降级并 warning，不写状态。
+8. cache key 缺任一字段即失败：`image_hash`、`machine_metadata_hash`、`adapter`、`prompt_version`、`model_id`、`schema_version`、`base_url_stable_id`、`stage`；
+9. artifact 与 adapter/profile/requested model/prompt/wire schema/search/base URL stable ID/secret reference、input hash 和 cache key 在 release freeze 中可复核；response model echo 不进入 artifact、cache、run 或 release lineage；不出现 Token usage、费用或预算字段；Keyring/env 无法解析时在线只本地降级并 warning，不写状态。
 
 ## 6. R4 搜索和排序 contract tests
 
 使用原创小型 release fixture 验证：
 
-1. MCP 省略版本使用 `default_minecraft_version` 的 current，显式版本使用对应 current；WebUI/API 显式版本只查 current；历史 `release_id` selector 被拒绝；精确未知/未发布版本失败并列可用版本，绝不回退；release-bound provider snapshot 使用冻结 profile/model/base URL/secret reference，不能读取或比较可变 active profile；
+1. MCP 省略版本使用 `default_minecraft_version` 的 current，显式版本使用对应 current；WebUI/API 显式版本只查 current；历史 `release_id` selector 被拒绝；精确未知/未发布版本失败并列可用版本，绝不回退；release-bound provider snapshot 使用冻结 adapter/profile/model/base URL/secret reference，不能读取或比较可变 active profile；
 2. 版本、current release 完整性、legal state、资格、明确排除行为、明确必须支撑/透明/发光/方向/形状先于评分；`unknown` 不能满足硬约束；
 3. FTS5 `trigram` 与无 trigram 时 `normalized_like` fallback 均覆盖名称/同义词、颜色、几何、用途、风格和行为；
 4. `search-ranking.v1` 权重精确为 shape `.35`、color `.30`、use `.15`、name-synonym `.10`、style `.05`、behavior `.05`，未出现维度按规则归一化；
@@ -158,7 +168,7 @@ Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixtur
 
 - loopback host 拒绝和固定 `127.0.0.1:8765`；`--host`/`--port` 及其环境/profile 配置均被拒绝；Python 只有两个命令；
 - CLI/env/profile/default 优先级；Keyring 优先、env 只读回退、SQLite `secret_reference`、前端掩码；
-- 多个非活动 provider profile/唯一 active、profile/probe/enable/disable；同一个 model 用于三阶段；`store=false` hard fail/enable gate；待发送预览可取消；
+- 多个非活动 provider profile/唯一 active、profile/probe/enable/disable；显式 adapter 和同一个 configured/requested model 用于三阶段；Responses `store=false`、Chat 省略 `store`；不以 response model echo equality、远端模型身份或 retention 作为 enable gate；页面显示 requested identity 可能被 gateway 改写的简短 warning；待发送预览可取消；
 - import check/import、版本匹配、run 创建、阶段进度、pause/resume/cancel、用户 POST recover、单项失败 retry；启动只读 stale running，不自动写状态；
 - `running` 超时由显式 recover 才改变且只作用于未完成 job，成功 job 不重复；provider 不无限重试；
 - normal/high review、机器事实只读、override allowlist、operator/time/reason/source version/target ID audit；
@@ -192,29 +202,83 @@ Provider 测试必须使用本地 fake Responses endpoint 或脱敏协议 fixtur
 8. 绝对路径、chooser ref/token、secret、raw details、exception、worker ID、cursor 均不出现在 state/summary、response、URL、HTML、log、cache、SQLite 或 SSE；summary 中错误/ID/时间只经过 allowlist sanitization。
 9. 验收确认 `workspace.v1.sql` 字节内容及其既有 hash 均 unchanged；本增强不新增 `index.json`、`owner_instance_id`、SQLite 表/字段、generic migration、Schema ID、依赖、服务、消息总线或 arbitrary generation framework。
 
-## 9. R3/R5 发布完整性门
+### 8.4 D-040 focused acceptance evidence
 
-发布检查必须拆成两个独立门：`candidate-build gate` 由 WebUI `POST /api/releases/check` 执行，生成不可编辑的 `quality_report.json` 并决定 `can_build`；`activation gate` 由 WebUI `POST /api/releases/activation-check` 执行，决定 `can_apply`。`/api/releases/check` 和 `/api/releases/build` 只要求 R0–R3 及 candidate-build 前置；`/api/releases/activation-check` 和 `/api/releases/apply` 才要求 R0–R4、activation gate 和用户确认。candidate-build gate 只检查单个 release 内容完整性，**MUST NOT** 包含 MCP smoke、`TWO_INDEPENDENT_RELEASES` 或 current 切换；activation gate 检查至少两个 candidate、四工具 MCP smoke、原子 current 和 candidate 报告/hash 复核。任一 blocker 失败，WebUI **MUST NOT** build（candidate）或 apply（activation）。
+D-040 只要求以下 focused evidence；不新增测试矩阵、报告层或平台矩阵：
 
-| 检查代码 | 通过条件 | 证据 |
-|---|---|---|
-| `REGISTRY_COVERAGE_100` | runtime `minecraft` registry 与 Block 集合完全相等，虚假/重复为 0 | exporter manifest、SQLite count、hash |
-| `BLOCK_VARIANT_OR_AUDITED_SKIP` | 每 Block 有发布变体，或 `skip-review.v1` 有 target_id/minecraft_version/reviewer/reviewed_at/reason_code/note/evidence/source_version/machine_failure_ref | skip audit |
-| `EXCLUDED_QUALIFICATION_REVIEW_VALID` | **candidate-build gate**：每个发布视图中的 `excluded` target 都有独立 `qualification-review.v1`，包含 target_id/minecraft_version/reviewer/reviewed_at/reason_code/note/evidence/source_version/qualification/warnings；不得以 skip audit 替代 | qualification audit |
-| `IMAGE_READABLE_AND_HASHED` | 发布 PNG 可读、PNG、512×512、四视角、hash 匹配，无缺纹理/全透明 blocker | image report |
-| `LEGAL_STATE_VALID` | recommended/canonical/represented state 属于同 block 合法集合 | state report |
-| `MACHINE_SCHEMA_VALID` | machine facts strict Schema 全部通过 | Schema report |
-| `AI_SCHEMA_VALID` | AI artifact strict Schema、bounded semantic fields、候选边界和版本 hash 全通过 | artifact report |
-| `OVERRIDE_REFERENCES_VALID` | active override target 存在，可按序 replay，不越权机器层 | replay report |
-| `NO_FALSE_IDS` | block/variant/state/tile/image refs 虚假 ID 为 0 | reference report |
-| `HIGH_REVIEW_ZERO` | 未解决 high review 为 0 | review snapshot |
-| `FTS_READY` | FTS5 trigram 或明确 fallback 成功，所有发布变体可检索 | FTS report |
-| `MCP_SMOKE_PASS` | **activation gate** 的四工具、structured/Text、图片 mapping、错误层均通过 | protocol report |
-| `CURRENT_ATOMIC_READY` | **activation gate** 的 temp/flush/replace/崩溃恢复测试通过 | atomicity report |
-| `RELEASE_HASH_MANIFEST` | release 全文件 hash 与 manifest/checksums 一致 | SHA-256 manifest |
-| `TWO_INDEPENDENT_RELEASES` | **activation gate** 中该 Minecraft version 至少两个独立完整不可变 candidate release | release registry |
+1. **Plan TOCTOU all-or-none**：确认前所有 planned batches 可 inspect；对 payload signature、pending 集合、`effective_config_hash`、run-frozen provider/requested model 或 plan hash 的单项修改会 approve none；未修改计划一次 transaction 产生 one plan audit 和 per-job approval audits。
+2. **Sequential continue vs fatal stop**：concurrency 为 `1`；item-local Provider error 后下一个 approved batch 仍发送；fatal code atomically 写 request evidence/review/job/stage/run failure/audit，后续 batch 不发送。
+3. **Stage semantics**：valid low-confidence 与 item-local failure 不阻塞 `AI_ANNOTATE` drain，并进入 `VALIDATE`/`HUMAN_REVIEW`；fatal 立即停止 stage/run；最终 high review 仍阻断 candidate build。
+4. **Retry idempotency/generation/siblings**：row/bulk POST 重复只产生一个 child；source 必须是 terminal AI job leaf，child 有 `retry_of_job_id` 和 deterministic nonce，failed child 可下一次 generation；同一 transaction resolve open provider-review siblings 且保留 source evidence/request rows。
+5. **Frozen lineage**：切换 mutable active profile、adapter、requested model、base URL 或 payload/config lineage 后，既有 run 不替换 provider，pre-send recheck 拒绝旧 approval；auto-approved cursor 在 startup stale detection 中保持，只有显式 `recover` 改变 stale state。
+6. **Generic retry guard**：generic `retry-failed` 不选择 fatal/provider AI job；同一 source logical request 不能绕过两次总尝试预算，`PROVIDER_CANCELLED` 不进入 bulk wave。
+7. **UI visibility**：同一 scrollable work area 同时展示至少 6 个 actionable `running`/`failed`/`needs_review` rows，pending/recent summary 保持 bounded；Provider error row 有 row retry，confirmed bulk action 只 retry eligible failed leaf batches；succeeded、无 Provider error 的 low-confidence review 被排除，原始 evidence 可见。
+8. **Strict request bodies**：Responses/Chat 的现有严格 body 分别保持 `/responses`+`store=false` 与 `/chat/completions` 且省略 `store`；batch confirmation、row retry 和 bulk retry action 拒绝未知字段及 auto-mode/config bypass 字段，不提供 protocol/model fallback。
 
-`quality_report.json` 使用严格的 release 质量产物契约，只能记录非秘密计数/状态和 release 内相对 evidence ref，不得写绝对路径、key、usage 或完整 response；报告自身必须纳入 release hash。它不是 D-030 冻结的额外 Schema ID。candidate report 的 `can_build` 不得伪称 `can_apply`；其中必须包含 `excluded` qualification 审计完整性结果。activation report 只能引用已 build 的 release ID、candidate report hash 及其复核结果，不首次补做资格内容审计。
+### 8.5 D-041 focused acceptance evidence
+
+D-041 只增加以下 call-count/monkeypatch evidence，不使用 flaky wall-clock threshold，也不新增测试矩阵或报告层：
+
+1. **Aggregate bounded path**：对 `100+` pending jobs，aggregate plan preview/confirmation 只读取并验证已持久化 job/cursor identity；contact-sheet、prompt、payload 和 machine-metadata rebuild hooks 对每个 pending job 的调用数为零。
+2. **Persisted mismatch fail closed**：任一 persisted `input_signature`、cursor `payload_signature`/`input_hash`、`tile_ids`/`variant_ids` 或 frozen config/provider snapshot mismatch 时，confirmation transaction approve zero jobs。
+3. **Final pre-send gate**：每次 actual send 前调用 one-batch full rebuild/recompute；注入 signature mismatch 时 revokes that job approval、pauses before HTTP，provider call count 为零。
+4. **Lazy individual preview**：单个 batch 的既有 safe preview 仍可重建 bounded payload，并展示 exact safe text/image/machine metadata；aggregate preview 不替代该 per-job inspection。
+
+### 8.6 D-042 focused acceptance evidence
+
+D-042 只要求以下 focused evidence；不新增 Schema、报告层或质量指标：
+
+1. **Slim model-visible text**：两种 adapter 都发送 `prompt.v2` 的 exact allowlisted instruction/tiles/tile metadata，同时 local envelope、hash、cache、signature 和 lineage checks 仍使用 full metadata；prompt size comparison 只作为 evidence，不作为 quality claim。
+2. **Legacy compatibility and TOCTOU**：`prompt.v1` 与其它历史 version string 保持 byte-for-byte/current behavior；source change 触发既有 TOCTOU，`prompt.v2` 只能由 fresh run/profile snapshot 选择，current pending v1 jobs 不被迁移、re-sign、cancel 或 delete。
+3. **Final diagnostic allowlist**：malformed JSON、missing required、wrong type、additional property 和 duplicate-array 的 final failures 只持久化六个 safe diagnostic fields；successful repair 不持久化 diagnostic。验证 `phase/path/keyword/observed_type/observed_length` bounds 和 `$` parse/shape path。
+4. **No unsafe disclosure**：DB/API/UI 不出现 raw output、value、prefix、provider message、exception、repair context、secret、prompt/image 或 path-like value；UI 只显示六字段 ordinary labels，不能由 `path` 渲染 raw value。
+5. **Validation preservation**：Provider/Worker full wire/local validation、ID/hash/cache、`annotation-record`/variant/`VALIDATE`/release gates、local `uniqueItems`、max-one-retry 和现有 Provider/Worker/release validation 仍通过；只删除 `_hash_json` freshly produced hash 的 tautological regex check，分类保持 externally observable 等价。
+
+## 9. R3 Phase C Gate C 质量报告（quality owner）
+
+R3 Phase C 只有一个 Gate C：WebUI `POST /api/releases/check` 同步生成不可修改的 check report，`POST /api/releases/build` 在同一逻辑 snapshot 上生成派生 release report。两个报告都使用 `format_version=1`，但这是文件格式字段，不是新的 JSON Schema ID；quality report 不加入 D-030 Schema inventory。Phase C 不实现或要求 activation gate、`current.json`、MCP smoke 或第二个 release。
+
+12 个 check item 的顺序和 code 固定如下，任何实现不得按字母序、失败优先级或 UI 顺序重排：
+
+1. `REGISTRY_COVERAGE_100`
+2. `BLOCK_VARIANT_OR_AUDITED_SKIP`
+3. `EXCLUDED_QUALIFICATION_REVIEW_VALID`
+4. `IMAGE_READABLE_AND_HASHED`
+5. `LEGAL_STATE_VALID`
+6. `MACHINE_SCHEMA_VALID`
+7. `AI_SCHEMA_VALID`
+8. `OVERRIDE_REFERENCES_VALID`
+9. `NO_FALSE_IDS`
+10. `HIGH_REVIEW_ZERO`
+11. `FTS_READY`
+12. `RELEASE_HASH_MANIFEST`
+
+每个 `items[]` 元素必须且只能有以下字段：
+
+```json
+{
+  "code": "REGISTRY_COVERAGE_100",
+  "status": "passed",
+  "blocking": true,
+  "observed_count": 0,
+  "error_code": null,
+  "evidence": ["snapshot/manifest.json"]
+}
+```
+
+`code` 只能是上述 12 个值；`status` 只能是 `passed|failed|not_run`；`blocking` 必须是 boolean；`observed_count` 必须是非负整数；`error_code` 必须是稳定错误码或 `null`；`evidence` 必须是安全相对路径数组。Gate C check 中第 1–11 项必须实际执行，`RELEASE_HASH_MANIFEST` 必须为 `not_run`；build 阶段的派生 release report 中 12 项必须全部为 `passed`。
+
+check cache 的 `quality_report.json` 字段必须且只能是：`format_version`、`report_kind`（`candidate_check`）、`check_id`、`release_build_id`、`run_id`、`minecraft_version`、`status`（`buildable|blocked`）、`can_build`、`snapshot_fingerprint`、`items`、`created_at`、`updated_at`。`status=buildable` 当且仅当第 1–11 项全部 `passed` 且 `can_build=true`；任一 blocker 失败时为 `blocked`/`false`。`RELEASE_HASH_MANIFEST=not_run` 是合法的 buildable check 状态，不得被改写为 passed。
+
+release 内派生的 `quality_report.json` 字段必须且只能是：`format_version`、`report_kind`（`release`）、`release_id`、`release_build_id`、`run_id`、`minecraft_version`、`status`（唯一值 `passed`）、`snapshot_fingerprint`、`items`、`built_at`。只有 12 项全为 `passed` 才能写入并进入 immutable release；它不复制 check report 的 `can_build`，也不接受 `blocked`/`not_run` 的发布状态。check report 内容不可修改，release report 是 build 派生物，二者不得通过互相写 hash 形成循环。
+
+evidence 必须是相对于所属报告根的 POSIX 路径：非空、不能以 `/` 或盘符开头，不能包含 `\\`、空 segment、`.`、`..`、NUL、URL scheme 或绝对路径；路径必须通过同一 `lstat`/reparse/hardlink 安全检查，不能指向报告根之外或未列入相应 artifact 集合的内容。check report 只能引用其 check snapshot/cache root 内的允许文件，release report 只能引用 release 内已存在且由 `checksums.sha256` 覆盖的普通文件。evidence 只存路径，不存绝对路径、异常正文、key、usage、完整 provider response 或本地用户信息。
+
+Gate C 的最小标准是：精确版本和 run 前置通过；上述 item 1–11 全部 passed；`excluded` 与无变体项的独立审核引用完整；机器/AI/人工引用和 FTS 投影均可重算；check report 可安全写入并 hash；`RELEASE_HASH_MANIFEST` 在 check 阶段保持 `not_run`。Gate C 不包含 MCP、`current.json`、activation 或 release 数量条件。build 只在 Gate C buildable check 与 pipeline 的 snapshot/TOCTOU 条件同时满足时继续；release report 写成 all-passed 后才生成 manifest、release metadata 和完整 checksums。
+
+### 9.1 后续 activation gate 的边界引用
+
+后续 activation gate、四工具 MCP smoke、两个独立 release、`current.json` 原子切换和回滚属于 R4/R5，不是 Gate C 的 item，也不得倒灌为 R3 Phase C 实现要求。后续质量契约只能引用本节的 release report/hash，不得首次补做 `excluded`/skip 内容审计。
 
 ## 10. 各阶段跨平台验证
 

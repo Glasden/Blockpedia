@@ -15,7 +15,7 @@
     "ProviderSnapshot": {
       "type": "object",
       "properties": {
-        "adapter": {"const": "openai_responses"},
+        "adapter": {"enum": ["openai_responses", "openai_chat_completions"]},
         "profile_id": {"type": "string", "minLength": 1, "maxLength": 64},
         "model_id": {"type": "string", "minLength": 1, "maxLength": 200},
         "base_url_stable_id": {"type": "string", "minLength": 1, "maxLength": 512},

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block content %}
+{% set run_view = run|default({}, true) %}
+{% set run_identifier = run_view.get('run_id', run_identifier|default('unavailable')) %}
+{% set high_reviews = reviews|selectattr('severity', 'equalto', 'high')|list %}
+{% set normal_reviews = reviews|selectattr('severity', 'equalto', 'normal')|list %}
+<section class="page-intro page-shell review-intro">
+  <div class="reveal reveal--1">
+    <a class="back-link" href="/runs/{{ run_identifier }}"><span aria-hidden="true">←</span> 返回运行详情</a>
+    <p class="eyebrow"><span>R3</span> HUMAN REVIEW</p>
+    <h1>把异常讲清，<br><em>再写入审核证据。</em></h1>
+  </div>
+  <div class="review-intro__summary reveal reveal--2">
+    <code>{{ run_identifier }}</code>
+    <dl>
+      <div><dt>高优先级</dt><dd>{{ high_reviews|length }}</dd></div>
+      <div><dt>普通队列</dt><dd>{{ normal_reviews|length }}</dd></div>
+    </dl>
+    <p>机器事实始终只读。人工只能接受或编辑受控语义、记录资格、审核跳过，或要求 exporter 重新处理。</p>
+  </div>
+</section>
+
+<section class="page-shell review-board reveal reveal--3" aria-labelledby="review-board-heading">
+  <header class="review-board__header">
+    <div>
+      <p class="section-index">OPEN REVIEW TASKS</p>
+      <h2 id="review-board-heading">待处理审核队列</h2>
+    </div>
+    <span class="readonly-chip">机器事实只读</span>
+  </header>
+
+  <section class="review-queue review-queue--high" aria-labelledby="high-review-heading">
+    <header class="review-queue__header">
+      <div><span class="review-priority-mark" aria-hidden="true">!</span><div><p class="section-index">HIGH PRIORITY</p><h3 id="high-review-heading">必须先解决</h3></div></div>
+      <span class="count-badge">{{ high_reviews|length }}</span>
+    </header>
+    <p class="review-queue__copy">渲染缺失、机器与 AI 冲突、Schema/provider 最终失败或低置信度项会阻断后续候选检查。</p>
+    <div class="review-task-list" data-review-list="high">
+      {% if high_reviews %}
+        {% for review in high_reviews %}{% with review=review, run_identifier=run_identifier %}{% include "partials/review_task.html" %}{% endwith %}{% endfor %}
+      {% else %}
+        <div class="quiet-success"><span aria-hidden="true">✓</span><p><b>没有高优先级任务</b><br>当前高优先级队列已清空。</p></div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="review-queue" aria-labelledby="normal-review-heading">
+    <header class="review-queue__header">
+      <div><span class="review-priority-mark review-priority-mark--normal" aria-hidden="true">○</span><div><p class="section-index">NORMAL PRIORITY</p><h3 id="normal-review-heading">普通审核与抽样</h3></div></div>
+      <span class="count-badge">{{ normal_reviews|length }}</span>
+    </header>
+    <p class="review-queue__copy">这里处理普通低置信度与抽样项；处理方式与证据要求和高优先级队列相同。</p>
+    <div class="review-task-list" data-review-list="normal">
+      {% if normal_reviews %}
+        {% for review in normal_reviews %}{% with review=review, run_identifier=run_identifier %}{% include "partials/review_task.html" %}{% endwith %}{% endfor %}
+      {% else %}
+        <div class="empty-state empty-state--compact"><p>当前没有普通审核任务。</p></div>
+      {% endif %}
+    </div>
+  </section>
+
+  <form
+    class="review-continue"
+    action="/ui/runs/{{ run_identifier }}/reviews/continue"
+    method="post"
+    hx-post="/ui/runs/{{ run_identifier }}/reviews/continue"
+    hx-target="#review-continue-result"
+    hx-swap="innerHTML"
+    data-review-continue
+    {% if reviews %}hidden{% endif %}
+  >
+    <div><span aria-hidden="true">✓</span><p><b>全部任务已解决</b><br>继续后由 Worker 汇总 HUMAN_REVIEW，并在候选构建边界停止。</p></div>
+    <button class="button button--primary" type="submit">继续运行 <span aria-hidden="true">→</span></button>
+  </form>
+  <div id="review-continue-result" class="review-continue-result" aria-live="polite"></div>
+</section>
+{% endblock %}

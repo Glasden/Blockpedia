@@ -50,7 +50,10 @@ record RenderEnvironment(
             JsonCanonical.sha256String("background.v1:transparent"),
             JsonCanonical.sha256String("backboard.v1:none"),
             JsonCanonical.sha256String("fixture.v1:isolated_default:none"),
-            "shader=disabled;post_processing=disabled;fov=70;camera=orthographic"
+            "shader=disabled;post_processing=disabled;fov=70;camera=orthographic;"
+                + "block_model_resolver_seed=42L;"
+                + "block_atlas_reload=awaited_before_prepare;"
+                + "block_atlas_animation=cycleAnimationFrames_cancelled_while_exporting"
         );
     }
 

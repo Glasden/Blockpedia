@@ -16,6 +16,7 @@ STUDIO_STAGES: tuple[str, ...] = (
     "ACTIVATE_RELEASE",
 )
 R2_STAGES: tuple[str, ...] = STUDIO_STAGES[:6]
+R3_STAGES: tuple[str, ...] = ("AI_ANNOTATE", "VALIDATE", "HUMAN_REVIEW")
 
 RUN_STATES = frozenset(
     {"pending", "running", "paused", "needs_review", "failed", "succeeded", "cancelled"}
@@ -23,6 +24,8 @@ RUN_STATES = frozenset(
 ITEM_STATES = frozenset({"pending", "running", "succeeded", "needs_review", "failed", "skipped"})
 
 R3_BOUNDARY_EVENT = "R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING"
+R3_BUILD_RELEASE_BOUNDARY_EVENT = "R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING"
+R3_CANDIDATE_BUILT_BOUNDARY_EVENT = "R3_CANDIDATE_BUILT_ACTIVATION_PENDING"
 
 
 class RunStateConflict(RuntimeError):

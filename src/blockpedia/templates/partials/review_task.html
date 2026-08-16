@@ -1,0 +1,215 @@
+{% set review_view = review|default(result|default({}, true), true) %}
+{% set batch_view = batch|default({}, true) %}
+{% if (not review_view or not review_view.get('review_id')) and batch_view %}
+<article class="review-task review-task--resolved" data-review-card data-review-status="resolved" tabindex="-1" data-autofocus>
+  <span class="review-task__resolved-mark" aria-hidden="true">✓</span>
+  <div><p class="section-index">AI BATCH UPDATED</p><h3>批次已取消且没有发送。</h3><p>相关条目已进入高优先级审核；可从运行详情进入队列。</p></div>
+</article>
+{% elif review_view.get('status') == 'resolved' and not review_view.get('machine') %}
+<article class="review-task review-task--resolved" data-review-card data-review-status="resolved" data-review-id="{{ review_view.get('review_id', '') }}" tabindex="-1" data-autofocus>
+  <span class="review-task__resolved-mark" aria-hidden="true">✓</span>
+  <div>
+    <p class="section-index">REVIEW RESOLVED</p>
+    <h3>审核决定已记录。</h3>
+    <p>动作 <code>{{ review_view.get('decision', 'resolved') }}</code> 已写入审计；机器事实未被修改。</p>
+  </div>
+</article>
+{% else %}
+{% set review_id = review_view.get('review_id', 'unavailable') %}
+{% set machine = review_view.get('machine', {}) or {} %}
+{% set machine_facts = machine.get('machine_facts', {}) or {} %}
+{% set geometry = machine_facts.get('geometry', {}) or {} %}
+{% set annotations = review_view.get('annotations', []) or [] %}
+{% set preview = review_view.get('preview', {}) or {} %}
+{% set validation_diagnostic = review_view.get('validation_diagnostic') %}
+<article
+  class="review-task review-task--{{ review_view.get('severity', 'normal') }}"
+  data-review-card
+  data-review-status="{{ review_view.get('status', 'open') }}"
+  data-review-id="{{ review_id }}"
+  data-machine-failure="{{ review_view.get('machine_failure_ref') or '' }}"
+>
+  <header class="review-task__header">
+    <div class="review-task__identity">
+      <span class="review-priority-mark {% if review_view.get('severity') != 'high' %}review-priority-mark--normal{% endif %}" aria-hidden="true">{{ '!' if review_view.get('severity') == 'high' else '○' }}</span>
+      <div>
+        <div class="review-task__badges">
+          <span class="status-badge status-badge--{{ 'failed' if review_view.get('severity') == 'high' else 'paused' }}">{{ '高优先级' if review_view.get('severity') == 'high' else '普通' }}</span>
+          <code>{{ review_view.get('reason_code', 'REVIEW_REQUIRED') }}</code>
+        </div>
+        <h3>{{ review_view.get('target_id', 'unavailable') }}</h3>
+        <p>任务 <code>{{ review_id }}</code> · MC {{ review_view.get('minecraft_version', '26.2') }}</p>
+      </div>
+    </div>
+    <div class="review-preview-meta" aria-label="安全预览元数据">
+      <span>SAFE PREVIEW METADATA</span>
+      <dl>
+        <div><dt>用途</dt><dd>{{ preview.get('purpose', 'human_review') }}</dd></div>
+        <div><dt>尺寸</dt><dd>{{ preview.get('dimensions', {}).get('width', 512) }} × {{ preview.get('dimensions', {}).get('height', 512) }}</dd></div>
+        <div><dt>图片摘要</dt><dd><code>{{ preview.get('image_sha256', 'unavailable') }}</code></dd></div>
+      </dl>
+    </div>
+  </header>
+
+  <div class="review-evidence-grid">
+    <section class="machine-fact-layer" aria-labelledby="machine-heading-{{ review_id }}">
+      <div class="review-layer-heading"><span aria-hidden="true">◇</span><div><p class="section-index">MACHINE / READ ONLY</p><h4 id="machine-heading-{{ review_id }}">Exporter 机器事实</h4></div><span class="readonly-chip">不可编辑</span></div>
+      <dl class="machine-fact-list">
+        <div><dt>block_id</dt><dd><code>{{ machine.get('block_id', review_view.get('target_id', 'unavailable')) }}</code></dd></div>
+        <div><dt>代表状态</dt><dd><code>{{ machine.get('canonical_state_id', 'unavailable') }}</code></dd></div>
+        <div><dt>覆盖状态数</dt><dd>{{ machine.get('represented_state_ids', [])|length }}</dd></div>
+        <div><dt>候选资格</dt><dd><code>{{ machine.get('candidate_qualification', 'unavailable') }}</code></dd></div>
+        {% if geometry %}
+          <div><dt>几何尺寸</dt><dd>{{ geometry.get('width', '?') }} × {{ geometry.get('height', '?') }} × {{ geometry.get('depth', '?') }}</dd></div>
+          <div><dt>几何分类</dt><dd>{{ (geometry.get('geometry_classes', []) or [])|join(' · ') or '未报告' }}</dd></div>
+        {% endif %}
+        <div><dt>机器失败证据</dt><dd><code>{{ review_view.get('machine_failure_ref') or '无' }}</code></dd></div>
+      </dl>
+      {% if machine.get('warnings') %}<div class="fact-warning"><b>机器警告</b><p>{{ machine.get('warnings')|join('；') }}</p></div>{% endif %}
+    </section>
+
+    <section class="annotation-layer" aria-labelledby="annotation-heading-{{ review_id }}">
+      <div class="review-layer-heading"><span aria-hidden="true">✦</span><div><p class="section-index">ANNOTATION / SUGGESTION</p><h4 id="annotation-heading-{{ review_id }}">AI 语义建议</h4></div><span class="readonly-chip">待审核</span></div>
+      {% if validation_diagnostic %}
+        <aside class="validation-diagnostic" role="note" aria-labelledby="validation-diagnostic-heading-{{ review_id }}">
+          <header>
+            <div><p class="section-index">PROVIDER OUTPUT / STRUCTURE</p><h5 id="validation-diagnostic-heading-{{ review_id }}">模型输出校验诊断</h5></div>
+            <code class="validation-diagnostic__stage">{{ validation_diagnostic.get('stage') or '未报告' }}</code>
+          </header>
+          <p>这里只描述 Provider 输出的结构问题，不包含模型文本、原始值或完整响应。</p>
+          <dl>
+            <div><dt>校验阶段</dt><dd><code>{{ validation_diagnostic.get('phase') or '未报告' }}</code></dd></div>
+            <div class="validation-diagnostic__path"><dt>字段路径</dt><dd><code>{{ validation_diagnostic.get('path') or '未报告' }}</code></dd></div>
+            <div><dt>校验关键字</dt><dd><code>{{ validation_diagnostic.get('keyword') or '未报告' }}</code></dd></div>
+            <div><dt>观察到的类型</dt><dd><code>{{ validation_diagnostic.get('observed_type') or '未报告' }}</code></dd></div>
+            <div><dt>观察到的长度</dt><dd>{% if validation_diagnostic.get('observed_length') is none %}不适用{% else %}{{ validation_diagnostic.get('observed_length') }}{% endif %}</dd></div>
+          </dl>
+        </aside>
+      {% endif %}
+      {% if annotations %}
+        {% for annotation in annotations %}
+          <article class="annotation-suggestion">
+            <div class="annotation-suggestion__score"><span>置信度</span><b>{{ "%.2f"|format(annotation.get('confidence', 0)) }}</b></div>
+            <p class="annotation-summary">{{ annotation.get('summary_zh', '没有中文摘要。') }}</p>
+            <dl>
+              <div><dt>同义词</dt><dd>{{ (annotation.get('synonyms_zh', []) or [])|join(' · ') or '无' }}</dd></div>
+              <div><dt>颜色 / 形状</dt><dd>{{ ((annotation.get('color_terms', []) or []) + (annotation.get('shape_terms', []) or []))|join(' · ') or '无' }}</dd></div>
+              <div><dt>建筑用途</dt><dd>{{ (annotation.get('building_roles', []) or [])|join(' · ') or '无' }}</dd></div>
+              <div><dt>不适用</dt><dd>{{ (annotation.get('avoid_for', []) or [])|join(' · ') or '无' }}</dd></div>
+            </dl>
+            <p class="annotation-reason"><b>建议理由：</b>{{ annotation.get('reason', '未提供。') }}</p>
+          </article>
+        {% endfor %}
+      {% else %}
+        <div class="empty-state empty-state--compact"><p>没有可接受的 annotation；可重试 AI、要求 exporter 处理，或在存在机器失败时审核跳过。</p></div>
+      {% endif %}
+    </section>
+  </div>
+
+  <form
+    class="review-resolution-form"
+    action="/ui/reviews/{{ review_id }}/resolve"
+    method="post"
+    hx-post="/ui/reviews/{{ review_id }}/resolve"
+    hx-target="closest .review-task"
+    hx-swap="outerHTML"
+    data-review-form
+    novalidate
+  >
+    <input type="hidden" name="run_id" value="{{ run_identifier|default('') }}">
+    <input type="hidden" name="override" value="" data-review-override>
+
+    <fieldset class="review-decisions">
+      <legend>选择处理动作</legend>
+      <label><input type="radio" name="decision" value="accept" required data-review-decision><span><b>接受建议</b><small>验证现有 annotation</small></span></label>
+      <label><input type="radio" name="decision" value="edit_and_accept" data-review-decision><span><b>编辑后接受</b><small>只写受控语义或资格</small></span></label>
+      <label class="{% if not review_view.get('machine_failure_ref') %}is-unavailable{% endif %}"><input type="radio" name="decision" value="skip" data-review-decision {% if not review_view.get('machine_failure_ref') %}disabled{% endif %}><span><b>审核跳过</b><small>{% if review_view.get('machine_failure_ref') %}需要理由与证据{% else %}缺少机器失败证据{% endif %}</small></span></label>
+      <label><input type="radio" name="decision" value="request_reexport" data-review-decision><span><b>请求重新导出</b><small>交给 Fabric exporter</small></span></label>
+      <label><input type="radio" name="decision" value="request_exporter_rerender" data-review-decision><span><b>请求 exporter 重渲染</b><small>Studio 不渲染图片</small></span></label>
+      <label><input type="radio" name="decision" value="retry_ai" data-review-decision><span><b>重新请求 AI</b><small>建立新的受审计尝试</small></span></label>
+    </fieldset>
+
+    <fieldset class="semantic-editor" data-semantic-editor hidden>
+      <legend>受控语义与资格覆盖</legend>
+      <p class="fieldset-help">页面会把以下可视字段序列化为最小合法 override；不会提交方块 ID、状态、几何或图片字段。</p>
+      <div class="semantic-editor__grid">
+        <div class="field-group field-group--wide">
+          <label for="summary-{{ review_id }}">替换中文摘要</label>
+          <textarea id="summary-{{ review_id }}" rows="3" maxlength="500" data-override-field="set_summary_zh" placeholder="留空表示不修改"></textarea>
+        </div>
+        <div class="field-group">
+          <label for="synonyms-{{ review_id }}">新增中文同义词</label>
+          <input id="synonyms-{{ review_id }}" type="text" maxlength="500" data-override-list="add_synonyms_zh" placeholder="逗号或换行分隔">
+        </div>
+        <div class="field-group">
+          <label for="roles-{{ review_id }}">新增建筑用途</label>
+          <input id="roles-{{ review_id }}" type="text" maxlength="500" data-override-list="add_building_roles" placeholder="例如 roof_detail">
+        </div>
+        <div class="field-group">
+          <label for="styles-{{ review_id }}">新增风格标签</label>
+          <input id="styles-{{ review_id }}" type="text" maxlength="500" data-override-list="add_style_tags" placeholder="逗号或换行分隔">
+        </div>
+        <div class="field-group">
+          <label for="avoid-{{ review_id }}">新增不适用场景</label>
+          <input id="avoid-{{ review_id }}" type="text" maxlength="500" data-override-list="add_avoid_for" placeholder="逗号或换行分隔">
+        </div>
+        <div class="field-group">
+          <label for="qualification-{{ review_id }}">候选资格</label>
+          <select id="qualification-{{ review_id }}" data-override-qualification>
+            <option value="">不修改资格</option>
+            <option value="eligible">eligible</option>
+            <option value="conditional">conditional</option>
+            <option value="excluded">excluded</option>
+          </select>
+        </div>
+        <div class="field-group" data-warning-field hidden>
+          <label for="warnings-{{ review_id }}">conditional 警告</label>
+          <textarea id="warnings-{{ review_id }}" rows="2" maxlength="500" data-override-warnings placeholder="每行一条，conditional 时至少一条"></textarea>
+          <small>选择 conditional 时警告必填；eligible 或 excluded 不允许警告。</small>
+        </div>
+      </div>
+    </fieldset>
+
+    <div class="review-audit-fields">
+      <div class="field-group">
+        <label for="reviewer-{{ review_id }}">审核者</label>
+        <input id="reviewer-{{ review_id }}" name="reviewer" type="text" value="local-user" required minlength="1" maxlength="128" autocomplete="off">
+      </div>
+      <div class="field-group">
+        <label for="reason-{{ review_id }}">理由代码</label>
+        <select id="reason-{{ review_id }}" name="reason_code" required>
+          <option value="OTHER">OTHER</option>
+          <option value="LOW_CONFIDENCE" {% if review_view.get('reason_code') == 'LOW_CONFIDENCE' %}selected{% endif %}>LOW_CONFIDENCE</option>
+          <option value="MACHINE_AI_CONFLICT" {% if review_view.get('reason_code') == 'MACHINE_AI_CONFLICT' %}selected{% endif %}>MACHINE_AI_CONFLICT</option>
+          <option value="PROVIDER_FAILURE" {% if review_view.get('reason_code') in ['PROVIDER_FAILURE', 'AI_BATCH_CANCELLED'] %}selected{% endif %}>PROVIDER_FAILURE</option>
+          <option value="RENDER_FAILURE">RENDER_FAILURE</option>
+          <option value="CONTEXT_REQUIRED">CONTEXT_REQUIRED</option>
+          <option value="NOT_A_BUILDING_CANDIDATE">NOT_A_BUILDING_CANDIDATE</option>
+          <option value="QUALIFICATION_CONFIRMED">QUALIFICATION_CONFIRMED</option>
+        </select>
+      </div>
+      <div class="field-group field-group--wide">
+        <label for="note-{{ review_id }}">审核说明</label>
+        <textarea id="note-{{ review_id }}" name="note" rows="3" required minlength="2" maxlength="500" placeholder="说明你核对了什么，以及为何选择该动作。"></textarea>
+      </div>
+      <div class="field-group field-group--wide">
+        <label for="evidence-{{ review_id }}">审核证据</label>
+        <textarea id="evidence-{{ review_id }}" name="evidence" rows="3" required maxlength="4096" placeholder="每行一条简短证据引用，例如 preview-inspected"></textarea>
+        <div class="evidence-presets" aria-label="添加常用证据">
+          <button type="button" class="text-button" data-evidence-preset="preview-inspected">＋ 已核对预览</button>
+          <button type="button" class="text-button" data-evidence-preset="machine-facts-inspected">＋ 已核对机器事实</button>
+          <button type="button" class="text-button" data-evidence-preset="annotation-inspected">＋ 已核对语义建议</button>
+          {% if review_view.get('machine_failure_ref') %}<button type="button" class="text-button" data-evidence-preset="{{ review_view.get('machine_failure_ref') }}">＋ 机器失败引用</button>{% endif %}
+        </div>
+        <small>所有动作都需要至少一条证据。skip 还必须有机器失败引用；excluded 资格必须有理由与证据。</small>
+      </div>
+    </div>
+
+    <div class="review-submit-row">
+      <div class="review-form-status" role="status" aria-live="polite" data-review-form-status>选择动作并补充审核说明与证据。</div>
+      <button class="button button--primary" type="submit">记录审核决定 <span aria-hidden="true">→</span></button>
+      <span class="activity-label htmx-indicator" role="status">正在写入审核记录…</span>
+    </div>
+  </form>
+</article>
+{% endif %}

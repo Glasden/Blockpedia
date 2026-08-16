@@ -304,6 +304,50 @@ def test_active_check_deduplicates_and_passed_check_reuses_unchanged_anchors(
         service.close()
 
 
+def test_import_uses_frozen_snapshot_after_chooser_ref_is_removed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, export_fixture: Path
+) -> None:
+    _fake_validator(monkeypatch)
+    service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2])
+    app = __import__("blockpedia.web", fromlist=["create_app"]).create_app(
+        data_root=DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], service=service, start_worker=False
+    )
+    try:
+        with TestClient(app) as client:
+            entry = next(
+                item
+                for item in client.get("/api/directories", params={"minecraft_version": "26.2"}).json()["data"]["entries"]
+                if item["export_id"] == export_fixture.name
+            )
+            ref = entry["directory_ref"]
+            started = client.post(
+                "/api/imports/check",
+                json={"source_directory": ref, "minecraft_version": "26.2"},
+            )
+            check_id = started.json()["data"]["check_id"]
+            assert _wait_check(service, check_id).status == "passed"
+
+            with service.directory_chooser._lock:
+                service.directory_chooser._refs.pop(ref, None)
+
+            first = client.post("/api/imports", json={"check_id": check_id, "copy_mode": "copy_to_workspace"})
+            assert first.status_code == 200
+            first_data = first.json()["data"]
+            run_id = first_data["run_id"]
+            import_id = first_data["import_id"]
+            workspace = tmp_path / "workspace" / "26.2" / run_id
+            assert workspace.is_dir()
+            assert (workspace / "work.sqlite3").is_file()
+            assert len([path for path in (tmp_path / "workspace" / "26.2").iterdir() if (path / "work.sqlite3").is_file()]) == 1
+
+            duplicate = client.post("/api/imports", json={"check_id": check_id, "copy_mode": "copy_to_workspace"})
+            assert duplicate.status_code == 200
+            assert duplicate.json()["data"]["run_id"] == run_id
+            assert duplicate.json()["data"]["import_id"] == import_id
+    finally:
+        service.close()
+
+
 def test_import_is_idempotent_and_catalog_exposes_safe_check_marker(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, export_fixture: Path
 ) -> None:

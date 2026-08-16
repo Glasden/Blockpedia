@@ -17,7 +17,7 @@ Python Index Studio
                                │
                                └─ 四个 MCP tools
 
-OpenAI Responses（Studio 新写任务使用唯一 active profile；MCP 使用 resolved release snapshot，网络调用只用于受控语义/查询任务）
+OpenAIProvider（Studio 新写任务使用唯一 active profile 的显式 adapter 和 configured/requested model_id；MCP 使用 resolved release snapshot，网络调用只用于受控语义/查询任务）
 ```
 
 不部署 Redis、Celery、Kafka、消息队列、对象存储、向量数据库、独立搜索服务或其他常驻服务。WebUI 和 MCP 读取同一数据根目录，但 MCP 不读取可变 workspace 数据作为查询源，只读取经过门禁的不可变 release。MCP 不写数据库、文件、cache、logs 或 current。
@@ -39,7 +39,7 @@ OpenAI Responses（Studio 新写任务使用唯一 active profile；MCP 使用 r
 | HTML/交互 | Jinja2 + HTMX，少量原生 JavaScript |
 | storage | SQLite + 本地文件 |
 | worker | Python 进程内有限 Worker，任务状态持久化到 SQLite |
-| LLM | OpenAI Responses，单一 `OpenAIResponsesProvider` adapter；Studio 使用 active model，release-bound MCP 使用冻结 snapshot；strict JSON Schema，实际 `store=false` |
+| LLM | protocol-neutral `OpenAIProvider`；现有 profile `adapter` 显式取 `openai_responses` 或 `openai_chat_completions`，分别使用 `POST /responses`+`store=false` 或 `POST /chat/completions` 且省略 `store`；两者均为图片输入、strict JSON Schema、同一 configured/requested `model_id`/重试预算、稳定错误分类和本地校验；response model echo 不证明远端实际身份 |
 | MCP transport | stdio |
 
 R0 退出前只锁定 R0 tooling 实际引入的 Python 依赖；后续依赖在使用前必须精确/hash 锁定，Windows 在对应阶段验证，Linux 安装/运行、wheel/ABI 和最终双平台复现统一在 R5 验证，不预锁未实现的 R2-R4 栈。架构复现证据必须明确指向：
@@ -185,7 +185,7 @@ Python 只能验证和提取离线特征，不能重新选择代表状态或重�
 
 ### 5.2 AI 语义层
 
-Studio 新任务、配置管理和构建新 release 使用唯一 active profile 的 OpenAI Responses model，只允许写入：
+Studio 新任务、配置管理和构建新 release 使用唯一 active profile 所选 adapter 的同一 configured/requested `model_id` 覆盖离线标注、QuerySpec 和 visual rerank 三阶段，只允许写入：
 
 ```text
 synonyms_zh
@@ -225,7 +225,7 @@ provider envelope schemas
 MCP schemas
 ```
 
-当前 ID 列表冻结为：exporter `export-manifest.v1`、`export-block.v1`、`export-state.v1`、`export-variant.v1`、`export-failure.v1`、`render-metadata.v1`；workspace/release `block-record.v1`、`state-record.v1`、`visual-variant-record.v1`、`annotation-record.v1`、`manual-override.v1`、`skip-review.v1`、`qualification-review.v1`、`release-manifest.v1`、`release.v1`、`current-pointer.v1`；provider `provider-batch-envelope.v1`、`annotation-batch-output.v1`、`annotation-wire-item.v1`、`query-spec-output.v1`、`rerank-output.v1`；MCP `mcp-index-info-output.v1`、`mcp-search-blocks-output.v1`、`mcp-block-details-output.v1`、`mcp-compare-blocks-output.v1`，可共享 `mcp-error.v1`。旧 ID `block.v1`、`state.v1`、`variant.v1`、`annotation.v1`、`annotation-item.v1`、`query-spec.v1`、`visual-rerank.v1`、`manifest.v1`、`override.v1` 不得作为新规范当前 ID。R0 必须把 Markdown 中的 Schema 契约物化为真实 JSON Schema 文件，使用 Draft 2020-12、strict `additionalProperties: false` 和可复核验收；在文件、哈希和验收证据存在前不得勾选完成。provider wire Schema ID 与 Responses `text.format.name` 分开，固定 name 为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`。
+当前 ID 列表冻结为：exporter `export-manifest.v1`、`export-block.v1`、`export-state.v1`、`export-variant.v1`、`export-failure.v1`、`render-metadata.v1`；workspace/release `block-record.v1`、`state-record.v1`、`visual-variant-record.v1`、`annotation-record.v1`、`manual-override.v1`、`skip-review.v1`、`qualification-review.v1`、`release-manifest.v1`、`release.v1`、`current-pointer.v1`；provider `provider-batch-envelope.v1`、`annotation-batch-output.v1`、`annotation-wire-item.v1`、`query-spec-output.v1`、`rerank-output.v1`；MCP `mcp-index-info-output.v1`、`mcp-search-blocks-output.v1`、`mcp-block-details-output.v1`、`mcp-compare-blocks-output.v1`，可共享 `mcp-error.v1`。旧 ID `block.v1`、`state.v1`、`variant.v1`、`annotation.v1`、`annotation-item.v1`、`query-spec.v1`、`visual-rerank.v1`、`manifest.v1`、`override.v1` 不得作为新规范当前 ID。R0 必须把 Markdown 中的 Schema 契约物化为真实 JSON Schema 文件，使用 Draft 2020-12、strict `additionalProperties: false` 和可复核验收；在文件、哈希和验收证据存在前不得勾选完成。provider wire Schema ID 与各协议 structured-output format name 分开，固定 name 为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`。
 
 ## 6. SQLite 和任务模型
 
@@ -239,7 +239,7 @@ MVP 使用一份在 R0 冻结的 SQLite schema，不使用 Alembic 或其他通�
 | `visual_variants` | `variant_id` 主键；`block_id` 外键；机器 JSON、AI JSON、人工覆盖和资格分离 |
 | `review_tasks` | `id` 主键；目标 ID、原因、严重度、状态、解决记录和证据 |
 | `jobs` | `id` 主键；类型、目标、状态、attempt、优先级、心跳、错误；不含 Token usage |
-| `provider_profiles` | profile ID、OpenAI Responses base URL/model ID、非秘密设置、`secret_reference`；不存明文 Key；最多一个 active |
+| `provider_profiles` | profile ID、现有 `adapter`（`openai_responses` 或 `openai_chat_completions`）、对应协议 base URL/model ID、非秘密设置、`secret_reference`；不存明文 Key；最多一个 active |
 
 SQLite 文件和图片路径必须位于选定版本的 `workspace` 或不可变 `releases` 目录。发布后的 MCP 连接以只读方式打开 release 数据库；不能连接可变 workspace 库。
 
@@ -248,6 +248,12 @@ SQLite 文件和图片路径必须位于选定版本的 `workspace` 或不可变
 FTS5 优先使用可用的 `trigram` tokenizer；若目标 SQLite 不支持，则使用规范化字符串 `LIKE` 和显式标签查询。两者都不能增加向量列或外部服务。
 
 ## 7. 流水线门与职责分离
+
+### 7.0 R3 Phase C 边界引用
+
+Phase C 的架构边界只有：WebUI 同步执行 `POST /api/releases/check` 和 `POST /api/releases/build`；check/build 的 cache、逻辑 snapshot fingerprint、staging、独立 `release-index.v1.sql`、hash DAG 和文件安全由 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md) 定义；12 项质量报告由 [`quality-and-testing.md`](quality-and-testing.md) 定义；原始人工记录包由 [`data-and-schemas.md`](data-and-schemas.md) 定义；文件 durability 和链接拒绝由 [`security-and-distribution.md`](security-and-distribution.md) 定义；路由 body/status/error 由 [`webui-and-operations.md`](webui-and-operations.md) 定义。本架构文档不复制这些字段、SQL 列或报告 item。
+
+Phase C 只允许生成一个不可变 candidate，并在成功后留下 `R3_CANDIDATE_BUILT_ACTIVATION_PENDING` 边界。Phase C **MUST NOT** 实现或要求 activation、`current.json`、MCP 或第二个 release；这些仅是后续阶段的边界引用，不是本阶段拓扑、依赖或验收项。
 
 ```text
 Fabric exporter:
@@ -289,22 +295,22 @@ R5 先构建至少两个独立通过 candidate-build gate 的 release，再执�
 
 activation gate 通过后仍需用户在 WebUI 中人工激活；activation gate 不是单个 candidate-build gate 的内容检查。
 
-## 8. OpenAI Responses 边界
+## 8. OpenAI 协议与隐私边界
 
-provider 层只有一个 `OpenAIResponsesProvider`。它读取 Keyring 中服务名 `blockpedia`、账户为 profile ID 的秘密，或读取 `OPENAI_API_KEY`；数据库和 release 只存 `secret_reference`。可以配置用户明确批准的兼容 Responses 语义 `base_url`，但它仍是同一 provider，不得实现其他 API/provider adapter。
+provider 层使用 protocol-neutral `OpenAIProvider`，其现有 profile `adapter` 字段只能显式选择 `openai_responses` 或 `openai_chat_completions`，每个值对应一个 wire adapter/codec。它读取 Keyring 中服务名 `blockpedia`、账户为 profile ID 的秘密，或读取 `OPENAI_API_KEY`；数据库和 release 只存 `secret_reference`。用户批准的 `base_url` 属于所选协议 adapter，不是协议 fallback；不得实现 Anthropic/其他 provider adapter 或 model voting。
 
 所有请求必须：
 
 - 发送最小必要文本、短编号、必要机器元数据和本地预览图片；
-- 设置并实际使用 `store=false`；
+- Responses 请求设置并实际发送 `store=false`；Chat Completions 请求省略 `store`；
 - 使用 strict JSON Schema；
-- 记录 prompt/model/schema 版本用于复现，但不记录 Token usage、费用或预算；
+- 记录 requested model/prompt/schema 版本用于复现，但不记录 Token usage、费用或预算；成功 response 的 model echo 不作为已验证远端身份，也不替换 requested model；
 - 出错后最多再请求一次，仍失败则转 `needs_review`/`failed`；
 - 不将 API Key、本地绝对路径、原始导出包或无关索引内容发送给 provider。
 
-能力探测必须证明 endpoint 支持并实际接受/使用 `store=false`。不能证明时探测失败并禁止 profile enable；warning 或用户 ack 不得绕过该硬门。能力探测还必须验证图片输入、strict Schema 和稳定错误分类。
+能力探测必须按所选协议验证 endpoint、图片输入、strict Schema structured output、稳定错误分类和成功 response 的 string `model` structural validity；model echo 不再是 equality 验证条件或 enable gate，缺失/非 string 仍 fail closed。任何协议都不能证明远端 retention 或第三方实际执行的 requested model，文档、probe 和实现不得声称 storage/remote model identity 已验证，第三方服务 trust/policy 由用户负责；warning 或用户 ack 不得绕过显式 adapter 选择。
 
-允许保存多个非活动 profile，但全局最多一个 active profile 的约束只适用于 Studio 新任务、配置管理和构建新 release。每个 release 冻结离线标注时的完整非秘密 provider snapshot，包括 `profile_id`、`model_id`、`base_url_stable_id`、不可逆 `secret_reference` 及相关版本；MCP 不读可变 active 状态或 workspace 数据库，只能按 resolved release snapshot 使用同一 `model_id` 执行 QuerySpec 与 rerank。secret 无法解析或能力不再通过时，MCP 本地降级并返回 warning。release-bound snapshot 不算第二个 active profile，也不能用于 Studio 新写任务。
+允许保存多个非活动 profile，但全局最多一个 active profile 的约束只适用于 Studio 新任务、配置管理和构建新 release。每个 release 冻结离线标注时的完整非秘密 provider snapshot，包括现有 `adapter`、`profile_id`、requested `model_id`、`base_url_stable_id`、不可逆 `secret_reference` 及相关版本；MCP 不读可变 active 状态或 workspace 数据库，只能按 resolved release snapshot 使用同一 requested `model_id` 和所选协议执行 QuerySpec 与 rerank。secret 无法解析或能力不再通过时，MCP 本地降级并返回 warning。release-bound snapshot 不算第二个 active profile，也不能用于 Studio 新写任务。未来实现才把 adapter 纳入 envelope、cache、signature 和 release lineage，并按协议使用 conditional `store`；现有 openai_responses release 保持有效且 immutable，变更前 in-flight cache/workspace invalidated/rerun。
 
 ## 9. MCP 只读契约
 
@@ -321,7 +327,7 @@ provider 层只有一个 `OpenAIResponsesProvider`。它读取 Keyring 中服务
 | 工具 | 最小输入 | 行为 |
 |---|---|---|
 | `index_info` | 可选 `minecraft_version` | 返回 default/指定版本的当前 release 信息和完整性摘要 |
-| `search_blocks` | `query`，可选 `minecraft_version`、`limit`/`context` | 先硬过滤，再做可解释本地召回；可用同一 OpenAI Responses 做 QuerySpec/重排 |
+| `search_blocks` | `query`，可选 `minecraft_version`、`limit`/`context` | 先硬过滤，再做可解释本地召回；可用同一所选 OpenAI adapter/model 做 QuerySpec/重排 |
 | `get_block_details` | `block_id`，可选 `minecraft_version` | 返回该版本的状态、变体、机器事实、语义、资格、警告和图片 |
 | `compare_blocks` | 2–6 个 `block_ids`，可选 `minecraft_version`/`context` | 只从 release 读取指定方块，返回结构化差异和对比图片 |
 

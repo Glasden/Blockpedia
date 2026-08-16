@@ -84,7 +84,7 @@ R3 审核通过后 skip 仍计入注册表覆盖率，但不进入搜索视觉�
 
 ### 7.1 固定环境
 
-`render.v1` 默认环境固定为：
+当前 `render.v2` 环境固定为：
 
 ```text
 Minecraft Java 26.2
@@ -97,7 +97,11 @@ biome: minecraft:plains
 entities/particles/UI: disabled
 ```
 
-摄影棚坐标、观察对象中心、背景平面、背板材质、支撑块、光源方向/强度、阴影和曝光固定为 isolated context 的最小实现。实现不得读取用户当前世界的天气、时间、资源包或随机邻接来改变结果。资源 snapshot、相机、光照、背景/背板和支撑规则的哈希只写入 manifest；`render.json` 只写最小图片、视角、policy、fixture、tint 和 mask 语义，不重复环境或内容哈希。manifest/input signature 必须记录 OS、GPU、驱动、渲染后端和分辨率等完整环境；同一完整环境重复运行必须得到相同 PNG byte hash。Windows 对应阶段验证 canonical 机器字段、Schema、逻辑排序和构图规则；Linux 这些实际运行时/平台验证统一 deferred 到 R5，不声称 Linux 已通过；不同 GPU/驱动之间只要求 canonical 机器字段一致，不承诺 PNG byte hash 一致。
+未修改的历史 `render.v1` records、workspace/release data 在当前 v1 Schema ID 下保持 valid，并只在其 record/run context replay；现有 record Schemas 接受 `render.v1` 与 `render.v2` 两个 policy token，但新导出和 current fixture 默认使用 `render.v2`。preserved old export package 在 repository Schema bytes 变化后不由 current external validator 重新验证；其 embedded `schemas.sha256`/`schema_inventory` 是 binding evidence，current validation 必须报告 `SCHEMA_INVENTORY_HASH_MISMATCH`。不得 bypass hash、自动迁移、增加 historical Schema snapshot layer 或使用 version-aware validator fallback；旧 package bytes/reports 只作为历史证据保留。实际 renderer options/environment identity 必须记录影响确定性的控制，包括 resolver 固定 seed `42L` 以及动画 atlas 控制。
+
+摄影棚坐标、观察对象中心、背景平面、背板材质、支撑块、光源方向/强度、阴影和曝光固定为 isolated context 的最小实现。实现不得读取用户当前世界的天气、时间、资源包或随机邻接来改变结果。资源 snapshot、相机、光照、背景/背板和支撑规则的哈希只写入 manifest；`render.json` 只写最小图片、视角、policy、fixture、tint 和 mask 语义，不重复环境或内容哈希。manifest/input signature 必须记录 OS、GPU、驱动、渲染后端和分辨率等完整环境，并把实际 renderer options/environment identity 纳入其中；同一完整环境重复运行必须得到相同 PNG byte hash。Windows 对应阶段验证 canonical 机器字段、Schema、逻辑排序和构图规则；Linux 这些实际运行时/平台验证统一 deferred 到 R5，不声称 Linux 已通过；不同 GPU/驱动之间只要求 canonical 机器字段一致，不承诺 PNG byte hash 一致。
+
+`render.v2` 的动画确定性使用 scoped client-only gate：导出前调用并 await resource reload，使 atlas 从可控初始帧开始；导出期间只取消 `TextureAtlas.LOCATION_BLOCKS` 的 `cycleAnimationFrames`，成功和失败路径都清除 gate，不修改 private field。保留 `BlockModelResolver` 的固定 seed `42L`，不引入 world-position seed；实际控制写入 renderer options/environment identity，而不是仅记录观察到的动画相位。
 
 ### 7.2 四视角和构图
 
@@ -114,11 +118,11 @@ top:       orthographic, yaw=0°,  pitch=-90°
 
 ### 7.3 透明、附着和连接对象
 
-isolated context 使用固定中性背板和必要的中性支撑；支撑不进入对象蒙版。R1 不预建组合邻接或特殊对象夹具；普通 block model 无法在该 context 稳定渲染时写机器可读 skip/failure 并保持 pending review。
+isolated context 使用固定中性背板和必要的中性支撑；支撑不进入对象蒙版。四视角 composite 允许一个或多个透明的 edge-on quadrant，只要 composite 仍有对象像素就保留变体；整个 composite 全透明仍失败。`nether_portal` 在 composite 非空时保留。R1 不预建组合邻接或特殊对象夹具；普通 block model 无法在该 context 稳定渲染时写机器可读 skip/failure 并保持 pending review。
 
 ## 8. 动态、流体和方块实体边界
 
-R1 不预建 block entity/NBT、任意流体、动画帧、组合邻接或通用 fixture 框架。此类对象如果不能在普通 block model 的 isolated context 中稳定渲染，写机器可读 skip/failure 并保持 pending review；不得退化为随手截图或占位图片。
+R1 不预建 block entity/NBT、任意流体、动画帧、组合邻接或通用 fixture 框架。`minecraft:end_portal` 与 `minecraft:end_gateway` 是 non-building 的 explicit machine pending skips：两个精确 block ID 及其全部合法 states 仍登记，exporter 在进入渲染前使用既有 `BLOCK_ENTITY_FIXTURE_UNSUPPORTED` 写入 ordinary auditable pending skip，不生成 preview、mask 或 render directory；所有 states 仍在 `states.jsonl` 中以现有 skipped mapping（空 `variant_ids`）保留，variant/failure 记录沿用 ordinary auditable pending skip 并要求后续 human review，绝不静默过滤。此类对象如果不能在普通 block model 的 isolated context 中稳定渲染，写机器可读 skip/failure 并保持 pending review；不得退化为随手截图或占位图片。当前范围预期保留 `43` 个 block-entity fixture skips 和 `10` 个 invisible/technical skips；`melon_stem`、`pumpkin_stem`、`tripwire` 的 `OBJECT_TOO_SMALL` 仍 reviewable，不由本 amendment 重新分类；现有 `152` 个 rerender events 属于历史审计证据，不得作为本次修复执行。
 
 ## 9. 渲染流水线和自动重试
 
@@ -129,7 +133,7 @@ R1 不预建 block entity/NBT、任意流体、动画帧、组合邻接或通用
 3. 在 isolated context 放置对象、固定背板和必要中性支撑。
 4. 使用 Minecraft 26.2 普通模型链提交离屏渲染：`BlockModelResolver → BlockModelRenderState → SubmitNodeStorage → FeatureRenderDispatcher`；必须在 render thread 上将本次 scoped draw 的 color/depth output 显式路由到 Blaze3D `TextureTarget`，dispatcher 本身不接收 target，也不隐式绑定；在 `finally` 中恢复此前的 output routing 和资源状态，不能污染主 framebuffer；不得使用 raw OpenGL。
 5. 输出四视角卡、对象蒙版和 `render.json`；完整渲染环境签名写入 manifest。
-6. commit gate 验证尺寸、PNG 基础可读性、对象占比、出框、缺失纹理和文件集；外部 validator 复用同一次读取/解码完成 PNG 语义/质量和 artifact digest 复算。
+6. per-variant render acceptance 在写入 `variants.jsonl` record 前验证 PNG semantic 的对象占比、构图/出框和 resolved material identity；透明 edge-on quadrant 不单独构成失败，整个 composite 全透明仍失败。Java resolved material identity 是 authority；Python 只允许以严格 canonical checker 作 defense-in-depth，不能以宽松全局 magenta/black 比例作 authority。
 7. 通过后再写 `variants.jsonl` 的 `selected` 记录；失败先写 exporter failure，再保持 pending review。
 
 `retry_count` 只是最多 1 次的上限，不要求每次失败都重试；仅已观察的可恢复失败可用相同输入重试一次。重试后仍失败不得再调用渲染器，成功产物不得被失败尝试覆盖。
@@ -138,6 +142,8 @@ R1 不预建 block entity/NBT、任意流体、动画帧、组合邻接或通用
 
 R1 只验证代表性普通 block model、全量状态链接、isolated 四视角渲染、失败 pending 语义和 fresh staging 原子提交；不建立 16 类回归矩阵或后续特殊对象夹具套件。
 
+package commit gate 只负责最终引用/计数/状态、精确 render 路径与文件集、PNG 基础可读性和尺寸、checksum 生成、fsync 及一次原子提交；Java material identity、构图/出框和其它 PNG semantic acceptance 必须在 per-variant render acceptance 完成，不得把它们重新命名为 package commit gate。
+
 验收必须证明：
 
 1. 全部合法状态都在 `states.jsonl`，默认状态合法且可追溯。
@@ -145,8 +151,8 @@ R1 只验证代表性普通 block model、全量状态链接、isolated 四视�
 3. 不同 `block_id` 不合并；R1 不执行 phash、IoU、alpha 或通用去重。
 4. R1 不展开显著属性或组合邻接；这些状态仍完整存在于机器状态导出中。
 5. 每个成功图片均为 512×512、四视角、固定背景/支撑/相机/光照，三份 render artifact 哈希可复算。
-6. 渲染失败最多重试一次，失败或跳过有机器可读原因并保持 pending review。
+6. 渲染失败最多重试一次，失败或跳过有机器可读原因并保持 pending review；整个 composite 全透明仍必须失败。
 7. R1 不产生 block entity/NBT、任意流体、动画帧或组合邻接穷举。
-8. 同一完整渲染环境重跑得到相同 `variant_id == block_id`、选择结果和 PNG byte hash；跨环境只比较 canonical 机器字段、Schema、逻辑排序和构图规则。
+8. 同一完整渲染环境重跑得到相同 `variant_id == block_id`、选择结果和 PNG byte hash；实现完成后的运行时证据必须是 targeted smoke 加恰好两次同环境新的 corrected export，且两次 `preview.png`、`mask.png`、`render.json` 和规范化 records/masks 逐项一致并通过现有 validator。replacement exports `055316`/`060151` 的 `2` 个 dynamic preview mismatches 不构成 pairwise evidence。跨环境只比较 canonical 机器字段、Schema、逻辑排序和构图规则；Linux 证据 deferred 到 R5。
 
 发布前的最终阻断条件、FTS、MCP 冒烟和原子切换见 [流水线、存储与发布](pipeline-storage-and-publishing.md)。

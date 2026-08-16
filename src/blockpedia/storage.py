@@ -16,6 +16,17 @@ class DatabaseSchemaMismatch(RuntimeError):
     """The immutable packaged schema and a workspace database disagree."""
 
 
+def packaged_release_index_schema() -> tuple[bytes, str]:
+    """Return the checked, standalone immutable release-index schema."""
+
+    sql = _resource_bytes("release-index.v1.sql")
+    expected = _resource_bytes("release-index.v1.sha256").decode("ascii").strip()
+    actual = "sha256:" + hashlib.sha256(sql).hexdigest()
+    if expected != actual:
+        raise DatabaseSchemaMismatch("packaged release index schema hash mismatch")
+    return sql, actual
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 

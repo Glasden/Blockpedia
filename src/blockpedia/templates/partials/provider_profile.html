@@ -1,0 +1,150 @@
+{% set profile_view = profile|default({}, true) %}
+{% if profile_view.get('profile') is mapping %}{% set profile_view = profile_view.get('profile') %}{% endif %}
+{% set profile_id = profile_view.get('profile_id', 'unavailable') %}
+{% set credential = profile_view.get('credential_status', profile_view.get('secret', {})) or {} %}
+{% set capability_view = capabilities|default(profile_view.get('capabilities', {}), true) or {} %}
+{% set overall_status = profile_view.get('capability_status', capability_view.get('capability_status', 'unverified')) %}
+{% set inferred_verified = overall_status == 'verified' %}
+{% set source = credential.get('source') %}
+{% set adapter = profile_view.get('adapter', 'openai_responses') if profile_view.get('adapter', 'openai_responses') in ['openai_responses', 'openai_chat_completions'] else 'openai_responses' %}
+{% set adapter_label = 'OpenAI Chat Completions' if adapter == 'openai_chat_completions' else 'OpenAI Responses' %}
+{% set adapter_endpoint = 'POST /chat/completions' if adapter == 'openai_chat_completions' else 'POST /responses' %}
+<article
+  id="provider-profile-{{ profile_id }}"
+  class="provider-profile {% if profile_view.get('enabled') %}provider-profile--active{% endif %}"
+  data-provider-card
+  data-profile-id="{{ profile_id }}"
+  data-capability-status="{{ overall_status }}"
+  data-provider-adapter="{{ adapter }}"
+>
+  <header class="provider-profile__header">
+    <div>
+      <p class="section-index">{{ 'ACTIVE PROFILE' if profile_view.get('enabled') else 'SAVED PROFILE' }}</p>
+      <h3><code>{{ profile_id }}</code></h3>
+      <p>请求 model_id · {{ profile_view.get('model_id', '未配置模型') }}</p>
+    </div>
+    <div class="provider-profile__state">
+      <span class="status-badge status-badge--{% if profile_view.get('enabled') %}running{% elif overall_status == 'verified' %}succeeded{% elif overall_status == 'failed' %}failed{% else %}paused{% endif %}" data-provider-overall-status>
+        {% if profile_view.get('enabled') %}唯一 active{% elif overall_status == 'verified' %}已验证，未启用{% elif overall_status == 'failed' %}探测失败{% else %}等待探测{% endif %}
+      </span>
+      <small>{{ adapter }}</small>
+    </div>
+  </header>
+
+  <div class="provider-protocol-band" aria-label="所选协议请求策略">
+    <span>{{ adapter_label }}</span>
+    <code>{{ adapter_endpoint }}</code>
+    <p>{% if adapter == 'openai_chat_completions' %}请求省略 <code>store</code>{% else %}请求发送 <code>store=false</code>{% endif %} · 不验证远端保留策略</p>
+  </div>
+
+  <div class="provider-credential" aria-label="凭据状态">
+    <span class="provider-credential__mark {% if credential.get('configured') or profile_view.get('enabled') %}provider-credential__mark--ready{% endif %}" aria-hidden="true">{% if credential.get('configured') or profile_view.get('enabled') %}✓{% else %}!{% endif %}</span>
+    <div>
+      <b>{% if credential.get('configured') or profile_view.get('enabled') %}凭据已配置{% else %}凭据不可用{% endif %}</b>
+      <p>
+        {% if source == 'keyring' %}来源：OS Keyring
+        {% elif source in ['env', 'environment'] %}来源：环境变量
+        {% elif profile_view.get('enabled') %}来源：服务端已安全解析
+        {% else %}来源：未解析{% endif %}
+        · 掩码 <code>{{ credential.get('masked') or ('••••••••' if credential.get('configured') or profile_view.get('enabled') else '未配置') }}</code>
+      </p>
+    </div>
+  </div>
+
+  <section class="capability-grid" aria-label="所选 adapter 与 provider 能力状态">
+    <div class="capability-cell" data-capability="adapter" data-state="{{ 'passed' if inferred_verified else 'unknown' }}">
+      <span aria-hidden="true">{{ '✓' if inferred_verified else '○' }}</span>
+      <b>Adapter 身份</b>
+      <small>{{ adapter_label }}</small>
+    </div>
+    {% set capability_items = [
+      ('image_input_supported', '图片输入'),
+      ('structured_outputs_supported', 'Strict Schema'),
+      ('error_classification_supported', '错误分类')
+    ] %}
+    {% for key, label in capability_items %}
+      {% set state = capability_view.get(key) %}
+      <div class="capability-cell" data-capability="{{ key }}" data-state="{% if state is sameas true or (state is none and inferred_verified) %}passed{% elif state is sameas false %}failed{% else %}unknown{% endif %}">
+        <span aria-hidden="true">{% if state is sameas true or (state is none and inferred_verified) %}✓{% elif state is sameas false %}!{% else %}○{% endif %}</span>
+        <b>{{ label }}</b>
+        <small>{% if state is sameas true or (state is none and inferred_verified) %}已验证{% elif state is sameas false %}未通过{% else %}待探测{% endif %}</small>
+      </div>
+    {% endfor %}
+  </section>
+
+  <details class="provider-profile__editor">
+    <summary>编辑非秘密配置</summary>
+    <form
+      class="provider-edit-form provider-edit-form--inline"
+      hx-post="/ui/provider/profile"
+      hx-target="#provider-profile-{{ profile_id }}"
+      hx-swap="outerHTML"
+      data-provider-form
+      autocomplete="off"
+    >
+      <div class="field-group">
+        <label for="profile-id-{{ profile_id }}">profile_id</label>
+        <input id="profile-id-{{ profile_id }}" name="profile_id" type="text" value="{{ profile_id }}" readonly required>
+      </div>
+      <div class="field-group">
+        <label for="adapter-{{ profile_id }}">adapter</label>
+        <select id="adapter-{{ profile_id }}" name="adapter" required data-adapter-select>
+          <option value="openai_responses" {% if adapter == 'openai_responses' %}selected{% endif %}>OpenAI Responses</option>
+          <option value="openai_chat_completions" {% if adapter == 'openai_chat_completions' %}selected{% endif %}>OpenAI Chat Completions</option>
+        </select>
+        <small
+          data-adapter-policy
+          data-responses-copy="POST /responses；请求发送 store=false。该请求字段不是远端保留策略证明。"
+          data-chat-copy="POST /chat/completions；请求省略 store。该省略不是远端保留策略证明。"
+        >{% if adapter == 'openai_chat_completions' %}POST /chat/completions；请求省略 store。该省略不是远端保留策略证明。{% else %}POST /responses；请求发送 store=false。该请求字段不是远端保留策略证明。{% endif %}</small>
+      </div>
+      <div class="field-group">
+        <label for="model-id-{{ profile_id }}">model_id</label>
+        <input id="model-id-{{ profile_id }}" name="model_id" type="text" value="{{ profile_view.get('model_id', '') }}" required maxlength="200" spellcheck="false">
+        <small>这是发送到所选 endpoint 的精确请求标识。第三方网关可能改写响应中的 model 回显；Blockpedia 不据此验证远端模型身份，也不会替换请求值。</small>
+      </div>
+      <div class="field-group field-group--wide">
+        <label for="base-url-{{ profile_id }}">base_url</label>
+        <input id="base-url-{{ profile_id }}" name="base_url" type="url" value="{{ profile_view.get('base_url', '') }}" required maxlength="2048" spellcheck="false">
+      </div>
+      <div class="field-group">
+        <label for="secret-reference-{{ profile_id }}">凭据来源引用</label>
+        <select id="secret-reference-{{ profile_id }}" name="secret_reference" required data-secret-reference>
+          <option value="keyring:blockpedia/{{ profile_id }}" {% if profile_view.get('secret_reference') != 'env:OPENAI_API_KEY' %}selected{% endif %}>OS Keyring · blockpedia/{{ profile_id }}</option>
+          <option value="env:OPENAI_API_KEY" {% if profile_view.get('secret_reference') == 'env:OPENAI_API_KEY' %}selected{% endif %}>环境变量 · OPENAI_API_KEY</option>
+        </select>
+      </div>
+      <div class="field-group">
+        <label for="prompt-version-{{ profile_id }}">prompt_version</label>
+        <input id="prompt-version-{{ profile_id }}" name="prompt_version" type="text" value="{{ profile_view.get('prompt_version', 'prompt.v1') }}" required maxlength="128" spellcheck="false">
+      </div>
+      <div class="field-group">
+        <label for="timeout-{{ profile_id }}">request_timeout_ms</label>
+        <input id="timeout-{{ profile_id }}" name="request_timeout_ms" type="number" value="{{ profile_view.get('request_timeout_ms', 60000) }}" required min="1000" max="600000" step="1000" inputmode="numeric">
+      </div>
+      <div class="provider-form-action">
+        <button class="button button--quiet" type="submit">保存并重新探测</button>
+        <small>任何配置写入都会禁用该 profile，直到所选协议重新验证通过。</small>
+      </div>
+    </form>
+  </details>
+
+  <footer class="provider-profile__actions">
+    <form hx-post="/ui/provider/probe" hx-target="#provider-probe-{{ profile_id }}" hx-swap="innerHTML">
+      <input type="hidden" name="profile_id" value="{{ profile_id }}">
+      <button class="button button--quiet" type="submit">探测所选协议</button>
+    </form>
+    {% if profile_view.get('enabled') %}
+      <form hx-post="/ui/provider/disable" hx-target="#provider-profile-{{ profile_id }}" hx-swap="outerHTML">
+        <input type="hidden" name="profile_id" value="{{ profile_id }}">
+        <button class="button button--danger" type="submit">停止新 AI 任务</button>
+      </form>
+    {% else %}
+      <form hx-post="/ui/provider/enable" hx-target="#provider-profile-{{ profile_id }}" hx-swap="outerHTML">
+        <input type="hidden" name="profile_id" value="{{ profile_id }}">
+        <button class="button button--primary" type="submit" data-provider-enable {% if overall_status != 'verified' or (credential and not credential.get('configured')) %}disabled{% endif %}>设为唯一 active <span aria-hidden="true">→</span></button>
+      </form>
+    {% endif %}
+  </footer>
+  <div id="provider-probe-{{ profile_id }}" class="provider-probe-slot" aria-live="polite"></div>
+</article>

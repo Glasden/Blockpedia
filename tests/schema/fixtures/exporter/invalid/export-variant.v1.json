@@ -57,7 +57,7 @@
     }
   },
   "render": {
-    "render_policy_version": "render.v1",
+    "render_policy_version": "render.v2",
     "preview_path": "renders/minecraft/yellow_carpet/preview.png",
     "mask_path": "renders/minecraft/yellow_carpet/mask.png",
     "render_metadata_path": "renders/minecraft/yellow_carpet/render.json",

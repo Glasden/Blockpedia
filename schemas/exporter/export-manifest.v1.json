@@ -252,7 +252,7 @@
       "additionalProperties": false,
       "properties": {
         "state_policy_version": { "const": "state-policy.v1" },
-        "render_policy_version": { "const": "render.v1" },
+        "render_policy_version": { "enum": ["render.v1", "render.v2"] },
         "fixture_policy_version": { "const": "fixture.v1" },
         "dedupe_policy_version": { "const": "dedupe.v1" }
       },

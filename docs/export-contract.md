@@ -93,7 +93,7 @@ minecraft:foo/bar → renders/minecraft/foo/bar/{preview.png,mask.png,render.jso
 
 `schema_inventory` 必须恰好列出本导出包使用的 exporter JSON Schema，按 `schema_id` 的 UTF-8 字节序排序；每个 `repository_path` 必须是仓库根相对 POSIX 路径，且每个 `schema_sha256` 使用 `sha256:<64 lowercase hex>`。该 inventory 不包含自身、导出 manifest 或 release metadata 的摘要，避免哈希循环；release 构建另由 `schemas.sha256` 记录全量 Schema inventory。
 
-`export_id` 是本次写入实例的唯一 ID，且必须遵守第 3.1 节的目录名规则。`logical_input_signature` 只包含逻辑机器输入，`render_input_signature` 还必须包含 OS、GPU、驱动、渲染后端、分辨率和完整渲染环境哈希；二者均只在 manifest 保留。相同完整渲染环境下的相同 `render_input_signature` 必须得到相同 PNG byte hash；不同 GPU/驱动或 OS 之间只要求 canonical 机器字段一致，不承诺 PNG byte hash 一致。manifest 还必须保留 registry、resource、Schema 和 render-environment 证据；`exporter_version` 必须是实际模组版本，不得用工作区版本或用户可变文本代替。
+`export_id` 是本次写入实例的唯一 ID，且必须遵守第 3.1 节的目录名规则。`logical_input_signature` 只包含逻辑机器输入；其固定 framing 在 `dedupe_policy_version` 之后、resource snapshot 与 registry hashes 之前写入 exact token `pre-render-skip.v1;reason=BLOCK_ENTITY_FIXTURE_UNSUPPORTED;ids=minecraft:end_gateway,minecraft:end_portal`。该 token 表示 logical selection，不是 graphics environment，**不得**写入 `renderer_options`；任何会影响输出的 pre-render skip policy 变化都必须修改该 exact token。`render_input_signature` 还必须包含 OS、GPU、驱动、渲染后端、分辨率和完整渲染环境哈希，并因该 logical input 变化而 transitively 改变；二者均只在 manifest 保留。历史 replacement exports `055316`/`060151` 使用旧 logical/render signatures；后续 replacement/corrected export 必须具有不同的 `logical_input_signature` 和 `render_input_signature`。实际 renderer options/environment identity 还必须覆盖影响确定性的控制，包括 resolver 固定 seed `42L`、atlas reload/freeze 控制和其它实际启用的动画控制。相同完整渲染环境下的相同 `render_input_signature` 必须得到相同 PNG byte hash；不同 GPU/驱动或 OS 之间只要求 canonical 机器字段一致，不承诺 PNG byte hash 一致。manifest 还必须保留 registry、resource、Schema 和 render-environment 证据；`exporter_version` 必须是实际模组版本，不得用工作区版本或用户可变文本代替。
 
 R1 在导出前必须对活动 `ResourceManager` 检查影响范围内资源的完整 resource stacks/contributions：`minecraft` namespace 下路径前缀为 `blockstates/`、`models/`、`textures/`，以及精确的 `lang/en_us.json`、`lang/zh_cn.json`。必须证明这些 identifier 仅来自默认 vanilla/builtin pack；任何非默认 vanilla/builtin pack 或用户/第三方 pack 对其有 contribution/override，都必须 export failed 并提示禁用，不能仍声明 `resource_pack_id: "vanilla"`。对会合并 stack 的 `blockstates/` 和 lang 资源，必须检查完整 stack，不能只读取 winner 后忽略其他来源。该硬门通过后，`runtime.resource_pack_sha256` 才能按实际有效内容计算；它不是 pack ID/version 哈希，也不复制资源进导出包。有效 snapshot 按规范 `namespace:path` resource identifier 的 UTF-8 字节序排序，对每项依次送入 SHA-256：identifier UTF-8 bytes、NUL 分隔符、8-byte big-endian 原始内容 byte count、原始内容 bytes。任一 stack/contribution 或内容读取失败即 export failed，不得伪造 hash。
 
@@ -148,25 +148,25 @@ selected variant 的 render reference 只保留 `preview`、`mask`、`render met
 右下：顶视图（top）
 ```
 
-相机、正交缩放、光照、背景、背板、支撑、游戏时间、天气、生物群系、资源快照和 isolated context 均由 `render.v1`/`fixture.v1` 定义。默认摄影棚使用 `minecraft:plains`、晴天、`world_time: 6000`、shader disabled 和固定中性背景；动态染色对象必须标记 `tint_sensitive: true` 与 `baseline_biome: minecraft:plains`。manifest 保存影响渲染的环境证据；`render.json` 只声明最小图片/视角/policy/fixture/tint/mask 语义，不重复 camera、lighting、background、backboard、support、resource、environment 或 render-input content hash。图片底部只允许短编号，不得把完整 ID 绘制成小字。
+相机、正交缩放、光照、背景、背板、支撑、游戏时间、天气、生物群系、资源快照和 isolated context 均由当前 `render.v2`/`fixture.v1` 定义；未修改的历史 `render.v1` records、workspace/release data 在当前 v1 Schema ID 下保持 valid，并只在其 record/run context replay。preserved old export package 在 repository Schema bytes 变化后不由 current external validator 重新验证；其 embedded `schemas.sha256`/`schema_inventory` 是 binding evidence，current validation 必须报告 `SCHEMA_INVENTORY_HASH_MISMATCH`。不得 bypass hash、自动迁移、增加 historical Schema snapshot layer 或使用 version-aware validator fallback；旧 package bytes/reports 只作为历史证据保留。默认摄影棚使用 `minecraft:plains`、晴天、`world_time: 6000`、shader disabled 和固定中性背景；动态染色对象必须标记 `tint_sensitive: true` 与 `baseline_biome: minecraft:plains`。manifest 保存影响渲染的环境证据；`render.json` 只声明最小图片/视角/policy/fixture/tint/mask 语义，不重复 camera、lighting、background、backboard、support、resource、environment 或 render-input content hash。图片底部只允许短编号，不得把完整 ID 绘制成小字。
 
-R1 的透明、附着和连接方块只使用固定 isolated context、背板或必要中性支撑；不预建组合邻接。支撑物不得进入对象蒙版；`mask.png` 是同尺寸单通道或 RGBA 对象蒙版，必须在 `render.json` 声明通道和阈值。
+R1 的透明、附着和连接方块只使用固定 isolated context、背板或必要中性支撑；不预建组合邻接。一个或多个透明 edge-on quadrant 允许存在，只要 composite 非空；整个 composite 全透明仍失败，`nether_portal` 在 composite 非空时保留。支撑物不得进入对象蒙版；`mask.png` 是同尺寸单通道或 RGBA 对象蒙版，必须在 `render.json` 声明通道和阈值。
 
 ### 8.2 `render.json`
 
 `render.json` 使用 `render-metadata.v1`；精确字段、required 集合、四视角顺序和 mask 对象结构以 [`schemas/exporter/render-metadata.v1.json`](../schemas/exporter/render-metadata.v1.json) 为准。R1 必须写入 512×512 RGBA、四视角、isolated fixture、最小 policy/fixture/tint/mask 语义和可读取 mask 的机器元数据；不重复 manifest 已有的环境证据或图片内容哈希。
 
-R1 只渲染普通 block model 的固定 isolated context；不预建 block entity/NBT、任意流体、动画帧、组合邻接或通用 fixture 框架。无法在该 context 中稳定渲染即写机器可读 skip/failure 并保持 pending review，不生成占位图片。
+R1 只渲染普通 block model 的固定 isolated context；不预建 block entity/NBT、任意流体、动画帧、组合邻接或通用 fixture 框架。`minecraft:end_portal` 与 `minecraft:end_gateway` 是 non-building 的 explicit machine pending skips：两个精确 block ID 及其全部合法 states 仍登记，exporter 在进入渲染前使用既有 `BLOCK_ENTITY_FIXTURE_UNSUPPORTED` 写入 ordinary auditable pending skip，不生成 preview、mask 或 render directory；所有 states 仍在 `states.jsonl` 中以现有 skipped mapping（空 `variant_ids`）保留，variant/failure 记录沿用 ordinary auditable pending skip 并要求后续 human review，绝不静默过滤。无法在该 context 中稳定渲染即写机器可读 skip/failure 并保持 pending review，不生成占位图片。当前范围预期保留 `43` 个 block-entity fixture skips 和 `10` 个 invisible/technical skips；`melon_stem`、`pumpkin_stem`、`tripwire` 的 `OBJECT_TOO_SMALL` 仍 reviewable，不由本 amendment 重新分类；既有 `152` 个 rerender events 只保留为历史审计证据，不执行为本次修复。
 
 ### 8.3 渲染失败
 
-导出器必须检查全透明/全背景、对象出框、对象过小、紫黑缺失纹理和截图文件缺失。`retry_count` 是最多 1 次的上限，不要求必须重试；仅已观察的可恢复失败可重试一次。第二次尝试仍失败，或无需重试的失败，必须写 `failures.jsonl` 并进入 `needs_review`/`pending`，不得无限重试、静默删除或生成占位图片冒充成功。
+per-variant render acceptance 在写入 `variants.jsonl` record 前必须检查 entire composite 全透明/全背景、对象出框、对象过小、resolved material identity 和截图文件缺失。单个 edge-on quadrant 透明不构成失败。Java resolved submission 是 missing-material authority，覆盖 whole-model/material missing、missing model、vanilla material/quads 和 Fabric mesh；Fabric mesh 使用 block-atlas missing sprite 的 `SpriteFinder` 与 missing-sprite UV bounds。`minecraft:missingno` 的 source checker 精确为四象限 `#F800F8`/`#000000`，但 rendered colors 不是 authority。Python 不得使用宽松全局 magenta/black ratios；外部 validator 只能以严格 canonical checker 作 defense-in-depth，ambiguous pixels 不是 proof。`retry_count` 是最多 1 次的上限，不要求必须重试；仅已观察的可恢复失败可重试一次。第二次尝试仍失败，或无需重试的失败，必须写 `failures.jsonl` 并进入 `needs_review`/`pending`，不得无限重试、静默删除或生成占位图片冒充成功。
 
 ## 9. `failures.jsonl` 和失败语义
 
 每行使用 `export-failure.v1`，既记录错误也记录显式跳过；精确字段、required 集合、scope 引用条件和 evidence 结构以 [`schemas/exporter/export-failure.v1.json`](../schemas/exporter/export-failure.v1.json) 为准。R1 failure/skip 只表达机器结果和 pending review，不携带 workspace 人工审核字段，也不携带 render identity/signature。
 
-`scope` 只能是 `export`、`block`、`state`、`variant`、`render`；除 `scope: export` 外，对应引用必须存在。`export-failure.v1` 的精确 `reason_code` 枚举由 [`schemas/exporter/export-failure.v1.json`](../schemas/exporter/export-failure.v1.json) 唯一拥有；实现只使用与实际观察失败相符的枚举，包括 `REGISTRY_INCOMPLETE`、`INVALID_STATE`、`MISSING_TEXTURE`、`EMPTY_RENDER`、`BACKGROUND_ONLY_RENDER`、`OBJECT_OFF_CANVAS`、`OBJECT_TOO_SMALL`、`IO_ERROR`、`SCHEMA_INVALID`、`CHECKSUM_MISMATCH` 和 `EXPORTER_EXCEPTION`。
+`scope` 只能是 `export`、`block`、`state`、`variant`、`render`；除 `scope: export` 外，对应引用必须存在。`export-failure.v1` 的精确 `reason_code` 枚举由 [`schemas/exporter/export-failure.v1.json`](../schemas/exporter/export-failure.v1.json) 唯一拥有；实现只使用与实际观察失败相符的既有枚举，包括 `REGISTRY_INCOMPLETE`、`INVALID_STATE`、`MISSING_TEXTURE`、`EMPTY_RENDER`、`BACKGROUND_ONLY_RENDER`、`OBJECT_OFF_CANVAS`、`OBJECT_TOO_SMALL`、`BLOCK_ENTITY_FIXTURE_UNSUPPORTED`、`IO_ERROR`、`SCHEMA_INVALID`、`CHECKSUM_MISMATCH` 和 `EXPORTER_EXCEPTION`。本 amendment 不增加 reason code、Schema ID 或 allowlist framework。
 
 `kind: "failure"` 表示逻辑项未成功完成；`kind: "skip"` 表示明确不把该项作为可发布视觉候选。两者都不能缺少原因。R1 的 `action: "needs_review"`/`review_status: "pending"` 只表示 exporter failure/skip 待后续 workspace 审核；R1 不写人工 `skip-review.v1`。R3 candidate-build 前必须由独立 workspace `skip-review.v1` 解决无变体项；`excluded` 资格必须另有独立 `qualification-review.v1`，不能用 exporter failure 或 skip 记录替代。方块若没有可发布变体，必须保留 Block/State 和机器原因，否则不是覆盖而是导出失败。
 
@@ -205,7 +205,7 @@ R1 只要求一次 fresh staging 导出：写入 `.<export_id>.staging`，完成
 3. `states.jsonl` 覆盖每个合法状态，`legal_state` 均由运行时确认，默认状态引用合法。
 4. 每个状态有同一 block 的 default representative 映射，或有与之对应的 exporter 机器可读 skip/failure 并保持待审核。
 5. 每个 `selected` 变体的代表状态、状态集合、行为事实、图片和 `render.json` 互相一致；不得跨 block ID 合并。
-6. 每张 `preview.png` 和 `mask.png` 可读取、为 512×512，四视角和固定策略元数据齐全；变体 render reference 的三个 artifact SHA-256 与实际文件一致。
+6. 每张 `preview.png` 和 `mask.png` 可读取、为 512×512，四视角和固定策略元数据齐全；透明 edge-on quadrant 允许存在但整个 composite 全透明必须拒绝；变体 render reference 的三个 artifact SHA-256 与实际文件一致。
 7. 所有 JSONL 行通过各自严格 Schema，`failures.jsonl` 的引用和枚举合法；exporter 的状态/变体选择记录完整。
 8. `checksums.sha256` 按 UTF-8 字节序覆盖所有必需普通文件并完成一次复算；JSON/metadata 摘要采用 `sha256:` 前缀格式，checksum 行首使用无前缀的 64 位小写十六进制格式。
 9. 日志包含结束事件，manifest 状态与失败/审核计数一致。

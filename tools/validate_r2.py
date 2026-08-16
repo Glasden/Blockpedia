@@ -27,6 +27,8 @@ EXPECTED_PROJECT_DEPS = {
     "uvicorn==0.52.3",
     "Jinja2==3.1.6",
     "jsonschema==4.26.0",
+    "httpx==0.28.1",
+    "keyring==25.7.0",
 }
 EXPECTED_PACKAGE_DATA = {
     "sql/*.sql",
@@ -54,6 +56,11 @@ HTMX_HASHES = {
 }
 OFFICIAL_DISCLAIMER = "NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT."
 SENSITIVE_RE = re.compile(r"(?i)(authorization|api[_-]?key|secret|token|usage|cost|budget)")
+EXTERNAL_TEMPLATE_RESOURCE_RE = re.compile(
+    r"<[^>]*\b(?:src|href|action|poster)\s*=\s*(?:[\"'][^\"']*https?://|https?://)"
+    r"|<[^>]*\bstyle\s*=\s*[\"'][^\"']*\burl\(\s*https?://",
+    re.IGNORECASE | re.DOTALL,
+)
 # Keep the drive/UNC/POSIX alternatives bounded.  Without the left boundary,
 # the ``p:/`` suffix of ``http://`` is misread as a Windows drive path.
 ABSOLUTE_RE = re.compile(
@@ -225,10 +232,32 @@ def _check_web(root: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
             finally:
                 service.close()
         required = {"/api/imports/check", "/api/imports", "/api/runs", "/api/runs/{run_id}", "/api/runs/{run_id}/recover"}
-        forbidden = ("/api/provider", "/api/releases", "/api/current", "/api/mcp", "/mcp")
-        passed = required <= paths and not any(path.startswith(forbidden) for path in paths) and not any(token in name for name in middleware for token in ("cors", "auth", "csrf")) and getattr(web, "UNOFFICIAL_NOTICE", "") == OFFICIAL_DISCLAIMER
+        r3_required = {
+            "/api/provider/profile",
+            "/api/provider/probe",
+            "/api/provider/enable",
+            "/api/provider/disable",
+            "/api/runs/{run_id}/ai-batches/next",
+            "/api/runs/{run_id}/ai-batches/{logical_key}/image",
+            "/api/runs/{run_id}/ai-batches/{logical_key}/approve",
+            "/api/runs/{run_id}/ai-batches/{logical_key}/cancel",
+            "/api/reviews",
+            "/api/reviews/{review_id}/resolve",
+            "/api/runs/{run_id}/reviews/continue",
+        }
+        allowed_release_paths = {"/api/releases/check", "/api/releases/build"}
+        release_paths = {path for path in paths if path.startswith("/api/releases")}
+        forbidden = ("/api/current", "/api/search-tests", "/api/mcp", "/mcp")
+        passed = (
+            required <= paths
+            and r3_required <= paths
+            and release_paths == allowed_release_paths
+            and not any(path.startswith(forbidden) for path in paths)
+            and not any(token in name for name in middleware for token in ("cors", "auth", "csrf"))
+            and getattr(web, "UNOFFICIAL_NOTICE", "") == OFFICIAL_DISCLAIMER
+        )
         if not passed:
-            issues.append(_issue("WEB_CONTRACT_INVALID", "R2 Web routes or security boundary is invalid."))
+            issues.append(_issue("WEB_CONTRACT_INVALID", "R2/R3 Web routes or security boundary is invalid."))
         return _check("passed" if passed else "failed"), issues
     except Exception:
         return _check("failed"), [_issue("WEB_CONTRACT_INVALID", "R2 Web adapter could not be inspected.")]
@@ -251,7 +280,14 @@ def _check_assets_and_templates(root: Path) -> tuple[dict[str, Any], list[dict[s
             if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                 issues.append(_issue("HTMX_ASSET_INVALID", "Pinned local HTMX bytes or hash are invalid."))
         template_root = root / "src/blockpedia/templates"
-        external = any(bool(re.search(r"https?://", path.read_text(encoding="utf-8"))) for path in template_root.rglob("*.html"))
+        # A URL in explanatory text or an input value is configuration data,
+        # not a fetched asset.  Inspect only resource-bearing HTML attributes
+        # (plus CSS url()) so external script/link/img/form references remain
+        # forbidden without rejecting the provider form's base URL example.
+        external = any(
+            bool(EXTERNAL_TEMPLATE_RESOURCE_RE.search(path.read_text(encoding="utf-8")))
+            for path in template_root.rglob("*.html")
+        )
         web = importlib.import_module("blockpedia.web")
         if external or getattr(web, "UNOFFICIAL_NOTICE", "") != OFFICIAL_DISCLAIMER:
             issues.append(_issue("WEB_ASSET_OR_DISCLAIMER_INVALID", "Templates or official disclaimer contract is invalid."))

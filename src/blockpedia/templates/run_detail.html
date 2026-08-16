@@ -30,6 +30,14 @@
   </div>
 
   <aside class="run-side">
+    <section class="review-entry-card" aria-labelledby="review-entry-heading">
+      <p class="section-index">R3 / HUMAN REVIEW</p>
+      <span class="review-entry-card__mark" aria-hidden="true">✓?</span>
+      <h2 id="review-entry-heading">核对语义与异常</h2>
+      <p>查看 high / normal 队列、只读机器事实、AI 建议与审核证据。所有决定都会留下独立记录。</p>
+      <a class="button button--primary" href="/runs/{{ run_identifier }}/review">进入审核队列 <span aria-hidden="true">↗</span></a>
+    </section>
+
     <section class="work-card search-card" aria-labelledby="search-heading">
       <p class="section-index">WORKSPACE FTS</p>
       <h2 id="search-heading">工作区搜索</h2>
@@ -55,10 +63,18 @@
     </section>
 
     <section class="future-card" aria-labelledby="future-heading">
-      <span>R3–R5</span>
-      <h2 id="future-heading">后续阶段</h2>
-      <p>Provider、AI 审核处理、candidate build、MCP 与 release/current 激活尚未实现，当前页面不提供这些操作。</p>
+      <span>PHASE C / R4 / R5</span>
+      <h2 id="future-heading">当前实现边界</h2>
+      <p>候选检查与不可变构建已放在本运行页。后续阶段入口仍不在这里提供。</p>
     </section>
   </aside>
 </div>
+
+<section class="page-shell r3-control-shell reveal reveal--3">
+  {% if run_view.get('boundary_event') == 'R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING' %}
+    {% with run=run_view, run_identifier=run_identifier %}{% include "partials/release_candidate.html" %}{% endwith %}
+  {% else %}
+    {% with run=run_view, run_identifier=run_identifier %}{% include "partials/ai_batch.html" %}{% endwith %}
+  {% endif %}
+</section>
 {% endblock %}

@@ -1,0 +1,112 @@
+{% set run_view = run|default({}, true) %}
+{% set batch_view = batch|default({}, true) %}
+{% set run_identifier = run_view.get('run_id', run_identifier|default(batch_view.get('run_id', 'unavailable'))) %}
+<section
+  class="ai-control"
+  data-ai-control
+  data-run-id="{{ run_identifier }}"
+  data-import-id="{{ run_view.get('import_id', '') }}"
+  data-minecraft-version="{{ run_view.get('minecraft_version', '26.2') }}"
+  data-current-stage="{{ run_view.get('current_stage', 'PREPARE') }}"
+  data-run-status="{{ run_view.get('status', 'pending') }}"
+  data-boundary-event="{{ run_view.get('boundary_event') or '' }}"
+  aria-labelledby="ai-control-heading"
+>
+  <header class="ai-control__header">
+    <div>
+      <p class="section-index"><span class="live-label"><i aria-hidden="true"></i> R3 CONTROL</span> / AI_ANNOTATE</p>
+      <h2 id="ai-control-heading">发送前检查台</h2>
+      <p>先读取唯一 active profile，再显示当前批次的联系表、短编号映射和最小 prompt。只有你看过这些内容后，批准按钮才会可用。</p>
+    </div>
+    <div class="ai-send-boundary"><span aria-hidden="true">◇</span><p><b>批准按批次生效</b><br>取消只建立审核任务，不会调用 provider。</p></div>
+  </header>
+
+  <div class="ai-control__status" role="status" aria-live="polite" data-ai-status>
+    <span class="stream-state" data-state="connecting"><i aria-hidden="true"></i><span>正在读取 active profile 与运行配置</span></span>
+  </div>
+
+  <div class="ai-config-band" data-ai-config>
+    <section class="ai-profile-snapshot" aria-labelledby="ai-profile-heading">
+      <p class="section-index">ACTIVE PROFILE / SAFE VIEW</p>
+      <h3 id="ai-profile-heading">本次运行配置</h3>
+      <dl>
+        <div><dt>profile</dt><dd><code data-ai-profile-id>读取中</code></dd></div>
+        <div><dt>adapter</dt><dd><code data-ai-adapter>读取中</code></dd></div>
+        <div><dt>请求 model_id</dt><dd><code data-ai-model-id>读取中</code></dd></div>
+        <div><dt>endpoint</dt><dd><code data-ai-endpoint>读取中</code></dd></div>
+        <div><dt>prompt</dt><dd><code data-ai-prompt-version>读取中</code></dd></div>
+        <div><dt>凭据</dt><dd><span data-ai-credential>读取中</span></dd></div>
+      </dl>
+      <p class="privacy-note"><span aria-hidden="true">◆</span> 这里显示请求 model_id；第三方网关可能改写响应中的 model 回显，Blockpedia 不据此验证远端模型身份或替换请求值。这里不显示凭据正文、本机路径、图片编码或 provider 原始响应。</p>
+    </section>
+
+    <form class="ai-run-configure" action="/ui/runs/configure" method="post" data-ai-configure autocomplete="off">
+      <fieldset>
+        <legend>配置此运行的 R3 批次</legend>
+        <input type="hidden" name="import_id" value="{{ run_view.get('import_id', '') }}">
+        <input type="hidden" name="minecraft_version" value="{{ run_view.get('minecraft_version', '26.2') }}">
+        <input type="hidden" name="profile_id" value="" data-ai-profile-input>
+        <input type="hidden" name="normal_threshold" value="0.80">
+        <input type="hidden" name="high_threshold" value="0.65">
+        <div class="field-group">
+          <label for="ai-batch-size-{{ run_identifier }}">每批 tile 数</label>
+          <select id="ai-batch-size-{{ run_identifier }}" name="batch_size">
+            <option value="8">8</option>
+            <option value="12" selected>12</option>
+            <option value="16">16</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label for="ai-sample-rate-{{ run_identifier }}">确定性抽样比例</label>
+          <div class="range-field"><input id="ai-sample-rate-{{ run_identifier }}" name="sample_rate" type="range" value="100" min="0" max="100" step="1" data-range-input><output for="ai-sample-rate-{{ run_identifier }}" data-range-output>100%</output></div>
+        </div>
+        <p class="ai-threshold-note"><span>自动通过 ≥ 0.80</span><span>普通审核 0.65–0.79</span><span>高优先级 &lt; 0.65</span></p>
+        <button class="button button--primary" type="submit" disabled data-ai-configure-submit>建立批次并预览 <span aria-hidden="true">→</span></button>
+      </fieldset>
+    </form>
+  </div>
+
+  <section class="ai-preview" data-ai-preview hidden aria-labelledby="ai-preview-heading">
+    <header class="ai-preview__heading">
+      <div>
+        <p class="section-index">WHAT WILL BE SENT</p>
+        <h3 id="ai-preview-heading">当前待批准批次</h3>
+      </div>
+      <span class="status-badge status-badge--paused">尚未发送</span>
+    </header>
+
+    <div class="ai-preview__grid">
+      <figure class="contact-sheet-preview">
+        <div class="contact-sheet-preview__frame"><img alt="当前 AI 批次的本地联系表，包含短编号 tile" data-ai-contact-sheet></div>
+        <figcaption><span>本地联系表 URL</span><code data-ai-image-url></code></figcaption>
+      </figure>
+
+      <section class="tile-map" aria-labelledby="tile-map-heading">
+        <div><p class="section-index">SHORT TILE MAP</p><h4 id="tile-map-heading">仅发送这些已有 ID</h4></div>
+        <ol data-ai-tile-map></ol>
+      </section>
+    </div>
+
+    <section class="prompt-preview" aria-labelledby="prompt-preview-heading">
+      <div><p class="section-index">MINIMAL PROMPT</p><h4 id="prompt-preview-heading">最小指令与不可信数据段</h4></div>
+      <pre tabindex="0" data-ai-prompt></pre>
+    </section>
+
+    <div class="ai-preview__actions">
+      <form action="" method="post" data-ai-approve>
+        <input type="hidden" name="input_signature" value="" data-ai-input-signature>
+        <button class="button button--primary" type="submit" disabled data-ai-approve-submit>已检查，批准发送 <span aria-hidden="true">→</span></button>
+      </form>
+      <form action="" method="post" data-ai-cancel data-confirm="取消会把本批条目送入人工审核，但不会发送给 provider。确认取消吗？">
+        <input type="hidden" name="reason" value="operator cancelled after send preview">
+        <button class="button button--danger" type="submit">取消本批，不发送</button>
+      </form>
+      <p>批准只适用于当前 <code data-ai-logical-key>批次</code> 与当前输入签名；输入变化后必须重新预览。</p>
+    </div>
+  </section>
+
+  <div class="ai-preview-empty" data-ai-empty>
+    <span aria-hidden="true">⌁</span>
+    <div><h3>等待运行配置或下一批次</h3><p>配置本次运行后，页面会从安全 JSON 接口读取待发送预览。读取预览本身不会发送外部请求。</p></div>
+  </div>
+</section>

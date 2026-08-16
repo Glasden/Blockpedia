@@ -84,8 +84,6 @@ class _PngAnalysis:
     alpha_bounds: tuple[int, int, int, int] | None
     nontransparent: int
     background_pixels: int
-    magenta_pixels: int
-    near_black_pixels: int
     quadrant_nontransparent: tuple[int, int, int, int]
     background_only: bool
     object_too_small: bool
@@ -1081,7 +1079,7 @@ def _read_png(path: Path, validator: Validator) -> _PngAnalysis | None:
         if bit_depth != 8 or color_type != 6 or interlace != 0:
             validator.add("PNG_RGBA_REQUIRED", path.name)
             analysis = _PngAnalysis(
-                width, height, "unknown", False, None, 0, 0, 0, 0,
+                width, height, "unknown", False, None, 0, 0,
                 (0, 0, 0, 0), True, False, False, False,
             )
             validator._png_cache[path] = analysis
@@ -1108,9 +1106,8 @@ def _analyze_png_pixels(decoded: bytes, width: int, height: int, row_bytes: int)
     alpha_bounds: tuple[int, int, int, int] | None = None
     nontransparent = 0
     background_pixels = 0
-    magenta = 0
-    near_black = 0
     quadrant = [0, 0, 0, 0]
+    rows: list[bytes] = []
     half_width = width // 2
     half_height = height // 2
     for y in range(height):
@@ -1118,6 +1115,7 @@ def _analyze_png_pixels(decoded: bytes, width: int, height: int, row_bytes: int)
         offset += 1
         row = _unfilter_png_row(filter_type, decoded[offset : offset + row_bytes], previous, 4)
         offset += row_bytes
+        rows.append(bytes(row))
         for x in range(width):
             red, green, blue, alpha = row[x * 4 : x * 4 + 4]
             if alpha == 0:
@@ -1132,10 +1130,6 @@ def _analyze_png_pixels(decoded: bytes, width: int, height: int, row_bytes: int)
                     min(alpha_bounds[0], x), min(alpha_bounds[1], y),
                     max(alpha_bounds[2], x), max(alpha_bounds[3], y),
                 )
-            if red >= 180 and blue >= 180 and green <= 80:
-                magenta += 1
-            if red <= 64 and green <= 64 and blue <= 64:
-                near_black += 1
         previous = row
     off_canvas = bool(
         alpha_bounds
@@ -1148,12 +1142,8 @@ def _analyze_png_pixels(decoded: bytes, width: int, height: int, row_bytes: int)
     )
     minimum_object_pixels = max(1, (width * height) // 256)
     object_too_small = nontransparent < minimum_object_pixels
-    missing_texture = (
-        nontransparent >= 64
-        and magenta >= 64
-        and near_black >= 64
-        and magenta / nontransparent >= 0.02
-        and near_black / nontransparent >= 0.02
+    missing_texture = _is_canonical_missing_checker(
+        rows, width, height, alpha_bounds, nontransparent
     )
     return _PngAnalysis(
         width,
@@ -1163,14 +1153,54 @@ def _analyze_png_pixels(decoded: bytes, width: int, height: int, row_bytes: int)
         alpha_bounds,
         nontransparent,
         background_pixels,
-        magenta,
-        near_black,
         (quadrant[0], quadrant[1], quadrant[2], quadrant[3]),
         nontransparent == 0,
         object_too_small,
         off_canvas,
         missing_texture,
     )
+
+
+def _is_canonical_missing_checker(
+    rows: list[bytes],
+    width: int,
+    height: int,
+    alpha_bounds: tuple[int, int, int, int] | None,
+    nontransparent: int,
+) -> bool:
+    """Recognize only the unmodified 26.2 missingno four-quadrant source.
+
+    Java resolved material identity is authoritative. This image check is
+    intentionally strict: the opaque alpha bounds must be a filled even-sized
+    rectangle, and every pixel must exactly match the source checker colors.
+    Rendered, tinted, lit, blended, or otherwise ambiguous colors do not fail.
+    """
+
+    if alpha_bounds is None:
+        return False
+    left, top, right, bottom = alpha_bounds
+    checker_width = right - left + 1
+    checker_height = bottom - top + 1
+    if (
+        checker_width < 2
+        or checker_height < 2
+        or checker_width % 2
+        or checker_height % 2
+        or nontransparent != checker_width * checker_height
+    ):
+        return False
+
+    half_width = checker_width // 2
+    half_height = checker_height // 2
+    for y in range(top, bottom + 1):
+        row = rows[y]
+        for x in range(left, right + 1):
+            red, green, blue, alpha = row[x * 4 : x * 4 + 4]
+            same_half = ((x - left) < half_width) == ((y - top) < half_height)
+            expected = (0, 0, 0) if same_half else (248, 0, 248)
+            if (red, green, blue, alpha) != (*expected, 255):
+                return False
+    return True
 
 
 def _parse_png(raw: bytes) -> tuple[int, int, int, int, int, bytes]:

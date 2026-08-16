@@ -1,15 +1,15 @@
 # Blockpedia MVP 路线图
 
 - **版本**：MVP 冻结版
-- **日期**：2026-08-14
+- **日期**：2026-08-15
 - **目标**：在 Windows 11 x86_64 和 Linux x86_64（`manylinux_2_17` / glibc `>=2.17`）上完成原版 Minecraft Java 26.2 的本地单机端到端闭环
-- **当前状态**：R0 契约冻结、R1 确定性导出和 R2 Index Studio/存储/任务均已按 Windows、静态与 fixture 证据关闭；R3 可以开始。Linux CPython/Web、Linux MCP stdio、Linux wheel/ABI、Linux Java/runtime/exporter 和最终双平台复现统一 deferred 到 R5；正式支持平台与 Linux 基线不变，当前不声称 Linux 已通过。
+- **当前状态**：R0 契约冻结、R1 确定性导出和 R2 Index Studio/存储/任务均已有 Windows、静态与 fixture 证据；D-043 Gate 3/R1 P0 corrected-export closure 已由最终 pair evidence 验证，R1 P0 不再 open。两个旧导出、validator reports 和现有 R3 run 保留为历史证据，candidate 工作不得从中继续。3 个 `OBJECT_TOO_SMALL` 仍是普通 R3 reviewable pending items，不是 R1 blocker。D-040 的批次授权、D-041 的可扩展 aggregate authorization 及 D-042 的 `prompt.v2`/安全诊断均已于 2026-08-15 完成 focused acceptance evidence。真实标注、人工审核、candidate 和 R3 退出仍未通过。Linux CPython/Web、Linux MCP stdio、Linux wheel/ABI、Linux Java/runtime/exporter 和最终双平台复现统一 deferred 到 R5；正式支持平台与 Linux 基线不变，当前不声称 Linux 已通过。
 
 规范优先级和硬限制见 [`../AGENTS.md`](../AGENTS.md)；冻结决定集中见 [`decisions.md`](decisions.md)。冲突必须先更新高优先级文档，不能在实现中静默偏离。移入的原始设计稿仅是历史背景和最低优先级参考，不能与新文档一起作为执行规范；其中冲突内容禁止实现。
 
 ## 路线图文档索引
 
-当前仓库已完成最小 R0 物化和验收，并已按 Windows 证据关闭 R1、R2。R1 的当前 v1 身份、路径、哈希删留和 exporter/外部 validator 职责已冻结；所有 Linux 实际运行/安装/平台行为与最终双平台复现义务统一保留在 R5。R2 退出门已关闭，R3 可以开始；后续阶段只在实际实现需要时增加测试与平台证据，不重复设计或为未来阶段预建验证体系。
+当前仓库已完成最小 R0 物化和验收，并保留了 R1、R2 的既有 Windows/静态/fixture 证据；D-043 Gate 3 已验证 corrected pair 并关闭 R1 渲染确定性/质量 P0 blocker，旧导出仍不作为 candidate 输入。R1 的 v1 身份、路径、哈希删留和 exporter/外部 validator 职责已冻结；所有 Linux 实际运行/安装/平台行为与最终双平台复现义务统一保留在 R5。R2 既有退出证据保持可追溯，R3 candidate 仍受 3 个 ordinary `OBJECT_TOO_SMALL` review items、人工审核及其它 R3 门阻断；后续阶段只在实际实现需要时增加测试与平台证据，不重复设计或为未来阶段预建验证体系。
 
 所有链接均相对于本文件所在的 `docs/` 目录。
 
@@ -97,13 +97,22 @@
 - [x] 所有导出状态均为运行时合法状态；每个状态都有该 block 的代表链接，或有 exporter failure/skip 且保持 `pending` review。
 - [x] 预览、蒙版、几何、行为和资源快照字段可读取且哈希稳定；R1 不以不存在 exporter Schema owner 的颜色字段作为验收项。
 - [x] Windows 11 x86_64 已以冻结 Java 25 基线完成构建并运行实际 Minecraft 26.2 exporter，导出包通过外部 validator；Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现保留至 R5，未在 R1 宣称完成。
+- [x] D-043 Gate 3 corrected-export closure：最终 pair 的两个导出均通过 validator，pairwise report 通过且全部 3420 个 render artifacts 一致；证据与哈希见下方 Gate 3 条目。
 
 **证据区**
 
 - Windows 当前 v1 真实导出：`run/blockpedia-data/exports/26.2/export_20260813T213208Z/`，exporter `0.1.3`，status=`needs_review`，1196 blocks、32366 states、1000 selected、196 skipped/pending；`variant_id == block_id`，抽查 `minecraft:stone` 的 preview 为 `renders/minecraft/stone/preview.png`。`manifest.json` SHA-256 为 `ea7ee7c144dd47244c1bc837a6c89c4d2100ac7eed94615021389ced75d54c82`，`checksums.sha256` SHA-256 为 `2f3541f331d5fe7cf6c72e625bba32819c597dfbe631aa531aa06c7cbf851026`。首次同版本尝试因外部 Notepad 占用 staging 内 `exporter.log` 导致 Windows rename 拒绝并仅保留 staging；关闭外部占用后 fresh 重跑于一次原子 rename 成功提交，失败 staging 未作为消费者输入。
 - 构建与聚焦验收：使用 `C:\Users\Glasden\.jdks\azul-25.0.2` 执行 `./gradlew.bat --offline compileJava` 和 `./gradlew.bat --offline build` 均为 `BUILD SUCCESSFUL`；`blockpedia-exporter-0.1.3.jar` SHA-256 为 `fe6686998160df91a3b6b0d44a30ace9926cb41c0987157be576c6d262660a2f`，sources JAR 为 `8961897cd6584b10e146d5b964f24f037a9acc01d6a533bb774ff650b75a0584`。`python -m pytest -q tests/test_r0_schemas.py tests/test_r1_export_validator.py` 为 `9 passed, 2 skipped`；两个 skip 是当前 Windows 环境无 symlink 创建权限，hardlink 与其它检查实际执行。
 - 优化后外部验收：`python tools/validate_r1_export.py --repo-root . --export-dir run/blockpedia-data/exports/26.2/export_20260813T213208Z --report run/blockpedia-data/reports/export_20260813T213208Z-validator.json` 输出 `R1 export validation passed`，实测 `516.836s`，未延长 600 秒上限；本地报告 status=`passed`、issues=`[]`，SHA-256 为 `7a839ba3f3b60ae87cbe4a55e1e4ddc3af6ce3c05f90a4f9f02f48404c5e1ec7`。Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现尚无证据；按 owner 于 2026-08-14 批准的阶段门重分配，这些义务保留在 R5，不构成 R1 未完成条件。R1 已于 2026-08-14 关闭，R2 可以开始。
-- 退出门已通过；R2 可以开始。Linux 和最终双平台验证仍由 R5 的未勾选门负责。
+- 既有 Windows R1 evidence 曾满足当时退出门并允许 R2 开始；D-043 Gate 3 已以新的 corrected pair 关闭 R1 P0，但不关闭 R3 人工审核、candidate 或退出门。Linux 和最终双平台验证仍由 R5 的未勾选门负责。
+
+#### D-043 Gate 3/R1 P0 closure（已验证；不代表 R3 完成）
+
+Oracle Gate 3：`PASS`。
+
+历史 Windows 26.2 exporter 的 P0 缺陷已由 D-043 Gate 3 corrected pair closure 验证：最终导出 `run/blockpedia-data/exports/26.2/export_20260816T091512Z/` 与 `run/blockpedia-data/exports/26.2/export_20260816T093009Z/` 均有 1196 blocks/variants、32366 states、1140 selected、56 pending skips；两个 validator report 分别通过，SHA-256 为 `d7c6c166695ac4b56ae3f2720aa972b749429f2ed4d89c1738a4293891c2aa3d` 和 `5ffaccdfb35e010bc2333504e4d223635b76e4d6afb7a88d3d8111a7c3d3904b`。pairwise report `run/blockpedia-data/reports/export_20260816T091512Z--export_20260816T093009Z-pairwise.json` SHA-256 为 `a328dc6e64ce3423995ec268d760d8108c2bf79dd0ff9d2ee7b8afe7d8254699`，status=`passed`；全部 3420 个 render artifacts match。pair 的 logical/render signatures 分别以 `f39a...` 与 `fbd3...` 报告，在 pair 内一致且不同于 pre-amendment signatures；Oracle Gate 3 判定 PASS。
+
+未修改的历史 `render.v1` records、workspace/release data 在当前 v1 Schema ID 下保持 valid，并只在其 record/run context replay；preserved old export package 在 repository Schema bytes 变化后不由 current external validator 重新验证，embedded `schemas.sha256`/`schema_inventory` 仍是 binding evidence，current validation 必须报告 `SCHEMA_INVENTORY_HASH_MISMATCH`，不得 bypass hash、自动迁移、增加 historical Schema snapshot layer 或使用 version-aware validator fallback。旧 package bytes/reports 继续保留为历史证据。`minecraft:end_portal` 与 `minecraft:end_gateway` 仍登记全部合法 states，并在进入渲染前以既有 `BLOCK_ENTITY_FIXTURE_UNSUPPORTED` 作为 explicit machine pending skip，不生成 preview、mask 或 render directory；`nether_portal` 仍 renderable。3 个 `OBJECT_TOO_SMALL`（`melon_stem`、`pumpkin_stem`、`tripwire`）保持 ordinary reviewable R3 pending items，不是 R1 blocker；R3 人工审核、candidate 和退出复选框仍未完成。Linux 仍归 R5。
 
 ### R2：Index Studio、存储与任务
 
@@ -143,37 +152,50 @@
 
 ### R3：OpenAI 标注与审核
 
-**依赖**：R2 退出门通过；Studio 新任务、配置管理和新 release 构建只能使用一个 active OpenAI Responses profile。
+**依赖**：R2 退出门通过；Studio 新任务、配置管理和新 release 构建只能使用一个 active provider profile，其现有 `adapter` 字段必须显式取 `openai_responses` 或 `openai_chat_completions`，并在三阶段使用同一 configured/requested `model_id`；第三方 response model echo 不证明远端实际执行身份。
 
 #### 任务
 
-- [ ] 实现 OpenAI Responses 图片/文本输入、`store=false`、strict JSON Schema 和最小披露。
-- [ ] 能力探测必须实际证明 endpoint 接受并使用 `store=false`；不能证明时探测失败、禁止 enable，warning/ack 不得绕过硬门。
-- [ ] 允许多个非活动 profile，但 Studio 新任务、配置管理和新 release 构建全局最多一个 active profile；同一 active `model_id` 用于离线标注、QuerySpec 和重排。每个 release 冻结离线标注时的 provider snapshot，MCP 不读取可变 active 状态。
-- [ ] 批量生成受控语义字段；本地校验编号、Schema、枚举、描述长度和机器事实冲突。
-- [ ] 失败请求最多进行一次总重试，仍失败时创建审核任务，不切换 provider 或模型。
-- [ ] 实现 WebUI 异常审核、抽样审核、语义人工覆盖和可审核跳过。
+- [x] 实现 OpenAI Responses 图片/文本输入、`store=false`、strict JSON Schema 和最小披露。
+- [ ] 按所选显式 adapter 实现并探测 `POST /responses` 与 `POST /chat/completions`：两者均须图片输入、strict JSON Schema structured output、稳定错误分类和本地校验；Responses 继续发送 `store=false`，Chat Completions 省略 `store`，成功响应必须有 string `model` 但不要求与 requested `model_id` 相等，不得自动切换协议或 model。
+- [ ] 允许多个非活动 profile，但 Studio 新任务、配置管理和新 release 构建全局最多一个 active profile；复用现有 `adapter` 字段并限制为 `openai_responses`/`openai_chat_completions`，同一 configured/requested `model_id` 用于离线标注、QuerySpec 和重排。每个 release 冻结离线标注时的 provider snapshot，MCP 不读取可变 active 状态。
+- [x] 批量生成受控语义字段；本地校验编号、Schema、枚举、描述长度和机器事实冲突。
+- [x] 失败请求最多进行一次总重试，仍失败时创建审核任务，不切换 provider 或模型。
+- [x] 实现 WebUI 异常审核、抽样审核、语义人工覆盖和可审核跳过。
 - [ ] 通过 candidate-build gate 构建至少一个不可变、未激活 candidate，供 R4 临时测试使用；`excluded` 的 `qualification-review.v1` 在 candidate 构建前必须完整。
+- [x] R3 Phase C 高优先级契约已冻结；证据为 [`decisions.md`](decisions.md) 的 2026-08-15 owner 批准记录及 [`webui-and-operations.md`](webui-and-operations.md)、[`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)、[`quality-and-testing.md`](quality-and-testing.md)、[`data-and-schemas.md`](data-and-schemas.md)、[`security-and-distribution.md`](security-and-distribution.md)、[`architecture.md`](architecture.md) 的 Phase C owner sections。
+- [x] D-040 owner-approved workflow contract 已记录；证据为 [`decisions.md`](decisions.md) 的 D-040、[`webui-and-operations.md`](webui-and-operations.md)、[`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)、[`openai-provider.md`](openai-provider.md)、[`security-and-distribution.md`](security-and-distribution.md) 与 [`quality-and-testing.md`](quality-and-testing.md) 的对应章节；此项只证明文档冻结，不证明实现、真实 provider 请求、candidate 或 R3 退出。
+- [x] 实现 D-040 并提供 focused acceptance evidence：plan TOCTOU、sequential/fatal stop、stage semantics、retry generation/idempotency/sibling resolution、frozen lineage、generic retry guard、actionable UI rows、逐批安全预览和 strict request bodies。
+- [x] 实现并验证 D-041：persisted aggregate identity、120-job zero-rebuild call-count path、persisted mismatch all-or-none、final pre-send full recompute/zero provider calls 和 lazy per-job safe preview。
+- [x] D-042 owner-approved contract 已记录为文档冻结；证据为 [`decisions.md`](decisions.md) 的 D-042 及 [`openai-provider.md`](openai-provider.md)、[`data-and-schemas.md`](data-and-schemas.md)、[`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)、[`security-and-distribution.md`](security-and-distribution.md)、[`quality-and-testing.md`](quality-and-testing.md) 的对应章节；此项不证明 implementation、真实 annotation 或 R3 退出。
+- [x] 实现并验证 D-042：`prompt.v2` slim text、legacy prompt compatibility、六字段 final diagnostic、安全 API/UI disclosure、release lineage replay 和既有 full validation preservation。
 
 #### 交付物
 
-- [ ] OpenAI provider 实现、请求/响应 Schema、提示词版本和缓存键。
-- [ ] 审核队列、人工覆盖记录、资格等级和跳过原因报告。
-- [ ] 不含 Token usage、费用或预算字段的任务与设置页面。
+- [x] OpenAI Responses provider 实现、请求/响应 Schema、提示词版本和缓存键。
+- [ ] OpenAIProvider 的 Chat Completions adapter/codec、协议条件请求行为和两种协议的真实能力 probe；不新增 profile required field、Schema ID、依赖、服务、CLI 或 SQL。
+- [x] 审核队列、人工覆盖记录、资格等级和跳过原因报告。
+- [x] 不含 Token usage、费用或预算字段的任务与设置页面。
 - [ ] 至少一个通过 candidate-build gate 的未激活 candidate（仅在实现和证据存在后勾选）。
 
 #### 验证与退出条件
 
-- [ ] 无效 JSON、错误编号、机器事实冲突和低置信度结果均按规则进入审核。
-- [ ] LLM 无法修改 ID、合法状态、几何、机器行为、发布状态或候选资格。
-- [ ] Keyring/`OPENAI_API_KEY` 读取、掩码和日志泄漏检查通过。
+- [x] 无效 JSON、错误编号、机器事实冲突和低置信度结果均按规则进入审核。
+- [x] LLM 无法修改 ID、合法状态、几何、机器行为、发布状态或候选资格。
+- [x] Keyring/`OPENAI_API_KEY` 读取、掩码和日志泄漏检查通过。
 - [ ] 代表集标注和审核回放可复现；没有未经审核的高优先级冲突。
 - [ ] candidate-build gate 通过且 candidate 未激活生产 current。
 
 **证据区**
 
-- 尚无 provider 请求记录、Schema 校验报告、审核记录、candidate 或测试报告；本阶段所有项保持未勾选。
-- 退出门未通过，R4 不得开始。
+- 实现证据路径为 [`src/blockpedia/provider.py`](../src/blockpedia/provider.py)、[`src/blockpedia/r3.py`](../src/blockpedia/r3.py)、[`src/blockpedia/worker.py`](../src/blockpedia/worker.py)、[`src/blockpedia/services.py`](../src/blockpedia/services.py)、[`src/blockpedia/releases.py`](../src/blockpedia/releases.py)、[`src/blockpedia/web.py`](../src/blockpedia/web.py)、[`src/blockpedia/sql/release-index.v1.sql`](../src/blockpedia/sql/release-index.v1.sql) 及 [`tests/r3/`](../tests/r3/)；Phase A/B/C 的 Oracle gate 及最终双协议 provider 边界复审均已通过。
+- Windows CPython `3.14.7` 最终代码级命令 `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q` 为 `327 passed, 3 skipped, 1 warning in 437.94s`；D-042 prompt/provider/pipeline/release/Web 聚焦组合测试为 `190 passed`，Oracle 最终复核为 `PASS`。真实本地 8-item fixture 的 prompt 从 legacy `8964` 字降至 v2 `1047` 字，请求 JSON 从 `79957` 降至 `71405` bytes；该数字只证明披露缩减，不声称质量提升。D-040/D-041 的 120-job zero-rebuild、source-change zero-provider-call 证据继续有效。唯一 warning 是既有 Starlette/httpx deprecation。`python -m tools.validate_r0 --repo-root .` 为 `26 schemas, 52 fixture case(s)`；`python -m tools.validate_r2 --repo-root . --report <temporary-report>` 退出码为 0；22 个 Jinja 模板编译、`node --check src/blockpedia/static/studio.js` 和 `git diff --check` 均通过。
+- Windows Keyring 以原创临时凭据完成 WinVault set/get/delete smoke，未打印 secret；provider/profile、总尝试不超过 2、严格 Schema、机器事实只读、审核 replay、candidate Gate C、TOCTOU、不可变 hash/layout、无 `current.json` 写入均有 fixture/故障注入测试。fixture candidate 只存在于临时 data-root，不是可用于宣称 R3 退出的真实 candidate。
+- 本地 data-root 中一个用户批准的 Chat Completions profile 已于 `2026-08-15T02:57:07Z` 完成真实能力 probe；另一个选择 `prompt.v2` 的用户批准 Responses profile 已于 `2026-08-15T15:56:19Z` 完成真实能力 probe。两者的图片输入、strict structured output、本地校验和稳定错误分类均通过；这些结果不进入公开 fixture，也不证明 retention 或远端实际模型身份。尚无真实 1000 selected 标注、196 pending skips 的逐项人工审核、高优清零、代表集回放和真实未激活 candidate 证据，因此对应组合任务、交付物和退出条件继续未勾选。model mismatch 不再是 equality blocker，但也不构成远端模型身份证据；Responses response echo 不再是 R3 退出 blocker；任何协议都不据此声称远端 storage 已验证，第三方 trust/policy 由用户负责。组合项“多个 profile + adapter + release snapshot + R4 MCP 不读 active 状态”也因后续实现/证据尚未完成而保持未勾选。
+- `2026-08-15` 新 exporter sibling `run/blockpedia-data/exports/26.2/export_20260815T162140Z/` 经 `python tools/validate_r1_export.py --repo-root . --export-dir run/blockpedia-data/exports/26.2/export_20260815T162140Z --report run/blockpedia-data/reports/export_20260815T162140Z-validator.json` 验证为 `passed`、`issues=[]`，随后只经 WebUI check/import 创建 fresh run 并冻结 Responses/`prompt.v2` lineage。125 个 8-item AI jobs 全部完成首轮：110 个 `succeeded`、15 个 `needs_review`、0 个 `failed`；`provider_requests` 的 125 条首轮终态记录中，95 条 attempt 1 成功、15 条 attempt 2 成功，余下为 9 个 `PROVIDER_TIMEOUT`、2 个 `PROVIDER_SERVER_ERROR` 和 4 个 `PROVIDER_OUTPUT_ID_MISMATCH`。经用户显式批准 15-job retry wave 后，13 个 child jobs 成功，2 个仍为 `PROVIDER_OUTPUT_ID_MISMATCH`；再经用户批准一次 2-job retry wave 后，1 个成功、1 个仍为 ID mismatch；人工检查确认最后批次返回 8 项但 exact ID set 不匹配后，用户又显式批准且只批准一次 1-job wave，最后 child 成功，所有 waves 均为 0 failed。最终重新 VALIDATE 后本地共有 125 个 `annotation-batch-output.v1` artifact 和 1000 个不同且非空的 `visual_variant` `subject_id`，open `PROVIDER_FAILURE` 为 0，144 个历史 provider-failure tasks 均已 resolved，run 安全停在 `HUMAN_REVIEW/needs_review`。当前 1196 个 open tasks 由 152 `EMPTY_RENDER`、3 `MISSING_TEXTURE`、41 `OBJECT_OFF_CANVAS` 和 1000 `SAMPLED_QUALITY_REVIEW` 组成；该结果证明真实 1000 selected annotation 完整，但不证明人工审核、高优清零、candidate 或 R3 退出。
+- Linux wheel/ABI、实际安装/运行、`renameat2` 平台行为和双平台复现按冻结决策统一归 R5；本阶段没有伪称 Linux 已通过。R3 退出门仍未通过，R4 不得开始。
+- D-040 workflow、D-041 scalable aggregate authorization 和 D-042 prompt/diagnostic 实现及 focused acceptance evidence 已完成，fresh run 已形成 1000/1000 个 validated annotations，且不存在 open provider failure。1196 个 open review tasks、candidate 和退出证据仍未完成，因此没有据此勾选 R3 退出、candidate-build 或任何发布要求；现有冻结 v1 run 不原地迁移。
+- D-043 进一步冻结：现有 R3 run 的渲染输入来自缺陷 exporter，保持 historical/superseded；其 `152` 个 rerender events 保留为审计证据且不得执行。不得从两个旧导出或该 run 继续 candidate；candidate 只能等待 corrected exporter 的 targeted smoke、恰好两次同环境导出和既有 validator/Pairwise evidence。
 
 ### R4：MCP 查询
 

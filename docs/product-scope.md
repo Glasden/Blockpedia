@@ -12,7 +12,7 @@ Blockpedia **不是** Minecraft 官方产品、百科、资源包或整栋建筑
 
 1. 用户在固定的 Minecraft Java `26.2` 环境（Loom `1.17.19`；native Mojang names/unobfuscated；无外部 mappings artifact）中启动自制 Fabric exporter，生成绑定版本的导出包；exporter 在 Minecraft 内完成 `EXPORT_REGISTRY → SELECT_VARIANTS → RENDER_VARIANTS`。
 2. 用户在 loopback WebUI 中显式选择 `minecraft_version`，导入导出包；Python Index Studio 只验证 exporter 已生成的 variants/renders，并运行离线特征提取。
-3. Studio/WebUI 使用唯一 active profile 的 OpenAI Responses 模型生成受控语义，并把异常、低置信度和冲突交给人工审核；release-bound MCP 只使用 resolved release snapshot。能力探测不能证明并实际使用 `store=false` 时不得 enable。
+3. Studio/WebUI 使用唯一 active profile 的所选 OpenAI 协议 adapter 和同一 configured/requested `model_id` 生成受控语义，并把异常、低置信度和冲突交给人工审核；release-bound MCP 只使用 resolved release snapshot。Responses 使用 `POST /responses` 和 `store=false`，Chat Completions 使用 `POST /chat/completions` 且省略 `store`；成功 response 的 string `model` 可能被第三方 gateway 改写，不作为已验证远端身份、不能替换 requested `model_id`；不得自动切换协议/model，也不得声称远端 retention 已验证。
 4. Studio 按 `PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS → VALIDATE_RENDERS → EXTRACT_FEATURES → AI_ANNOTATE → VALIDATE → HUMAN_REVIEW → BUILD_RELEASE → ACTIVATE_RELEASE` 构建不可变 candidate/release；Python 不重选 variant 或重渲染。
 5. WebUI 运行 candidate-build gate；R3 可形成至少一个未激活 candidate，R4 在临时测试 data-root/current fixture 上测试 MCP；R5 再构建两个独立 candidate 并运行 activation gate，最后由用户人工激活 `current.json`。
 6. MCP 客户端通过 `stdio` 调用四个只读工具。省略 `minecraft_version` 时使用 `current-pointer.v1` 的 `default_minecraft_version`，显式版本只解析该版本 current；未知或未发布版本失败，不回退，不支持历史 `release_id` selector。
@@ -28,13 +28,13 @@ Blockpedia **不是** Minecraft 官方产品、百科、资源包或整栋建筑
 - 默认原版资源包生成的本地预览；第三方资源包、模组和 Bedrock 不在范围内。
 - Fabric 客户端 exporter、Python/FastAPI/Jinja2/HTMX 本地 WebUI、SQLite、本地图片和进程内 Worker。
 - Python 基线为 CPython `3.14.7`；R0 只锁定实际引入的 tooling 依赖。
-- OpenAI Responses 的文本/图片输入和 strict JSON Schema；只实现一个 `OpenAIResponsesProvider` adapter，允许用户批准的兼容 Responses 语义 `base_url`，不实现第二个 provider adapter。wire Schema ID 与 Responses `text.format.name` 分开，固定 name 为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`。
+- protocol-neutral `OpenAIProvider` 的显式 profile adapter：`openai_responses` 使用 `POST /responses`、图片输入、strict JSON Schema structured output 和 `store=false`；`openai_chat_completions` 使用 `POST /chat/completions`、图片输入、strict JSON Schema structured output，并省略 `store`。两者使用同一 configured/requested `model_id`、同一总重试预算、稳定错误分类、本地校验和最小披露；成功响应必须有 string `model`，但 echo mismatch 不失败、不持久化、不替换 requested `model_id`。复用现有 `adapter` 字段，不自动 fallback/switch，不实现 Anthropic/其他 provider 或 model voting。wire Schema ID 与协议 format name 分开，固定 name 为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`。
 - `stdio` MCP 的 `index_info`、`search_blocks`、`get_block_details`、`compare_blocks` 四个工具。
 - 多 Minecraft 版本和每个版本的 release 历史并存；WebUI 导入、任务、构建、发布必须显式选择版本；MCP 可省略版本以使用 default，但不支持隐式“最新”或显式历史 release selector。
 
 ## 明确不在 MVP 范围内
 
-- OpenAI Chat Completions、Anthropic Messages、其他 provider adapter、独立视觉模型、Embedding、向量数据库和训练/微调。
+- Anthropic Messages、其他 provider adapter、独立视觉模型、Embedding、向量数据库和训练/微调。
 - Streamable HTTP、MCP `resources`、任意 SQL、MCP 写入和远程部署。
 - 账号、团队权限、多租户、云端集群、局域网 WebUI、CORS 和 CSRF。
 - Python 的导入、恢复、审核、发布和回滚命令；这些操作只从 WebUI 执行。
@@ -168,7 +168,7 @@ MVP 的验收只判断契约和闭环是否成立：
 
 1. 指定版本的完整注册表能够被 exporter 登记，缺少变体时有可审计跳过；Python 不重选或重渲染；
 2. 机器事实、AI 语义、人工覆盖和资格等级在数据中可区分并可回放；
-3. OpenAI Responses strict Schema 校验、`store=false` 硬能力门、一次重试和人工审核路径可执行；
+3. 所选 OpenAI 协议的图片输入、strict Schema 校验、协议条件 store 行为、稳定错误分类、一次重试和人工审核路径可执行；成功响应的 string `model` 只满足结构有效性，不能证明第三方实际执行 requested `model_id`；任何协议都不能证明远端 retention，第三方服务 trust/policy 由用户负责；
 4. candidate-build gate、至少两个独立 release、activation gate、`current.json` 原子切换和 WebUI 回滚可验证；
 5. MCP 四工具只读不可变 release，默认/显式版本选择、ID、状态、图片和 JSON 映射一致；
 6. WebUI/MCP 在目标平台按源码和锁依赖可复现启动，且公开白名单不包含生成资产或真实数据。

@@ -128,6 +128,7 @@ final class ExportPackage {
             ExporterConstants.RENDER_POLICY_VERSION,
             ExporterConstants.FIXTURE_POLICY_VERSION,
             ExporterConstants.DEDUPE_POLICY_VERSION,
+            ExporterConstants.PRE_RENDER_SKIP_POLICY_TOKEN,
             snapshot.hash(),
             registrySignature
         );
@@ -249,6 +250,15 @@ final class ExportPackage {
 
         ExportRecords.BlockData block = blocks.get(renderIndex++);
         ExportRecords.VariantData variant = block.variant;
+        if (isUnsupportedDynamicBlockEntity(block.blockId.toString())) {
+            variant.status = "skipped";
+            variant.skipReasonCode = "BLOCK_ENTITY_FIXTURE_UNSUPPORTED";
+            variant.skipReason = "dynamic block-entity render is unsupported by isolated default fixture";
+            for (ExportRecords.StateData state : block.states) {
+                state.variantId = null;
+                state.mappingStatus = "skipped";
+            }
+        }
         if ("skipped".equals(variant.status)) {
             variants.add(variant.toJson(exportId, exporterVersion));
             failures.add(ExportFailure.skipVariant(
@@ -320,6 +330,10 @@ final class ExportPackage {
             return true;
         }
         return false;
+    }
+
+    private static boolean isUnsupportedDynamicBlockEntity(String blockId) {
+        return "minecraft:end_portal".equals(blockId) || "minecraft:end_gateway".equals(blockId);
     }
 
     private long selectedVariantCount() {

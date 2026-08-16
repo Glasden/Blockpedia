@@ -1,0 +1,25 @@
+{% set result_view = result|default({}, true) %}
+{% set profile_view = result_view.get('profile', profile|default({}, true)) if result_view is mapping else profile|default({}, true) %}
+{% set capability_view = result_view.get('capabilities', result_view) if result_view is mapping else {} %}
+{% set probe_status = capability_view.get('capability_status', profile_view.get('capability_status', 'failed')) %}
+{% set adapter = capability_view.get('adapter', result_view.get('adapter', profile_view.get('adapter', 'openai_responses'))) %}
+{% set adapter_valid = adapter in ['openai_responses', 'openai_chat_completions'] %}
+{% set adapter_label = 'OpenAI Chat Completions' if adapter == 'openai_chat_completions' else ('OpenAI Responses' if adapter == 'openai_responses' else '未知 adapter') %}
+{% set probe_passed = probe_status == 'verified' %}
+<section class="provider-probe-result provider-probe-result--{{ 'passed' if probe_passed else 'failed' }}" data-provider-probe-result data-probe-status="{{ probe_status }}" tabindex="-1" data-autofocus>
+  <header>
+    <span class="provider-probe-result__mark" aria-hidden="true">{{ '✓' if probe_passed else '!' }}</span>
+    <div>
+      <p class="section-index">PROBE RESULT / {{ adapter|upper }} / {{ probe_status|upper }}</p>
+      <h4>{% if probe_passed %}所选协议已验证，可以启用。{% else %}所选协议未通过，不能启用。{% endif %}</h4>
+    </div>
+    {% if capability_view.get('error_code') %}<code class="error-code">{{ capability_view.get('error_code') }}</code>{% endif %}
+  </header>
+  <ul>
+    <li data-probe-capability="adapter" data-capability-label="{{ adapter_label }}" data-state="{{ 'passed' if adapter_valid else 'failed' }}"><span aria-hidden="true">{{ '✓' if adapter_valid else '!' }}</span> {{ adapter_label }}</li>
+    <li data-probe-capability="image_input_supported" data-state="{{ 'passed' if capability_view.get('image_input_supported') is sameas true else 'failed' }}"><span aria-hidden="true">{{ '✓' if capability_view.get('image_input_supported') is sameas true else '!' }}</span> 图片输入</li>
+    <li data-probe-capability="structured_outputs_supported" data-state="{{ 'passed' if capability_view.get('structured_outputs_supported') is sameas true else 'failed' }}"><span aria-hidden="true">{{ '✓' if capability_view.get('structured_outputs_supported') is sameas true else '!' }}</span> Strict Structured Outputs</li>
+    <li data-probe-capability="error_classification_supported" data-state="{{ 'passed' if capability_view.get('error_classification_supported') is sameas true else 'failed' }}"><span aria-hidden="true">{{ '✓' if capability_view.get('error_classification_supported') is sameas true else '!' }}</span> 稳定错误分类</li>
+  </ul>
+  <small>{% if adapter == 'openai_chat_completions' %}<code>POST /chat/completions</code> · 请求省略 <code>store</code>{% elif adapter == 'openai_responses' %}<code>POST /responses</code> · 请求发送 <code>store=false</code>{% else %}协议请求策略不可用{% endif %}；这不是远端保留策略证明。{% if capability_view.get('probed_at') %} 探测时间 <time datetime="{{ capability_view.get('probed_at') }}">{{ capability_view.get('probed_at') }}</time>{% endif %}</small>
+</section>

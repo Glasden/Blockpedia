@@ -309,7 +309,17 @@ def test_web_surface_is_loopback_without_auth_cors_csrf_or_r4_routes(web_context
     middleware_names = {middleware.cls.__name__.lower() for middleware in app.user_middleware}
     assert not any(token in name for name in middleware_names for token in ("cors", "auth", "csrf"))
     paths = {route.path for route in app.routes}
-    forbidden_prefixes = ("/api/provider", "/api/releases", "/api/current", "/api/search-tests", "/api/mcp", "/mcp")
+    assert {path for path in paths if path.startswith("/api/releases")} == {
+        "/api/releases/check",
+        "/api/releases/build",
+    }
+    assert {path for path in paths if path.startswith("/api/provider")} == {
+        "/api/provider/profile",
+        "/api/provider/probe",
+        "/api/provider/enable",
+        "/api/provider/disable",
+    }
+    forbidden_prefixes = ("/api/current", "/api/search-tests", "/api/mcp", "/mcp")
     assert not any(path.startswith(forbidden_prefixes) for path in paths)
 
     response = client.get("/")
@@ -318,6 +328,23 @@ def test_web_surface_is_loopback_without_auth_cors_csrf_or_r4_routes(web_context
     _assert_safe_payload(response.text, tmp_path)
     for reference in re.findall(r"(?:src|href)=[\"']([^\"']+)[\"']", response.text, flags=re.IGNORECASE):
         assert reference.startswith(("/", "#")) or reference.startswith("http://testserver/")
+
+
+def test_provider_probe_and_enable_accept_only_profile_id(web_context) -> None:
+    client, _, tmp_path = web_context
+    for route in ("/api/provider/probe", "/api/provider/enable", "/api/provider/disable"):
+        response = client.post(route, json={"profile_id": "default", "storage_confirm": True})
+        payload = _assert_error_envelope(response, {400})
+        assert payload["error_code"] == "INVALID_INPUT"
+        _assert_safe_payload(payload, tmp_path)
+
+    htmx = client.post(
+        "/ui/provider/probe",
+        data={"profile_id": "default", "storage_confirm": "true"},
+    )
+    assert htmx.status_code == 400
+    assert "store_false_supported" not in htmx.text
+    assert "storage_confirm" not in htmx.text
 
 
 def test_web_import_unknown_fields_use_stable_error_envelope(web_context, export_fixture: Path) -> None:

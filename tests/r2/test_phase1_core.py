@@ -12,6 +12,7 @@ import pytest
 from blockpedia.features import axis_aligned_union, extract_features
 from blockpedia.importer import ImportNotAllowed
 from blockpedia.paths import DataRoot, ExportPathError, UnsafeReference, default_data_root
+from blockpedia.run_snapshots import _safe_config
 from blockpedia.search import WorkspaceQueryService
 from blockpedia.services import StudioService
 from blockpedia.stages import RunStateConflict
@@ -270,6 +271,22 @@ def test_provider_constraints_and_failure_foreign_key(tmp_path: Path) -> None:
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(provider_requests)")}
     assert "response_sha256" not in columns
     database.close()
+
+
+def test_public_run_snapshot_preserves_only_explicit_provider_adapter() -> None:
+    visible = _safe_config(
+        {
+            "provider_snapshot": {
+                "adapter": "openai_chat_completions",
+                "profile": {"adapter": "openai_chat_completions", "secret_reference": "keyring:blockpedia/default"},
+            }
+        }
+    )
+    assert visible["provider_snapshot"]["adapter"] == "openai_chat_completions"
+    assert visible["provider_snapshot"]["profile"]["adapter"] == "openai_chat_completions"
+
+    legacy = _safe_config({"provider_snapshot": {"profile": {"profile_id": "default"}}})
+    assert "provider_snapshot" not in legacy
 
 
 def test_property_membership_is_rejected() -> None:

@@ -65,7 +65,7 @@
     "machine_tags": []
   },
   "render": {
-    "render_policy_version": "render.v1",
+    "render_policy_version": "render.v2",
     "preview_path": "renders/minecraft/stone/preview.png",
     "mask_path": "renders/minecraft/stone/mask.png",
     "render_metadata_path": "renders/minecraft/stone/render.json",

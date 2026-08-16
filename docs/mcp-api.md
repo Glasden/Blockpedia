@@ -25,14 +25,14 @@ stdout 从首字节开始 **MUST** 只输出 MCP 协议 JSON-RPC 消息；日志
 MCP 每次启动或打开查询都必须：
 
 1. 从数据根读取 `current.json`，解析 `current-pointer.v1` 的 `default_minecraft_version` 和 `versions` map；
-2. 校验 `minecraft_version`、`release_id`、相对路径安全性、`manifest_sha256`、release `checksums` 和质量门状态，并读取 release 冻结的 provider snapshot；
+2. 校验 `minecraft_version`、`release_id`、相对路径安全性、`manifest_sha256`、release `checksums` 和质量门状态，并读取 release 冻结的 provider snapshot（包括 `adapter`）；
 3. 只读打开不可变 `releases/<minecraft_version>/<release_id>/index.sqlite3` 及同目录 PNG/metadata；
 4. 拒绝 `workspace`、cache、导出源目录、任意用户路径和未完整 release；
 5. 在一次请求中固定解析结果，不能跨版本或在同一响应中混用 release。
 
 MCP 请求的 `minecraft_version` 可以省略；省略时使用 `current-pointer.v1.default_minecraft_version`，显式版本时读取该版本的 current release。未知、未发布、哈希不匹配或不可变标志缺失时失败，并列出可用精确版本，**MUST NOT** 自动回退。MCP input 不支持 `release`/`release_id` selector；历史 release 选择只能由 WebUI rollback 完成。响应只返回 `resolved_release_id` 和 manifest hash，不返回 selector 歧义。
 
-MCP 进程 **MUST NOT** 写 SQLite、图片、release、cache、日志、data-root logs、临时文件、`current.json` 或任何任务状态。即使调用 provider 进行 QuerySpec/重排，也只能按已解析 release 冻结的 `profile_id`、`model_id`、`base_url_stable_id` 和 `secret_reference` 使用 snapshot，不读取或比较可变 active profile；provider 结果只能在内存中使用。secret 无法解析或运行时能力不满足 snapshot 时，必须返回 warning 并使用确定性本地降级。联系表必须在内存构造，图片以进程内 bytes 直接形成 `ImageContent`，在线查询失败不能写缓存或生成联系表到持久目录。
+MCP 进程 **MUST NOT** 写 SQLite、图片、release、cache、日志、data-root logs、临时文件、`current.json` 或任何任务状态。即使调用 provider 进行 QuerySpec/重排，也只能按已解析 release 冻结的 `adapter`、`profile_id`、`model_id`、`base_url_stable_id` 和 `secret_reference` 使用 snapshot；`adapter` 只能是 `openai_responses` 或 `openai_chat_completions`，决定唯一 wire codec；不得读取或比较可变 active profile，也不得跨协议 fallback。provider 结果只能在内存中使用。secret 无法解析或运行时能力不满足 snapshot 时，必须返回 warning 并使用确定性本地降级。联系表必须在内存构造，图片以进程内 bytes 直接形成 `ImageContent`，在线查询失败不能写缓存或生成联系表到持久目录。
 
 ## 2. MCP 能力和响应 envelope
 
@@ -193,7 +193,7 @@ compare_blocks
 
 ### 5.2 处理和输出 `mcp-search-blocks-output.v1`
 
-处理必须严格遵守 [`search-and-ranking.md`](search-and-ranking.md)：解析 release → hard filter → FTS/字段评分 → Top-24 → family 去重（默认最多 2 个）→ 8–12 联系表 → 同一个 `model_id` 的 strict visual rerank。输出 `data` 至少包含：
+处理必须严格遵守 [`search-and-ranking.md`](search-and-ranking.md)：解析 release → hard filter → FTS/字段评分 → Top-24 → family 去重（默认最多 2 个）→ 8–12 联系表 → 同一个 `adapter`/`model_id` 的 strict visual rerank。输出 `data` 至少包含：
 
 ```json
 {
@@ -338,7 +338,7 @@ details 必须为每个主要可发布视觉变体返回四视角 PNG `ImageCont
 }
 ```
 
-compare 的结构差异只能由 release 机器/已审核语义产生。若提供 `context`，可以使用 resolved release 冻结的 provider snapshot 中同一 `model_id` 做候选解释或重排，但不得读取可变 active profile，也不得新增 block ID、状态、图片或事实。必须返回稳定编号 PNG 联系表 ImageContent，`tile_mapping` 覆盖全部给定的有效 block/variant；图片内容和结构数据共用同一 mapping。
+compare 的结构差异只能由 release 机器/已审核语义产生。若提供 `context`，可以使用 resolved release 冻结的 provider snapshot 中同一 `adapter`/`model_id` 做候选解释或重排，但不得读取可变 active profile、跨协议 fallback，也不得新增 block ID、状态、图片或事实。必须返回稳定编号 PNG 联系表 ImageContent，`tile_mapping` 覆盖全部给定的有效 block/variant；图片内容和结构数据共用同一 mapping。
 
 ## 8. 错误分层和稳定错误码
 
@@ -400,8 +400,8 @@ JSON-RPC/MCP 协议错误表示请求没有正确调用工具，使用标准 `er
 | `PROVIDER_NOT_CONFIGURED` | release snapshot 的 secret 无法解析；仅 auto 搜索可降级 | 否 |
 | `PROVIDER_CAPABILITY_MISSING` | release snapshot 要求的图片/strict 能力在运行时不满足；仅 auto 搜索可降级 | 否 |
 | `PROVIDER_AUTH_FAILED` | release snapshot provider 认证失败；仅 auto 搜索可降级 | 否 |
-| `PROVIDER_REFUSAL` | Responses refusal；仅 auto 搜索可降级 | 否 |
-| `PROVIDER_INCOMPLETE` | Responses incomplete；仅 auto 搜索可降级 | 否 |
+| `PROVIDER_REFUSAL` | 所选 adapter refusal；仅 auto 搜索可降级 | 否 |
+| `PROVIDER_INCOMPLETE` | 所选 adapter incomplete/non-stop；仅 auto 搜索可降级 | 否 |
 | `PROVIDER_SCHEMA_INVALID` | strict 结果 Schema 失败；仅 auto 搜索可降级 | 否 |
 | `RERANK_REQUIRED_UNAVAILABLE` | `rerank=required` 但重排不可用 | 否 |
 | `READ_ONLY_VIOLATION` | 代码尝试写 release/workspace/current | 否 |

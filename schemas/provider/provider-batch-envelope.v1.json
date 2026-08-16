@@ -5,6 +5,7 @@
   "additionalProperties": false,
   "required": [
     "schema_version",
+    "adapter",
     "request_id",
     "stage",
     "profile_id",
@@ -18,16 +19,19 @@
     "export_id",
     "release_id",
     "resolved_release_manifest_sha256",
-    "vocabulary_version",
-    "vocabulary_sha256",
     "search_ranking_version",
-    "store",
     "created_at",
     "input_summary"
   ],
   "properties": {
     "schema_version": {
       "const": "provider-batch-envelope.v1"
+    },
+    "adapter": {
+      "enum": [
+        "openai_responses",
+        "openai_chat_completions"
+      ]
     },
     "request_id": {
       "type": "string",
@@ -112,13 +116,6 @@
           "type": "null"
         }
       ]
-    },
-    "vocabulary_version": {
-      "const": "vocab.v1"
-    },
-    "vocabulary_sha256": {
-      "type": "string",
-      "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "search_ranking_version": {
       "type": "string",
@@ -256,6 +253,39 @@
   "allOf": [
     {
       "if": {
+        "required": ["adapter"],
+        "properties": {
+          "adapter": {
+            "const": "openai_responses"
+          }
+        }
+      },
+      "then": {
+        "required": ["store"],
+        "properties": {
+          "store": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["adapter"],
+        "properties": {
+          "adapter": {
+            "const": "openai_chat_completions"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": ["store"]
+        }
+      }
+    },
+    {
+      "if": {
         "required": ["stage"],
         "properties": {
           "stage": {
@@ -315,7 +345,15 @@
             "pattern": "^sha256:[0-9a-f]{64}$"
           },
           "input_summary": {
-            "required": ["query_sha256"]
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["query_sha256"],
+            "properties": {
+              "query_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
           }
         }
       }

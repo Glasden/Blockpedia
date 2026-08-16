@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-intro page-shell provider-intro">
+  <div class="reveal reveal--1">
+    <p class="eyebrow"><span>R3</span> OPENAI PROVIDER</p>
+    <h1>配置模型边界，<br><em>再允许发送。</em></h1>
+  </div>
+  <p class="page-intro__copy reveal reveal--2">可以保存多个非活动 profile，但任一时刻只能启用一个。每个 profile 明确选择一种协议；配置写入后必须重新探测，Studio 不会自动切换协议。</p>
+</section>
+
+<div class="page-shell provider-layout reveal reveal--3">
+  <main class="provider-main" aria-labelledby="profiles-heading">
+    <header class="provider-board-heading">
+      <div>
+        <p class="section-index">PROVIDER PROFILES</p>
+        <h2 id="profiles-heading">{{ provider_profiles|length }} 个本地配置</h2>
+      </div>
+      <div class="active-profile-summary" role="status">
+        <span class="signal-dot {% if not active_profile_id %}signal-dot--warn{% endif %}" aria-hidden="true"></span>
+        {% if active_profile_id %}<span>当前启用 <code>{{ active_profile_id }}</code></span>{% else %}<span>当前没有启用的 profile</span>{% endif %}
+      </div>
+    </header>
+
+    <div id="provider-profile-list" class="provider-profile-list" aria-live="polite">
+      {% if provider_profiles %}
+        {% for profile in provider_profiles %}
+          {% with profile=profile, capabilities={} %}{% include "partials/provider_profile.html" %}{% endwith %}
+        {% endfor %}
+      {% else %}
+        <div class="empty-state provider-empty">
+          <span class="empty-state__symbol" aria-hidden="true">＋</span>
+          <h3>还没有 provider profile</h3>
+          <p>在下方保存第一个非活动配置。保存不会启用模型，也不会发出外部请求。</p>
+        </div>
+      {% endif %}
+    </div>
+
+    <section class="new-profile-card" aria-labelledby="new-profile-heading">
+      <div class="new-profile-card__intro">
+        <p class="section-index">NEW PROFILE</p>
+        <h2 id="new-profile-heading">新增非活动配置</h2>
+        <p>这里只保存非秘密字段与凭据引用。访问凭据由操作系统 Keyring 或环境变量提供，页面不接收明文。</p>
+      </div>
+      <form
+        class="provider-edit-form"
+        hx-post="/ui/provider/profile"
+        hx-target="#provider-profile-list"
+        hx-swap="beforeend"
+        data-provider-form
+        autocomplete="off"
+      >
+        <div class="field-group">
+          <label for="new-profile-id">profile_id</label>
+          <input id="new-profile-id" name="profile_id" type="text" value="default" required maxlength="64" pattern="[a-z][a-z0-9_-]{0,63}" spellcheck="false" data-profile-id-input>
+          <small>小写字母开头；可使用数字、下划线与连字符。</small>
+        </div>
+        <div class="field-group">
+          <label for="new-adapter">adapter</label>
+          <select id="new-adapter" name="adapter" required data-adapter-select>
+            <option value="openai_responses" selected>OpenAI Responses</option>
+            <option value="openai_chat_completions">OpenAI Chat Completions</option>
+          </select>
+          <small
+            data-adapter-policy
+            data-responses-copy="POST /responses；请求发送 store=false。该请求字段不是远端保留策略证明。"
+            data-chat-copy="POST /chat/completions；请求省略 store。该省略不是远端保留策略证明。"
+          >POST /responses；请求发送 store=false。该请求字段不是远端保留策略证明。</small>
+        </div>
+        <div class="field-group">
+          <label for="new-model-id">model_id</label>
+          <input id="new-model-id" name="model_id" type="text" required maxlength="200" spellcheck="false" placeholder="精确模型标识">
+          <small>这是发送到所选 endpoint 的精确请求标识，不能使用 latest 或范围表达式。第三方网关可能改写响应中的 model 回显；Blockpedia 不据此验证远端模型身份，也不会替换请求值。</small>
+        </div>
+        <div class="field-group field-group--wide">
+          <label for="new-base-url">base_url</label>
+          <input id="new-base-url" name="base_url" type="url" value="https://api.openai.com/v1" required maxlength="2048" spellcheck="false">
+          <small>远端只接受 HTTPS；兼容 endpoint 仍须通过所选协议的能力探测。</small>
+        </div>
+        <div class="field-group">
+          <label for="new-secret-reference">凭据来源引用</label>
+          <select id="new-secret-reference" name="secret_reference" required data-secret-reference>
+            <option value="keyring:blockpedia/default" data-keyring-option>OS Keyring · blockpedia/default</option>
+            <option value="env:OPENAI_API_KEY">环境变量 · OPENAI_API_KEY</option>
+          </select>
+          <small>保存的是引用，不是凭据正文。</small>
+        </div>
+        <div class="field-group">
+          <label for="new-prompt-version">prompt_version</label>
+          <input id="new-prompt-version" name="prompt_version" type="text" value="prompt.v1" required maxlength="128" spellcheck="false">
+        </div>
+        <div class="field-group">
+          <label for="new-timeout">request_timeout_ms</label>
+          <input id="new-timeout" name="request_timeout_ms" type="number" value="60000" required min="1000" max="600000" step="1000" inputmode="numeric">
+        </div>
+        <div class="provider-form-action">
+          <button class="button button--primary" type="submit">保存为非活动配置 <span aria-hidden="true">→</span></button>
+          <span class="activity-label htmx-indicator" role="status">正在保存本地配置…</span>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <aside class="provider-policy" aria-labelledby="provider-policy-heading">
+    <p class="section-index">PROTOCOL BOUNDARY</p>
+    <span class="provider-policy__mark" aria-hidden="true">A/B</span>
+    <h2 id="provider-policy-heading">协议必须明确。</h2>
+    <ol>
+      <li><span>01</span><b>选择一个 adapter</b></li>
+      <li><span>02</span><b>Responses · POST /responses · store=false</b></li>
+      <li><span>03</span><b>Chat · POST /chat/completions · 省略 store</b></li>
+      <li><span>04</span><b>失败时不自动切换协议</b></li>
+    </ol>
+    <p>两种协议都使用图片输入、Strict Structured Outputs 与稳定错误分类。探测只验证所选协议的实际 wire 能力。</p>
+    <div class="provider-policy__note"><span aria-hidden="true">◇</span> 协议字段不能证明远端保留策略；第三方服务的信任与策略由你负责。</div>
+  </aside>
+</div>
+{% endblock %}

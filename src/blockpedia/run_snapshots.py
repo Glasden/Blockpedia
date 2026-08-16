@@ -9,7 +9,7 @@ from typing import Any
 
 from .paths import DataRoot, safe_relative_posix_ref, validate_minecraft_version
 from .storage import WorkspaceDatabase
-from .worker import _is_stale
+from .worker import ITEM_LOCAL_PROVIDER_ERROR_CODES, _is_stale, normalize_provider_error_code
 
 
 _ALLOWED_AUDIT_EVENTS = {
@@ -25,6 +25,25 @@ _ALLOWED_AUDIT_EVENTS = {
     "RUN_RETRY_FAILED",
     "WORKER_RECOVERED_STALE_RUNNING",
     "R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING",
+    "R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING",
+    "R3_CANDIDATE_BUILT_ACTIVATION_PENDING",
+    "AI_BATCH_APPROVAL_REQUIRED",
+    "AI_BATCH_PLAN_APPROVED",
+    "R3_RUN_CONFIGURED",
+    "AI_BATCH_APPROVED",
+    "AI_BATCH_CANCELLED",
+    "AI_BATCH_SUCCEEDED",
+    "AI_BATCH_FAILED",
+    "AI_PROVIDER_RETRY_CREATED",
+    "AI_PROVIDER_RETRY_WAVE_APPROVED",
+    "REVIEW_ACCEPTED",
+    "REVIEW_EDITED",
+    "REVIEW_SKIPPED",
+    "REVIEW_REEXPORT_REQUESTED",
+    "REVIEW_RERENDER_REQUESTED",
+    "REVIEW_AI_RETRY_REQUESTED",
+    "HUMAN_REVIEW_REQUIRED",
+    "HUMAN_REVIEW_SUCCEEDED",
     "IMPORT_CHECKED_AND_PROJECTED",
 }
 _SAFE_HASH_PREFIX = "sha256:"
@@ -41,6 +60,25 @@ _AUDIT_STEP_LABELS = {
     "RUN_RETRY_FAILED": "重试失败项",
     "WORKER_RECOVERED_STALE_RUNNING": "已恢复 stale 项",
     "R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING": "到达 R3 边界",
+    "R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING": "停在 BUILD_RELEASE 边界",
+    "R3_CANDIDATE_BUILT_ACTIVATION_PENDING": "Candidate 已构建，等待激活",
+    "AI_BATCH_APPROVAL_REQUIRED": "等待 AI 批次批准",
+    "AI_BATCH_PLAN_APPROVED": "AI 批次计划已批准",
+    "R3_RUN_CONFIGURED": "R3 运行已配置",
+    "AI_BATCH_APPROVED": "AI 批次已批准",
+    "AI_BATCH_CANCELLED": "AI 批次已取消",
+    "AI_BATCH_SUCCEEDED": "AI 批次完成",
+    "AI_BATCH_FAILED": "AI 批次失败",
+    "AI_PROVIDER_RETRY_CREATED": "已创建 Provider 重试批次",
+    "AI_PROVIDER_RETRY_WAVE_APPROVED": "Provider 重试波次已批准",
+    "REVIEW_ACCEPTED": "审核已接受",
+    "REVIEW_EDITED": "审核已编辑",
+    "REVIEW_SKIPPED": "审核已跳过",
+    "REVIEW_REEXPORT_REQUESTED": "已请求 exporter 重新导出",
+    "REVIEW_RERENDER_REQUESTED": "已请求 exporter 重新渲染",
+    "REVIEW_AI_RETRY_REQUESTED": "已请求 AI 重试",
+    "HUMAN_REVIEW_REQUIRED": "等待人工审核",
+    "HUMAN_REVIEW_SUCCEEDED": "人工审核完成",
     "IMPORT_CHECKED_AND_PROJECTED": "导入检查完成",
 }
 
@@ -183,6 +221,7 @@ class RunSnapshotService:
                     "output_hash": _safe_hash(row["output_hash"]),
                     "error_code": _safe_code(row["error_code"]),
                     "error_message": "任务失败；请按错误码处理。" if row["error_message"] else None,
+                    "provider_retry_eligible": _provider_retry_eligible(row),
                 }
             )
         latest_steps = [
@@ -265,8 +304,73 @@ def _safe_config(raw: Any) -> dict[str, Any]:
         return {}
     if not isinstance(value, dict):
         return {}
-    allowed = {"effective_config_hash", "feature_extractor_version", "force_normalized_like", "minecraft_version", "schema_version", "search_mode", "workspace_schema_version"}
-    return {key: value[key] for key in allowed if key in value and _safe_public_value(value[key])}
+    allowed = {
+        "effective_config_hash",
+        "feature_extractor_version",
+        "force_normalized_like",
+        "minecraft_version",
+        "schema_version",
+        "search_mode",
+        "workspace_schema_version",
+        "provider_snapshot",
+        "capabilities",
+        "batch_size",
+        "normal_threshold",
+        "high_threshold",
+        "sample_rate",
+    }
+    output: dict[str, Any] = {}
+    for key in allowed:
+        if key not in value:
+            continue
+        if key == "provider_snapshot":
+            sanitized = _safe_provider_snapshot(value[key])
+        else:
+            sanitized = _safe_config_value(value[key], key)
+        if sanitized is not None:
+            output[key] = sanitized
+    return output
+
+
+def _safe_provider_snapshot(value: Any) -> dict[str, Any] | None:
+    """Expose only an explicit, internally consistent provider lineage."""
+
+    if not isinstance(value, dict):
+        return None
+    adapter = value.get("adapter")
+    profile = value.get("profile")
+    if adapter not in {"openai_responses", "openai_chat_completions"} or not isinstance(profile, dict):
+        return None
+    if profile.get("adapter") != adapter:
+        return None
+    sanitized = _safe_config_value(value, "snapshot")
+    return sanitized if isinstance(sanitized, dict) else None
+
+
+def _safe_config_value(value: Any, key: str = "") -> Any:
+    if isinstance(value, (bool, int, float)) or value is None:
+        return value
+    if isinstance(value, str):
+        if len(value) > 500 or "\\" in value or (value.startswith("/") and not value.startswith("https://")):
+            return None
+        if key in {"secret_reference", "base_url_stable_id"}:
+            return value
+        if "://" in value and not value.startswith(("https://", "http://")):
+            return None
+        return value
+    if isinstance(value, dict):
+        result = {}
+        for child_key, child_value in value.items():
+            if not isinstance(child_key, str) or child_key in {"api_key", "authorization", "raw_response", "usage", "cost", "budget"}:
+                continue
+            sanitized = _safe_config_value(child_value, child_key)
+            if sanitized is not None:
+                result[child_key] = sanitized
+        return result
+    if isinstance(value, list):
+        result = [_safe_config_value(item, key) for item in value]
+        return [item for item in result if item is not None]
+    return None
 
 
 def _cursor_error_code(raw: Any) -> str | None:
@@ -338,6 +442,15 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
+def _provider_retry_eligible(row: Any) -> bool:
+    """Expose only the stable D-040 retry eligibility decision."""
+
+    if row["stage"] != "AI_ANNOTATE" or row["status"] not in {"needs_review", "failed"}:
+        return False
+    error_code = normalize_provider_error_code(row["error_code"])
+    return error_code in ITEM_LOCAL_PROVIDER_ERROR_CODES
+
+
 def _audit_step_status(code: str) -> str:
     if code.endswith("FAILED"):
         return "failed"
@@ -345,6 +458,8 @@ def _audit_step_status(code: str) -> str:
         return "succeeded"
     if code == "RUN_CANCELLED":
         return "cancelled"
+    if code in {"AI_BATCH_PLAN_APPROVED", "AI_PROVIDER_RETRY_CREATED", "AI_PROVIDER_RETRY_WAVE_APPROVED"}:
+        return "succeeded"
     if code in {"RUN_PAUSED_REQUESTED", "RUN_PAUSED_AFTER_ITEM"}:
         return "paused"
     return "running"

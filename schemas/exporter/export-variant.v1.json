@@ -238,7 +238,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "render_policy_version": { "const": "render.v1" },
+        "render_policy_version": { "enum": ["render.v1", "render.v2"] },
         "preview_path": {
           "type": "string",
           "maxLength": 512,

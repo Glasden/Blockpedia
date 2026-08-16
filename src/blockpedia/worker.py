@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import uuid
@@ -12,16 +13,29 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .features import axis_aligned_union, build_visual_variant_record, extract_features
 from .importer import _check_property_membership, _read_jsonl, _validate_projection_references
 from .paths import DataRoot, safe_relative_posix_ref
-from .schema import validate_record
-from .search import WorkspaceQueryService
-from .stages import R2_STAGES, R3_BOUNDARY_EVENT, RunStateConflict, STUDIO_STAGES
+from .schema import RecordSchemaError, validate_record
+from .search import WorkspaceQueryService, human_semantics_complete
+from .stages import R2_STAGES, R3_BUILD_RELEASE_BOUNDARY_EVENT, R3_BOUNDARY_EVENT, R3_STAGES, RunStateConflict, STUDIO_STAGES
 from .storage import WorkspaceDatabase, utc_now
 from .toolchain import ToolchainProbe
+from .provider import (
+    OpenAIProvider,
+    ProviderError,
+    ProviderProfile,
+    ProviderProfileStore,
+    ProviderResult,
+    SecretResolver,
+    build_cache_key,
+    build_provider_batch_envelope,
+    sanitize_validation_diagnostic,
+    validate_annotation_batch,
+)
+from .r3 import ContactSheet, canonical_json, make_contact_sheet, safe_machine_metadata, safe_prompt, sha256_bytes, sha256_json
 
 
 def _json(value: Any) -> str:
@@ -66,13 +80,98 @@ class LeaseLost(RuntimeError):
     pass
 
 
+_DERIVED_REVIEW_CODES = {
+    "MISSING_SEMANTIC",
+    "MISSING_VERIFIED_SEMANTIC",
+    "QUALIFICATION_REVIEW_MISSING",
+    "SKIP_REVIEW_MISSING",
+    "FTS_BUILD_FAILED",
+    "FTS_COVERAGE_MISSING",
+}
+
+
+# D-040 deliberately keeps this classification small and stable.  Keep the
+# sets local to the worker boundary: provider implementations may grow more
+# detailed diagnostics, but the persisted workflow decision must not change.
+FATAL_PROVIDER_ERROR_CODES = frozenset(
+    {
+        "PROVIDER_NOT_CONFIGURED",
+        "PROVIDER_CONFIG_INVALID",
+        "PROVIDER_CAPABILITY_MISSING",
+        "PROVIDER_AUTH_FAILED",
+        "PROVIDER_PERMISSION_DENIED",
+        "PROVIDER_MODEL_UNAVAILABLE",
+    }
+)
+
+ITEM_LOCAL_PROVIDER_ERROR_CODES = frozenset(
+    {
+        "PROVIDER_NETWORK_ERROR",
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_RATE_LIMITED",
+        "PROVIDER_SERVER_ERROR",
+        "PROVIDER_SCHEMA_INVALID_REPAIRABLE",
+        "PROVIDER_SCHEMA_INVALID",
+        "PROVIDER_REQUEST_INVALID",
+        "PROVIDER_PAYLOAD_TOO_LARGE",
+        "PROVIDER_REFUSAL",
+        "PROVIDER_INCOMPLETE",
+        "PROVIDER_OUTPUT_ID_MISMATCH",
+        "PROVIDER_MACHINE_FACT_CONFLICT",
+        "PROVIDER_UNKNOWN",
+        "PROVIDER_CACHE_KEY_INVALID",
+        "IDEMPOTENCY_CONFLICT",
+    }
+)
+
+
+def classify_provider_error_code(error_code: str | None) -> str:
+    """Return the stable D-040 workflow class for a provider error code."""
+
+    if error_code in FATAL_PROVIDER_ERROR_CODES:
+        return "fatal"
+    if error_code == "PROVIDER_CANCELLED":
+        return "control"
+    # This old diagnostic is intentionally not a separate workflow class.
+    if error_code == "PROVIDER_STORAGE_UNSUPPORTED":
+        return "item_local"
+    if error_code in ITEM_LOCAL_PROVIDER_ERROR_CODES or not error_code:
+        return "item_local"
+    return "item_local"
+
+
+def normalize_provider_error_code(error_code: str | None) -> str | None:
+    """Map the retired storage diagnostic to the stable unknown code."""
+
+    if error_code == "PROVIDER_STORAGE_UNSUPPORTED":
+        return "PROVIDER_UNKNOWN"
+    return error_code
+
+
+classify_provider_error = classify_provider_error_code
+
+
 class WorkerService:
-    def __init__(self, data_root: DataRoot, *, repo_root: Path | None = None, stale_after_seconds: int = 300, force_normalized_like: bool = False, toolchain_probe: Any | None = None):
+    def __init__(
+        self,
+        data_root: DataRoot,
+        *,
+        repo_root: Path | None = None,
+        stale_after_seconds: int = 300,
+        force_normalized_like: bool = False,
+        toolchain_probe: Any | None = None,
+        provider_factory: Any | None = None,
+        profile_store: ProviderProfileStore | None = None,
+        secret_resolver: SecretResolver | None = None,
+    ):
         self.data_root = data_root
         self.repo_root = repo_root or Path(__file__).resolve().parents[2]
         self.stale_after_seconds = stale_after_seconds
         self.force_normalized_like = force_normalized_like
         self.toolchain_probe = toolchain_probe or ToolchainProbe(self.repo_root)
+        self.provider_factory = provider_factory
+        self.profile_store = profile_store or ProviderProfileStore(path=self.data_root.cache / "provider-profiles.json")
+        self.secret_resolver = secret_resolver or SecretResolver()
         self.worker_id = "worker_" + uuid.uuid4().hex
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -235,13 +334,19 @@ class WorkerService:
             if stage_row is None:
                 return _row_dict(run)
             stage = str(stage_row["stage"])
-            if stage not in R2_STAGES:
-                self._stop_at_r3_boundary(database, run_id, stage)
+            if stage not in R2_STAGES and stage not in R3_STAGES:
+                self._stop_at_build_boundary(database, run_id, stage)
                 return _row_dict(database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,)))
             if not self._begin_stage(database, run_id, stage):
                 return _row_dict(database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,)))
             if stage == "EXTRACT_FEATURES":
                 self._extract_one(database, run_id)
+            elif stage == "AI_ANNOTATE":
+                self._annotate_one(database, run_id)
+            elif stage == "VALIDATE":
+                self._validate_r3_stage(database, run_id)
+            elif stage == "HUMAN_REVIEW":
+                self._human_review_stage(database, run_id)
             else:
                 self._finish_simple_stage(database, run_id, stage)
             return _row_dict(database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,)))
@@ -553,6 +658,1109 @@ class WorkerService:
                     return
                 connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), R3_BOUNDARY_EVENT, run_id, _json({"pending_stage": stage}), now))
 
+    def _stop_at_build_boundary(self, database: WorkspaceDatabase, run_id: str, stage: str) -> None:
+        with self.run_lock(run_id):
+            now = utc_now()
+            with database.transaction() as connection:
+                updated = connection.execute(
+                    "UPDATE runs SET status='paused',current_stage='BUILD_RELEASE',boundary_event=? WHERE run_id=? AND status='running' AND boundary_event IS NULL",
+                    (R3_BUILD_RELEASE_BOUNDARY_EVENT, run_id),
+                )
+                if updated.rowcount != 1:
+                    return
+                connection.execute(
+                    "INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)",
+                    (_id("audit"), R3_BUILD_RELEASE_BOUNDARY_EVENT, run_id, _json({"pending_stage": stage}), now),
+                )
+
+    def _annotate_one(self, database: WorkspaceDatabase, run_id: str) -> None:
+        try:
+            self._ensure_ai_jobs_from_config(database, run_id)
+        except StageFailure as exc:
+            self._persist_stage_failure(database, run_id, "AI_ANNOTATE", exc)
+            return
+        with self.run_lock(run_id):
+            pending = database.fetchone(
+                "SELECT * FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' AND status='pending' ORDER BY logical_key LIMIT 1",
+                (run_id,),
+            )
+            if pending is None:
+                unapproved = database.fetchone(
+                    "SELECT * FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' AND status IN ('pending','needs_review') ORDER BY logical_key LIMIT 1",
+                    (run_id,),
+                )
+                if unapproved is not None and not _load_object(unapproved["cursor_json"]).get("approved", False):
+                    self._pause_for_approval(database, run_id, unapproved)
+                    return
+                self._finish_ai_stage(database, run_id)
+                return
+            cursor = _load_object(pending["cursor_json"])
+            if cursor.get("approved") is not True:
+                self._pause_for_approval(database, run_id, pending)
+                return
+            claimed = database.connection.execute(
+                "UPDATE jobs SET status='running',worker_id=?,started_at=COALESCE(started_at,?),heartbeat_at=? WHERE job_id=? AND status='pending'",
+                (self.worker_id, utc_now(), utc_now(), pending["job_id"]),
+            )
+            if claimed.rowcount != 1:
+                return
+            job = database.fetchone("SELECT * FROM jobs WHERE job_id=?", (pending["job_id"],))
+        if job is None:
+            return
+        payload: dict[str, Any] | None = None
+        try:
+            profile = self._run_profile(database, run_id)
+        except StageFailure as exc:
+            self._commit_ai_failure(
+                database,
+                run_id,
+                job,
+                exc.error_code,
+                exc.error_code,
+                None,
+                None,
+                None,
+                attempts=0,
+                request_evidence=None,
+            )
+            return
+        try:
+            payload = self._ai_payload(database, job, prompt_version=profile.prompt_version)
+            payload_signature = _annotation_payload_signature(
+                payload,
+                profile,
+                retry_nonce=_load_object(job["cursor_json"]).get("retry_nonce"),
+            )
+            if payload_signature != job["input_signature"]:
+                self._refresh_ai_job_for_payload_change(database, run_id, job, payload_signature)
+                return
+            envelope = build_provider_batch_envelope(
+                profile,
+                request_id=_request_id(job["logical_key"], job["input_signature"], run_id=run_id, job_id=job["job_id"]),
+                stage="offline_annotation",
+                input_summary={"tile_variant_map": payload["tile_map"]},
+                export_id=payload["export_id"],
+            )
+        except Exception as exc:
+            self._commit_ai_input_failure(database, run_id, job, _safe_diagnostic(exc, error_code="AI_BATCH_INPUT_INVALID"), payload)
+            return
+        try:
+            provider = self._new_provider(profile)
+            try:
+                result = provider.annotate(
+                    payload["prompt"],
+                    image_png=payload["contact_sheet"].image_png,
+                    image_hash=payload["contact_sheet"].image_sha256,
+                    machine_metadata_hash=payload["machine_metadata_hash"],
+                    envelope=envelope,
+                    machine_metadata=payload["machine_metadata"],
+                    source_images=payload["source_images"],
+                    cache_parts={"preview_hash": payload["contact_sheet"].image_sha256, "feature_hash": payload["feature_hash"]},
+                )
+            finally:
+                self._close_provider(provider)
+            self._commit_ai_result(database, run_id, job, profile, envelope, payload, result)
+        except Exception as exc:
+            error_code = _provider_exception_code(exc)
+            self._commit_ai_failure(
+                database,
+                run_id,
+                job,
+                _safe_diagnostic(exc, error_code=error_code),
+                error_code,
+                None,
+                None,
+                payload,
+                attempts=0,
+                request_evidence=None,
+            )
+        self._finish_ai_stage(database, run_id)
+
+    def _pause_for_approval(self, database: WorkspaceDatabase, run_id: str, job: Any) -> None:
+        with self.run_lock(run_id):
+            now = utc_now()
+            with database.transaction() as connection:
+                connection.execute("UPDATE stage_runs SET status='paused',worker_id=NULL,heartbeat_at=?,finished_at=? WHERE run_id=? AND stage='AI_ANNOTATE' AND status='running'", (now, now, run_id))
+                connection.execute("UPDATE runs SET status='paused' WHERE run_id=? AND status='running'", (run_id,))
+                if connection.execute("SELECT changes()").fetchone()[0] == 0:
+                    return
+                connection.execute(
+                    "INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)",
+                    (_id("audit"), "AI_BATCH_APPROVAL_REQUIRED", run_id, job["job_id"], _json({"logical_key": job["logical_key"], "input_signature": job["input_signature"]}), now),
+                )
+
+    def _finish_ai_stage(self, database: WorkspaceDatabase, run_id: str) -> None:
+        with self.run_lock(run_id):
+            stage = database.fetchone("SELECT status,worker_id FROM stage_runs WHERE run_id=? AND stage='AI_ANNOTATE'", (run_id,))
+            run = database.fetchone("SELECT status FROM runs WHERE run_id=?", (run_id,))
+            remaining = database.fetchone("SELECT 1 FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' AND status IN ('pending','running')", (run_id,))
+            if stage is None or run is None or stage["status"] != "running" or stage["worker_id"] != self.worker_id or remaining is not None:
+                return
+            outputs = [{"logical_key": row["logical_key"], "output_hash": row["output_hash"], "status": row["status"]} for row in database.fetchall("SELECT logical_key,output_hash,status FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' ORDER BY logical_key", (run_id,))]
+            self._complete_r3_stage(database, run_id, "AI_ANNOTATE", {"outputs": outputs})
+
+    def _commit_ai_result(self, database: WorkspaceDatabase, run_id: str, job: Any, profile: ProviderProfile, envelope: dict[str, Any], payload: dict[str, Any], result: Any) -> None:
+        normalized = _provider_result(result)
+        attempts = max(0, min(2, normalized["attempts_used"]))
+        canonical_cache = _canonical_annotation_cache_key(payload, profile)
+        supplied_cache = normalized["cache_key"]
+        if supplied_cache is not None and supplied_cache != canonical_cache:
+            self._commit_ai_failure(
+                database,
+                run_id,
+                job,
+                "PROVIDER_CACHE_KEY_INVALID",
+                "PROVIDER_CACHE_KEY_INVALID",
+                canonical_cache,
+                None,
+                payload,
+                attempts=attempts,
+                request_evidence=None,
+            )
+            return
+        cache_key = canonical_cache
+        artifact = normalized["parsed_artifact"]
+        result_error = normalize_provider_error_code(normalized["error_code"])
+        provider_validation_diagnostic = normalized["validation_diagnostic"]
+        validation_diagnostic = None
+        # Persist the deterministic local request identity.  A provider's
+        # redacted response ID is not guaranteed to be unique across runs.
+        request_id = envelope["request_id"]
+        validation = None
+        if normalized["status"] == "succeeded" and isinstance(artifact, dict):
+            validation = validate_annotation_batch(
+                artifact,
+                [item["variant_id"] for item in payload["tile_map"]],
+                profile,
+                cache_key=cache_key,
+                artifact_hash=normalized["artifact_hash"],
+            )
+            if validation.annotations:
+                artifact_hash = validation.artifact_hash
+            else:
+                result_error = validation.error_code or "PROVIDER_SCHEMA_INVALID"
+            if validation is not None and validation.annotations:
+                previous = database.fetchone(
+                    "SELECT status,validated_artifact_sha256 FROM provider_requests WHERE cache_key=? AND status='succeeded' ORDER BY attempt DESC LIMIT 1",
+                    (cache_key,),
+                )
+                if previous is not None and previous["validated_artifact_sha256"] not in {None, validation.artifact_hash}:
+                    self._commit_ai_failure(database, run_id, job, "IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_CONFLICT", cache_key, validation.artifact_hash, payload)
+                    return
+        provider_request = _provider_request_evidence(
+            request_id=request_id,
+            profile=profile,
+            job=job,
+            envelope=envelope,
+            attempts=attempts,
+            cache_key=cache_key,
+            validated_artifact_sha256=validation.artifact_hash if validation is not None and validation.annotations else normalized["artifact_hash"],
+            error_code=result_error,
+            error_class=normalized["error_class"],
+            status=(
+                "succeeded"
+                if validation is not None and validation.annotations
+                else "failed"
+                if classify_provider_error_code(result_error) == "fatal" or normalized["status"] == "failed"
+                else "needs_review"
+            ),
+        )
+        if validation is None or not validation.annotations:
+            failure_code = result_error or "PROVIDER_SCHEMA_INVALID"
+            if validation is not None and validation.validation_diagnostic is not None:
+                validation_diagnostic = validation.validation_diagnostic
+            elif (
+                normalized["status"] == "needs_review"
+                and normalized["parsed_artifact"] is None
+                and attempts == 2
+                and result_error == "PROVIDER_SCHEMA_INVALID"
+                and normalized["error_class"] == "validation"
+            ):
+                validation_diagnostic = provider_validation_diagnostic
+            self._commit_ai_failure(
+                database,
+                run_id,
+                job,
+                failure_code,
+                failure_code,
+                cache_key,
+                normalized["artifact_hash"],
+                payload,
+                attempts=attempts,
+                request_evidence=provider_request,
+                validation_diagnostic=validation_diagnostic,
+            )
+            return
+        output_payload = {"schema_version": "annotation-batch-output.v1", "annotations": list(validation.annotations)}
+        output_hash = sha256_json(output_payload)
+        artifact_ref = f"generated/ai/{job['job_id']}.json"
+        priority_by_variant = {item["variant_id"]: ("high" if item["confidence"] < 0.65 else "normal" if item["confidence"] < 0.80 else None) for item in artifact["items"]}
+        with self.run_lock(run_id):
+            with database.transaction() as connection:
+                owner = connection.execute("SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
+                current = connection.execute("SELECT status,worker_id FROM jobs WHERE job_id=?", (job["job_id"],)).fetchone()
+                if owner is None or current is None or current["status"] != "running" or current["worker_id"] != self.worker_id:
+                    return
+                _insert_provider_request(connection, provider_request)
+                _write_atomic(database.path.parent / artifact_ref, canonical_json(output_payload).encode("utf-8"))
+                annotation_ids: list[str] = []
+                for annotation in validation.annotations:
+                    annotation_ids.append(annotation["annotation_id"])
+                    connection.execute("INSERT OR REPLACE INTO annotations(annotation_id,subject_type,subject_id,minecraft_version,record_json) VALUES (?,?,?,?,?)", (annotation["annotation_id"], annotation["subject_type"], annotation["subject_id"], "26.2", canonical_json(annotation)))
+                    variant_row = connection.execute("SELECT record_json FROM variants WHERE variant_id=?", (annotation["subject_id"],)).fetchone()
+                    if variant_row is None:
+                        raise StageFailure("PROVIDER_OUTPUT_ID_MISMATCH", "annotation target missing")
+                    variant = json.loads(variant_row["record_json"])
+                    refs = list(variant.get("annotation_refs", []))
+                    if annotation["annotation_id"] not in refs:
+                        refs.append(annotation["annotation_id"])
+                    variant["annotation_refs"] = refs
+                    validate_record("visual-variant-record.v1", variant, repo_root=self.repo_root)
+                    connection.execute("UPDATE variants SET record_json=? WHERE variant_id=?", (canonical_json(variant), annotation["subject_id"]))
+                    priority = priority_by_variant.get(annotation["subject_id"])
+                    if priority:
+                        self.create_review_task(
+                            connection,
+                            "variant",
+                            annotation["subject_id"],
+                            "LOW_CONFIDENCE",
+                            priority,
+                            "Annotation requires human review.",
+                            [f"annotation:{annotation['annotation_id']}"],
+                            dedupe_key=job["input_signature"],
+                        )
+                    elif annotation.get("confidence", 0) >= 0.80 and _sampled_quality_review(database, run_id, annotation["subject_id"]):
+                        self.create_review_task(
+                            connection,
+                            "variant",
+                            annotation["subject_id"],
+                            "SAMPLED_QUALITY_REVIEW",
+                            "normal",
+                            "Deterministic sampled quality review.",
+                            [f"annotation:{annotation['annotation_id']}"],
+                            dedupe_key=job["input_signature"],
+                        )
+                status = "succeeded" if validation.priority == "normal" and validation.review_route == "auto_valid" else "needs_review"
+                connection.execute("UPDATE jobs SET status=?,worker_id=NULL,heartbeat_at=?,finished_at=?,output_hash=?,cursor_json=?,error_code=?,error_message=? WHERE job_id=? AND status='running' AND worker_id=?", (status, utc_now(), utc_now(), output_hash, job["cursor_json"], None if status == "succeeded" else ("LOW_CONFIDENCE" if validation.priority in {"normal", "high"} else None), None, job["job_id"], self.worker_id))
+                connection.execute("INSERT INTO artifacts(artifact_id,job_id,kind,relative_ref,sha256,metadata_json) VALUES (?,?,?,?,?,?)", (_id("artifact"), job["job_id"], "ai_annotation", artifact_ref, output_hash, _json({"variant_ids": [item["variant_id"] for item in payload["tile_map"]]})))
+                connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)", (_id("audit"), "AI_BATCH_SUCCEEDED", run_id, job["job_id"], _json({"output_hash": output_hash, "annotation_count": len(annotation_ids)}), utc_now()))
+
+    def _commit_ai_failure(
+        self,
+        database: WorkspaceDatabase,
+        run_id: str,
+        job: Any,
+        error_code: str,
+        review_code: str,
+        cache_key: str | None,
+        artifact_hash: str | None,
+        payload: dict[str, Any] | None = None,
+        *,
+        attempts: int = 0,
+        request_evidence: dict[str, Any] | None = None,
+        validation_diagnostic: Mapping[str, Any] | None = None,
+    ) -> None:
+        error_code = normalize_provider_error_code(error_code) or "PROVIDER_UNKNOWN"
+        if error_code not in FATAL_PROVIDER_ERROR_CODES and error_code not in ITEM_LOCAL_PROVIDER_ERROR_CODES and error_code != "PROVIDER_CANCELLED":
+            error_code = "PROVIDER_UNKNOWN"
+        workflow_class = classify_provider_error_code(error_code)
+        with self.run_lock(run_id):
+            with database.transaction() as connection:
+                current = connection.execute("SELECT status,worker_id FROM jobs WHERE job_id=?", (job["job_id"],)).fetchone()
+                if current is None or current["status"] != "running" or current["worker_id"] != self.worker_id:
+                    return
+                cursor = _load_object(job["cursor_json"])
+                variant_ids = payload.get("tile_map", []) if payload else []
+                variant_values = [item.get("variant_id") for item in variant_ids if isinstance(item, dict)] if variant_ids else cursor.get("variant_ids", cursor.get("tile_ids", []))
+                review_reason = "IDEMPOTENCY_CONFLICT" if error_code == "IDEMPOTENCY_CONFLICT" else "PROVIDER_FAILURE"
+                evidence: list[Any] = [f"job:{job['job_id']}"]
+                if request_evidence is not None:
+                    evidence.append(f"provider_request:{request_evidence['request_id']}")
+                safe_validation_diagnostic = sanitize_validation_diagnostic(validation_diagnostic)
+                if review_reason == "PROVIDER_FAILURE" and safe_validation_diagnostic is not None:
+                    evidence.append(safe_validation_diagnostic)
+                if attempts > 0 and request_evidence is not None:
+                    _insert_provider_request(connection, request_evidence)
+                now = utc_now()
+                if workflow_class != "control":
+                    for variant_id in variant_values:
+                        if isinstance(variant_id, str) and variant_id.startswith("minecraft:"):
+                            self.create_review_task(connection, "variant", variant_id, review_reason, "high", "Provider result requires review.", evidence, dedupe_key=job["input_signature"], reopen=True)
+                if workflow_class == "fatal":
+                    connection.execute(
+                        "UPDATE jobs SET status='failed',worker_id=NULL,heartbeat_at=?,finished_at=?,error_code=?,error_message=? WHERE job_id=? AND status='running' AND worker_id=?",
+                        (now, now, error_code, "fatal provider failure", job["job_id"], self.worker_id),
+                    )
+                    connection.execute(
+                        "UPDATE stage_runs SET status='failed',worker_id=NULL,heartbeat_at=?,finished_at=?,cursor_json=? WHERE run_id=? AND stage='AI_ANNOTATE' AND status='running' AND worker_id=?",
+                        (now, now, canonical_json({"error_code": error_code, "job_id": job["job_id"]}), run_id, self.worker_id),
+                    )
+                    connection.execute(
+                        "UPDATE runs SET status='failed',finished_at=? WHERE run_id=? AND status='running'",
+                        (now, run_id),
+                    )
+                    event_type = "AI_BATCH_FATAL_FAILED"
+                elif workflow_class == "control":
+                    connection.execute(
+                        "UPDATE jobs SET status='needs_review',worker_id=NULL,heartbeat_at=?,finished_at=?,error_code=?,error_message=? WHERE job_id=? AND status='running' AND worker_id=?",
+                        (now, now, error_code, "provider operation cancelled", job["job_id"], self.worker_id),
+                    )
+                    connection.execute(
+                        "UPDATE stage_runs SET status='paused',worker_id=NULL,heartbeat_at=?,finished_at=? WHERE run_id=? AND stage='AI_ANNOTATE' AND status='running' AND worker_id=?",
+                        (now, now, run_id, self.worker_id),
+                    )
+                    connection.execute(
+                        "UPDATE runs SET status='paused',current_stage='AI_ANNOTATE',finished_at=NULL WHERE run_id=? AND status='running'",
+                        (run_id,),
+                    )
+                    event_type = "AI_BATCH_CANCELLED"
+                else:
+                    connection.execute(
+                        "UPDATE jobs SET status='needs_review',worker_id=NULL,heartbeat_at=?,finished_at=?,error_code=?,error_message=? WHERE job_id=? AND status='running' AND worker_id=?",
+                        (now, now, error_code, "provider request requires review", job["job_id"], self.worker_id),
+                    )
+                    event_type = "AI_BATCH_FAILED"
+                connection.execute(
+                    "INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)",
+                    (_id("audit"), event_type, run_id, job["job_id"], _json({"error_code": error_code, "evidence": evidence}), now),
+                )
+
+    def _commit_ai_input_failure(self, database: WorkspaceDatabase, run_id: str, job: Any, diagnostic: str, payload: dict[str, Any] | None = None) -> None:
+        """Pause a malformed local input without constructing or calling a provider."""
+
+        del payload
+        with self.run_lock(run_id):
+            with database.transaction() as connection:
+                current = connection.execute("SELECT status,worker_id FROM jobs WHERE job_id=?", (job["job_id"],)).fetchone()
+                if current is None or current["status"] != "running" or current["worker_id"] != self.worker_id:
+                    return
+                cursor = _load_object(job["cursor_json"])
+                cursor["approved"] = False
+                cursor["input_invalid"] = True
+                cursor["input_error_code"] = "AI_BATCH_INPUT_INVALID"
+                connection.execute(
+                    "UPDATE jobs SET status='needs_review',worker_id=NULL,heartbeat_at=?,finished_at=?,error_code='AI_BATCH_INPUT_INVALID',error_message=?,cursor_json=? WHERE job_id=? AND status='running' AND worker_id=?",
+                    (utc_now(), utc_now(), diagnostic, canonical_json(cursor), job["job_id"], self.worker_id),
+                )
+                now = utc_now()
+                connection.execute(
+                    "UPDATE stage_runs SET status='paused',worker_id=NULL,heartbeat_at=?,finished_at=? WHERE run_id=? AND stage='AI_ANNOTATE' AND status='running' AND worker_id=?",
+                    (now, now, run_id, self.worker_id),
+                )
+                connection.execute(
+                    "UPDATE runs SET status='paused',current_stage='AI_ANNOTATE',boundary_event=NULL,finished_at=NULL WHERE run_id=? AND status='running'",
+                    (run_id,),
+                )
+                connection.execute(
+                    "INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)",
+                    (_id("audit"), "AI_BATCH_INPUT_INVALID", run_id, job["job_id"], _json({"error_code": "AI_BATCH_INPUT_INVALID"}), now),
+                )
+
+    def _validate_r3_stage(self, database: WorkspaceDatabase, run_id: str) -> None:
+        errors: list[tuple[str, str, str]] = []
+        try:
+            for row in database.fetchall("SELECT block_id,record_json FROM blocks ORDER BY block_id"):
+                validate_record("block-record.v1", json.loads(row["record_json"]), repo_root=self.repo_root)
+            for row in database.fetchall("SELECT variant_id,record_json FROM variants ORDER BY variant_id"):
+                if row["record_json"] is None:
+                    continue
+                variant = json.loads(row["record_json"])
+                try:
+                    validate_record("visual-variant-record.v1", variant, repo_root=self.repo_root)
+                except RecordSchemaError:
+                    errors.append(("variant", row["variant_id"], "SCHEMA_INVALID"))
+                refs = variant.get("annotation_refs", [])
+                for ref in refs:
+                    if database.fetchone("SELECT 1 FROM annotations WHERE annotation_id=?", (ref,)) is None:
+                        errors.append(("variant", row["variant_id"], "ANNOTATION_REFERENCE_INVALID"))
+                if variant.get("candidate_qualification") in {"eligible", "conditional"} and not refs and not human_semantics_complete(database.connection, str(row["variant_id"])) and not self._has_open_root_review(database.connection, str(row["variant_id"])):
+                    errors.append(("variant", row["variant_id"], "MISSING_SEMANTIC"))
+                if variant.get("candidate_qualification") == "excluded" and not variant.get("qualification_review_refs"):
+                    errors.append(("variant", row["variant_id"], "QUALIFICATION_REVIEW_MISSING"))
+            for row in database.fetchall("SELECT annotation_id,record_json FROM annotations ORDER BY annotation_id"):
+                try:
+                    validate_record("annotation-record.v1", json.loads(row["record_json"]), repo_root=self.repo_root)
+                except RecordSchemaError:
+                    errors.append(("variant", row["subject_id"], "SCHEMA_INVALID"))
+        except Exception:
+            errors.append(("run", run_id, "VALIDATE_FAILED"))
+        with self.run_lock(run_id):
+            with database.transaction() as connection:
+                for target_type, target_id, code in errors:
+                    self.create_review_task(connection, target_type, target_id, code, "high", "Validation requires human review.", [], dedupe_key=code, reopen=True)
+        try:
+            WorkspaceQueryService(database).rebuild_index()
+        except Exception:
+            with self.run_lock(run_id):
+                with database.transaction() as connection:
+                    self.create_review_task(connection, "run", run_id, "FTS_BUILD_FAILED", "high", "Search index requires review.", [], dedupe_key="fts", reopen=True)
+        else:
+            with self.run_lock(run_id):
+                with database.transaction() as connection:
+                    self._reconcile_derived_review_tasks(connection, database, run_id, fts_ready=True)
+        self._complete_r3_stage(database, run_id, "VALIDATE", {"error_count": len(errors)})
+
+    def _human_review_stage(self, database: WorkspaceDatabase, run_id: str) -> None:
+        with self.run_lock(run_id):
+            with database.transaction() as connection:
+                self._reconcile_derived_review_tasks(connection, database, run_id)
+            open_tasks = database.fetchone("SELECT 1 FROM review_tasks WHERE status='open' AND severity IN ('normal','high') LIMIT 1")
+            if open_tasks is not None:
+                with database.transaction() as connection:
+                    now = utc_now()
+                    connection.execute("UPDATE stage_runs SET status='needs_review',worker_id=NULL,finished_at=? WHERE run_id=? AND stage='HUMAN_REVIEW' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
+                    connection.execute("UPDATE runs SET status='needs_review',finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
+                    connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), "HUMAN_REVIEW_REQUIRED", run_id, "{}", now))
+                return
+            try:
+                WorkspaceQueryService(database).rebuild_index()
+            except Exception:
+                with database.transaction() as connection:
+                    self.create_review_task(connection, "run", run_id, "FTS_BUILD_FAILED", "high", "Search index requires review.", [], dedupe_key="fts", reopen=True)
+                    now = utc_now()
+                    connection.execute("UPDATE stage_runs SET status='needs_review',worker_id=NULL,finished_at=? WHERE run_id=? AND stage='HUMAN_REVIEW' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
+                    connection.execute("UPDATE runs SET status='needs_review',finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
+                    connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), "HUMAN_REVIEW_REQUIRED", run_id, _json({"closure_errors": ["FTS_BUILD_FAILED"]}), now))
+                return
+            with database.transaction() as connection:
+                self._reconcile_derived_review_tasks(connection, database, run_id, fts_ready=True)
+            open_tasks = database.fetchone("SELECT 1 FROM review_tasks WHERE status='open' AND severity IN ('normal','high') LIMIT 1")
+            if open_tasks is not None:
+                with database.transaction() as connection:
+                    now = utc_now()
+                    connection.execute("UPDATE stage_runs SET status='needs_review',worker_id=NULL,finished_at=? WHERE run_id=? AND stage='HUMAN_REVIEW' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
+                    connection.execute("UPDATE runs SET status='needs_review',finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
+                return
+            closure_errors = self._review_closure_errors(database, run_id)
+            if closure_errors:
+                with database.transaction() as connection:
+                    for target_type, target_id, reason_code, evidence in closure_errors:
+                        self.create_review_task(
+                            connection,
+                            target_type,
+                            target_id,
+                            reason_code,
+                            "high",
+                            "R3 closure evidence requires human review.",
+                            evidence,
+                            dedupe_key=f"closure:{reason_code}",
+                            reopen=True,
+                        )
+                    now = utc_now()
+                    connection.execute("UPDATE stage_runs SET status='needs_review',worker_id=NULL,finished_at=? WHERE run_id=? AND stage='HUMAN_REVIEW' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
+                    connection.execute("UPDATE runs SET status='needs_review',finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
+                    connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), "HUMAN_REVIEW_REQUIRED", run_id, _json({"closure_errors": [item[2] for item in closure_errors]}), now))
+                return
+            self._complete_r3_stage(database, run_id, "HUMAN_REVIEW", {"open_tasks": 0}, boundary=True)
+
+    def _review_closure_errors(self, database: WorkspaceDatabase, run_id: str) -> list[tuple[str, str, str, list[str]]]:
+        errors: list[tuple[str, str, str, list[str]]] = []
+        searchable: set[str] = set()
+        for row in database.fetchall("SELECT variant_id,record_json FROM variants WHERE status='selected' ORDER BY variant_id"):
+            variant_id = str(row["variant_id"])
+            record = json.loads(row["record_json"] or "{}")
+            qualification = record.get("candidate_qualification")
+            if qualification in {"eligible", "conditional"}:
+                searchable.add(variant_id)
+                verified = human_semantics_complete(database.connection, variant_id)
+                annotation_evidence: list[str] = []
+                for annotation_id in record.get("annotation_refs", []):
+                    annotation_row = database.fetchone("SELECT record_json FROM annotations WHERE annotation_id=? AND subject_id=?", (annotation_id, variant_id))
+                    if annotation_row is None:
+                        continue
+                    annotation_evidence.append(f"annotation:{annotation_id}")
+                    annotation = json.loads(annotation_row["record_json"] or "{}")
+                    if annotation.get("source", {}).get("verified") is True:
+                        verified = True
+                        break
+                if not verified:
+                    errors.append(("variant", variant_id, "MISSING_VERIFIED_SEMANTIC", annotation_evidence))
+            elif qualification == "excluded":
+                valid_qualification = False
+                for review_id in record.get("qualification_review_refs", []):
+                    review_row = database.fetchone("SELECT record_json FROM overrides WHERE override_id=? AND target_id=?", (review_id, variant_id))
+                    if review_row is None:
+                        continue
+                    review = json.loads(review_row["record_json"] or "{}")
+                    try:
+                        validate_record("qualification-review.v1", review, repo_root=self.repo_root)
+                    except RecordSchemaError:
+                        continue
+                    if review.get("qualification") == "excluded" and review.get("target_id") == variant_id:
+                        valid_qualification = True
+                        break
+                if not valid_qualification:
+                    errors.append(("variant", variant_id, "QUALIFICATION_REVIEW_MISSING", []))
+
+        for row in database.fetchall("SELECT failure_id,block_id,state_id,variant_id,record_json FROM failures ORDER BY failure_id"):
+            failure_id = str(row["failure_id"])
+            targets = [value for value in (row["variant_id"], row["state_id"], row["block_id"]) if isinstance(value, str)]
+            valid_skip = False
+            for target_id in targets:
+                for review_row in database.fetchall("SELECT record_json FROM overrides WHERE target_id=?", (target_id,)):
+                    review = json.loads(review_row["record_json"] or "{}")
+                    if review.get("schema_version") != "skip-review.v1":
+                        continue
+                    try:
+                        validate_record("skip-review.v1", review, repo_root=self.repo_root)
+                    except RecordSchemaError:
+                        continue
+                    if review.get("machine_failure_ref") == failure_id and review.get("target_id") == target_id:
+                        valid_skip = True
+                        break
+                if valid_skip:
+                    break
+            if not valid_skip:
+                target_type = "variant" if row["variant_id"] else "state" if row["state_id"] else "block"
+                target_id = row["variant_id"] or row["state_id"] or row["block_id"] or failure_id
+                errors.append((target_type, str(target_id), "SKIP_REVIEW_MISSING", []))
+
+        try:
+            expected_documents = WorkspaceQueryService(database).expected_documents()
+            actual_documents = {
+                str(row["document_id"]): (str(row["block_id"]), str(row["content"]), str(row["normalized_content"]))
+                for row in database.fetchall("SELECT document_id,block_id,content,normalized_content FROM search_documents")
+            }
+            expected_document_values = {
+                document_id: (block_id, content, normalized)
+                for document_id, (_document_id, block_id, content, normalized) in expected_documents.items()
+            }
+            if actual_documents != expected_document_values:
+                errors.append(("run", run_id, "FTS_COVERAGE_MISSING", []))
+            if database.fts_mode == "trigram":
+                expected_blocks = {block_id: normalized for _document_id, block_id, _content, normalized in expected_documents.values()}
+                actual_blocks = {str(row["block_id"]): str(row["content"]) for row in database.fetchall("SELECT block_id,content FROM fts_documents")}
+                if actual_blocks != expected_blocks:
+                    errors.append(("run", run_id, "FTS_COVERAGE_MISSING", []))
+        except Exception:
+            errors.append(("run", run_id, "FTS_BUILD_FAILED", []))
+        return errors
+
+    def _has_open_root_review(self, connection: Any, target_id: str) -> bool:
+        rows = connection.execute("SELECT reason_code FROM review_tasks WHERE target_id=? AND status='open'", (target_id,)).fetchall()
+        return any(str(row["reason_code"]) not in _DERIVED_REVIEW_CODES for row in rows)
+
+    def _reconcile_derived_review_tasks(self, connection: Any, database: WorkspaceDatabase, run_id: str, *, fts_ready: bool = False) -> None:
+        """Resolve only derived tasks whose current evidence is now complete."""
+
+        now = utc_now()
+        rows = connection.execute(
+            "SELECT review_id,target_type,target_id,reason_code FROM review_tasks WHERE status='open' AND reason_code IN (?,?,?,?,?,?)",
+            tuple(sorted(_DERIVED_REVIEW_CODES)),
+        ).fetchall()
+        for row in rows:
+            target_id = str(row["target_id"])
+            reason_code = str(row["reason_code"])
+            satisfied = False
+            if reason_code == "MISSING_SEMANTIC":
+                variant = connection.execute("SELECT record_json FROM variants WHERE variant_id=?", (target_id,)).fetchone()
+                record = json.loads(variant["record_json"] or "{}") if variant is not None else {}
+                satisfied = (
+                    variant is None
+                    or record.get("candidate_qualification") not in {"eligible", "conditional"}
+                    or self._has_open_root_review(connection, target_id)
+                    or bool(record.get("annotation_refs"))
+                    or human_semantics_complete(connection, target_id)
+                )
+            elif reason_code == "MISSING_VERIFIED_SEMANTIC":
+                variant = connection.execute("SELECT record_json FROM variants WHERE variant_id=?", (target_id,)).fetchone()
+                record = json.loads(variant["record_json"] or "{}") if variant is not None else {}
+                satisfied = (
+                    variant is None
+                    or record.get("candidate_qualification") not in {"eligible", "conditional"}
+                    or self._has_open_root_review(connection, target_id)
+                    or human_semantics_complete(connection, target_id)
+                )
+                if not satisfied:
+                    for annotation_id in record.get("annotation_refs", []):
+                        annotation = connection.execute("SELECT record_json FROM annotations WHERE annotation_id=? AND subject_id=?", (annotation_id, target_id)).fetchone()
+                        if annotation is not None and json.loads(annotation["record_json"]).get("source", {}).get("verified") is True:
+                            satisfied = True
+                            break
+            elif reason_code == "QUALIFICATION_REVIEW_MISSING":
+                variant = connection.execute("SELECT record_json FROM variants WHERE variant_id=?", (target_id,)).fetchone()
+                record = json.loads(variant["record_json"] or "{}") if variant is not None else {}
+                satisfied = variant is None or record.get("candidate_qualification") != "excluded"
+                if not satisfied:
+                    for review_id in record.get("qualification_review_refs", []):
+                        review = connection.execute("SELECT record_json FROM overrides WHERE override_id=? AND target_id=?", (review_id, target_id)).fetchone()
+                        if review is None:
+                            continue
+                        try:
+                            value = json.loads(review["record_json"])
+                            validate_record("qualification-review.v1", value, repo_root=self.repo_root)
+                        except (RecordSchemaError, TypeError, ValueError):
+                            continue
+                        if value.get("qualification") == record.get("candidate_qualification"):
+                            satisfied = True
+                            break
+            elif reason_code == "SKIP_REVIEW_MISSING":
+                failure_rows = connection.execute("SELECT failure_id FROM failures WHERE variant_id=? OR state_id=? OR block_id=?", (target_id, target_id, target_id)).fetchall()
+                failure_ids = {str(item["failure_id"]) for item in failure_rows}
+                satisfied = not failure_ids
+                for review in connection.execute("SELECT record_json FROM overrides WHERE target_id=?", (target_id,)).fetchall():
+                    try:
+                        value = json.loads(review["record_json"])
+                        validate_record("skip-review.v1", value, repo_root=self.repo_root)
+                    except (RecordSchemaError, TypeError, ValueError):
+                        continue
+                    if str(value.get("machine_failure_ref")) in failure_ids:
+                        satisfied = True
+                        break
+            elif reason_code in {"FTS_BUILD_FAILED", "FTS_COVERAGE_MISSING"}:
+                satisfied = fts_ready and self._fts_projection_current(database)
+            if satisfied:
+                connection.execute("UPDATE review_tasks SET status='resolved',resolved_at=? WHERE review_id=? AND status='open'", (now, row["review_id"]))
+
+    def _fts_projection_current(self, database: WorkspaceDatabase) -> bool:
+        expected_documents = WorkspaceQueryService(database).expected_documents()
+        actual_documents = {
+            str(row["document_id"]): (str(row["block_id"]), str(row["content"]), str(row["normalized_content"]))
+            for row in database.fetchall("SELECT document_id,block_id,content,normalized_content FROM search_documents")
+        }
+        expected_values = {
+            document_id: (block_id, content, normalized)
+            for document_id, (_document_id, block_id, content, normalized) in expected_documents.items()
+        }
+        if actual_documents != expected_values:
+            return False
+        if database.fts_mode == "trigram":
+            expected_blocks = {block_id: normalized for _document_id, block_id, _content, normalized in expected_documents.values()}
+            actual_blocks = {str(row["block_id"]): str(row["content"]) for row in database.fetchall("SELECT block_id,content FROM fts_documents")}
+            return actual_blocks == expected_blocks
+        return True
+
+    def _complete_r3_stage(self, database: WorkspaceDatabase, run_id: str, stage: str, evidence: dict[str, Any], *, boundary: bool = False) -> None:
+        with self.run_lock(run_id):
+            with database.transaction() as connection:
+                stage_row = connection.execute("SELECT status,worker_id FROM stage_runs WHERE run_id=? AND stage=?", (run_id, stage)).fetchone()
+                if stage_row is None or stage_row["worker_id"] != self.worker_id or stage_row["status"] != "running":
+                    return
+                now = utc_now()
+                output_hash = sha256_json(evidence)
+                next_stage = "BUILD_RELEASE" if boundary else STUDIO_STAGES[STUDIO_STAGES.index(stage) + 1]
+                event = R3_BUILD_RELEASE_BOUNDARY_EVENT if boundary else "STAGE_SUCCEEDED"
+                connection.execute("UPDATE stage_runs SET status='succeeded',worker_id=NULL,heartbeat_at=?,finished_at=?,cursor_json=? WHERE run_id=? AND stage=? AND status='running' AND worker_id=?", (now, now, canonical_json({"stage": stage, "output_hash": output_hash, "evidence": evidence}), run_id, stage, self.worker_id))
+                connection.execute("UPDATE runs SET status=?,current_stage=?,boundary_event=? WHERE run_id=? AND status='running'", ("paused" if boundary else "running", next_stage, event if boundary else None, run_id))
+                connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), event, run_id, _json({"stage": stage, "output_hash": output_hash}), now))
+
+    def _run_profile(self, database: WorkspaceDatabase, run_id: str) -> ProviderProfile:
+        run = database.fetchone("SELECT config_snapshot_json FROM runs WHERE run_id=?", (run_id,))
+        config = _load_object(run["config_snapshot_json"] if run else "{}")
+        snapshot = config.get("provider_snapshot", {})
+        snapshot_adapter = snapshot.get("adapter") if isinstance(snapshot, dict) else None
+        raw = snapshot.get("profile") if isinstance(snapshot, dict) else None
+        if snapshot_adapter not in {"openai_responses", "openai_chat_completions"} or not isinstance(raw, dict):
+            raise StageFailure("PROVIDER_CONFIG_INVALID", "run provider snapshot missing frozen profile")
+        try:
+            profile = ProviderProfile.from_dict(raw)
+        except (ProviderError, TypeError, ValueError) as exc:
+            raise StageFailure("PROVIDER_CONFIG_INVALID", "run provider snapshot has invalid lineage") from exc
+        if profile.adapter != snapshot_adapter:
+            raise StageFailure("PROVIDER_CONFIG_INVALID", "run provider snapshot adapter mismatch")
+        return profile
+
+    def _new_provider(self, profile: ProviderProfile) -> Any:
+        if self.provider_factory is not None:
+            try:
+                return self.provider_factory(profile, profile_store=self.profile_store, repo_root=self.repo_root, secret_resolver=self.secret_resolver)
+            except TypeError:
+                return self.provider_factory(profile)
+        # A Worker request is bound to the profile reconstructed from the run
+        # snapshot.  Passing the mutable profile store here would let
+        # OpenAIProvider._effective_profile replace that lineage between run
+        # creation and send.  SecretResolver still resolves the secret at
+        # request time, as required by the provider boundary.
+        return OpenAIProvider(profile, profile_store=None, repo_root=self.repo_root, secret_resolver=self.secret_resolver)
+
+    @staticmethod
+    def _close_provider(provider: Any) -> None:
+        close = getattr(provider, "close", None)
+        if callable(close):
+            close()
+
+    def _ensure_ai_jobs_from_config(self, database: WorkspaceDatabase, run_id: str) -> None:
+        if database.fetchone("SELECT 1 FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' LIMIT 1", (run_id,)) is not None:
+            return
+        run = database.fetchone("SELECT config_snapshot_json FROM runs WHERE run_id=?", (run_id,))
+        config = _load_object(run["config_snapshot_json"] if run else "{}")
+        snapshot = config.get("provider_snapshot", {})
+        snapshot_adapter = snapshot.get("adapter") if isinstance(snapshot, dict) else None
+        raw = snapshot.get("profile") if isinstance(snapshot, dict) else None
+        if snapshot_adapter not in {"openai_responses", "openai_chat_completions"} or not isinstance(raw, dict):
+            raise StageFailure("PROVIDER_CONFIG_INVALID", "run provider snapshot missing frozen profile")
+        try:
+            profile = ProviderProfile.from_dict(raw)
+        except (ProviderError, TypeError, ValueError) as exc:
+            raise StageFailure("PROVIDER_CONFIG_INVALID", "run provider snapshot has invalid lineage") from exc
+        if profile.adapter != snapshot_adapter:
+            raise StageFailure("PROVIDER_CONFIG_INVALID", "run provider snapshot adapter mismatch")
+        specs = build_ai_batch_specs(database, run_id, profile, batch_size=int(config.get("batch_size", 12)), sample_rate=int(config.get("sample_rate", 100)))
+        with database.transaction() as connection:
+            for spec in specs:
+                connection.execute("INSERT OR IGNORE INTO jobs(job_id,run_id,stage,logical_key,input_signature,status,priority,cursor_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)", (_stable_job_id(run_id, spec["logical_key"], spec["input_signature"]), run_id, "AI_ANNOTATE", spec["logical_key"], spec["input_signature"], "pending", 0, canonical_json({"approved": False, "tile_ids": spec["tile_ids"], "variant_ids": spec["variant_ids"], "input_hash": spec["input_signature"], "payload_signature": spec["payload_signature"]}), utc_now()))
+
+    def build_ai_preview(self, database: WorkspaceDatabase, job: Any) -> dict[str, Any]:
+        profile = self._run_profile(database, job["run_id"])
+        payload = self._ai_payload(database, job, prompt_version=profile.prompt_version)
+        payload_signature = _annotation_payload_signature(
+            payload,
+            profile,
+            retry_nonce=_load_object(job["cursor_json"]).get("retry_nonce"),
+        )
+        return {
+            "job_id": job["job_id"],
+            "logical_key": job["logical_key"],
+            "input_signature": payload_signature,
+            "approved": bool(_load_object(job["cursor_json"]).get("approved")) and job["input_signature"] == payload_signature,
+            "payload_signature": payload_signature,
+            "tile_ids": [item["tile_id"] for item in payload["tile_map"]],
+            "tiles": payload["contact_sheet"].tiles,
+            "machine_metadata": payload["machine_metadata"],
+            "prompt": payload["prompt"],
+            "prompt_text": payload["prompt"],
+            "contact_sheet_png": payload["contact_sheet"].image_png,
+            "contact_sheet_bytes": payload["contact_sheet"].image_png,
+        }
+
+    def build_ai_plan(self, database: WorkspaceDatabase, run_id: str) -> dict[str, Any]:
+        """Build a safe plan from persisted identities only.
+
+        Full payload reconstruction remains deliberately confined to the
+        single-batch preview and the final pre-send gate in ``_annotate_one``.
+        """
+
+        run = database.fetchone(
+            "SELECT effective_config_hash,config_snapshot_json FROM runs WHERE run_id=?",
+            (run_id,),
+        )
+        if run is None:
+            raise KeyError(run_id)
+        effective_config_hash = run["effective_config_hash"]
+        if not _is_sha256_hash(effective_config_hash):
+            raise ValueError("run effective config hash is invalid")
+        config = _load_object(run["config_snapshot_json"])
+        snapshot_hash = config.get("effective_config_hash")
+        config_for_hash = dict(config)
+        config_for_hash.pop("effective_config_hash", None)
+        if snapshot_hash != effective_config_hash or sha256_json(config_for_hash) != effective_config_hash:
+            raise ValueError("run config snapshot identity is invalid")
+        profile = self._run_profile(database, run_id)
+        jobs: list[dict[str, Any]] = []
+        rows = database.fetchall(
+            "SELECT * FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' AND status='pending' ORDER BY logical_key,job_id",
+            (run_id,),
+        )
+        for row in rows:
+            identity = _validate_persisted_ai_identity(row)
+            jobs.append(
+                {
+                    "job_id": row["job_id"],
+                    "logical_key": row["logical_key"],
+                    "input_signature": identity["input_signature"],
+                    "tile_ids": identity["tile_ids"],
+                    "variant_ids": identity["variant_ids"],
+                }
+            )
+        hash_jobs = [
+            {
+                "job_id": job["job_id"],
+                "logical_key": job["logical_key"],
+                "recomputed_payload_signature": job["input_signature"],
+            }
+            for job in jobs
+        ]
+        plan_hash = build_ai_plan_hash(run_id, run["effective_config_hash"], hash_jobs)
+        return {
+            "run_id": run_id,
+            "effective_config_hash": run["effective_config_hash"],
+            "plan_hash": plan_hash,
+            "count": len(jobs),
+            "jobs": jobs,
+            "profile_id": profile.profile_id,
+            "adapter": profile.adapter,
+            "requested_model_id": profile.model_id,
+            "model_id": profile.model_id,
+        }
+
+    def current_ai_input_signature(self, database: WorkspaceDatabase, run_id: str, job: Any) -> str | None:
+        try:
+            profile = self._run_profile(database, run_id)
+            return self._payload_signature(database, run_id, job, profile)
+        except (KeyError, OSError, TypeError, ValueError, StageFailure):
+            return None
+
+    def _ai_payload(
+        self,
+        database: WorkspaceDatabase,
+        job: Any,
+        *,
+        prompt_version: str | None = None,
+    ) -> dict[str, Any]:
+        cursor = _load_object(job["cursor_json"])
+        variant_ids = cursor.get("variant_ids", [])
+        if not isinstance(variant_ids, list) or not variant_ids:
+            raise ValueError("AI batch has no tiles")
+        return _build_annotation_payload(
+            database,
+            variant_ids,
+            run_id=str(job["run_id"]),
+            prompt_version=prompt_version,
+        )
+
+    def _payload_signature(self, database: WorkspaceDatabase, run_id: str, job: Any, profile: ProviderProfile) -> str:
+        payload = self._ai_payload(database, job, prompt_version=profile.prompt_version)
+        cursor = _load_object(job["cursor_json"])
+        return _annotation_payload_signature(payload, profile, retry_nonce=cursor.get("retry_nonce"))
+
+    def _reset_ai_approval(self, connection: Any, run_id: str, job: Any, signature: str) -> None:
+        """Atomically invalidate approval after the send payload changes."""
+
+        cursor = _load_object(job["cursor_json"])
+        cursor["approved"] = False
+        cursor["payload_signature"] = signature
+        connection.execute(
+            "UPDATE jobs SET input_signature=?,status='pending',worker_id=NULL,heartbeat_at=NULL,error_code=NULL,error_message=NULL,finished_at=NULL,cursor_json=? WHERE job_id=?",
+            (signature, canonical_json(cursor), job["job_id"]),
+        )
+        now = utc_now()
+        connection.execute(
+            "UPDATE stage_runs SET status='paused',worker_id=NULL,heartbeat_at=?,finished_at=? WHERE run_id=? AND stage='AI_ANNOTATE' AND status IN ('running','pending')",
+            (now, now, run_id),
+        )
+        connection.execute(
+            "UPDATE runs SET status='paused',current_stage='AI_ANNOTATE',boundary_event=NULL,finished_at=NULL WHERE run_id=? AND status IN ('pending','running','paused')",
+            (run_id,),
+        )
+
+    def _refresh_ai_job_for_payload_change(self, database: WorkspaceDatabase, run_id: str, job: Any, signature: str) -> None:
+        with self.run_lock(run_id):
+            with database.transaction() as connection:
+                self._reset_ai_approval(connection, run_id, job, signature)
+                connection.execute(
+                    "INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)",
+                    (_id("audit"), "AI_BATCH_APPROVAL_REQUIRED", run_id, job["job_id"], _json({"logical_key": job["logical_key"], "input_signature": signature, "payload_changed": True}), utc_now()),
+                )
+
+    def create_review_task(self, connection: Any, target_type: str, target_id: str, reason_code: str, severity: str, note: str, evidence: list[Any], *, dedupe_key: str | None = None, reopen: bool = False) -> str:
+        review_id = _review_task_id(target_type, target_id, reason_code, severity, dedupe_key)
+        connection.execute("INSERT OR IGNORE INTO review_tasks(review_id,minecraft_version,target_type,target_id,reason_code,severity,status,note,evidence_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (review_id, "26.2", target_type, target_id, reason_code, severity, "open", note[:500], canonical_json(evidence[:64]), utc_now()))
+        if reopen:
+            connection.execute(
+                "UPDATE review_tasks SET status='open',note=?,evidence_json=?,resolved_at=NULL WHERE review_id=? AND status IN ('resolved','rejected')",
+                (note[:500], canonical_json(evidence[:64]), review_id),
+            )
+        return review_id
+
+    def _retry_child_for_source(self, connection: Any, run_id: str, source_job_id: str) -> Any | None:
+        source = connection.execute("SELECT logical_key FROM jobs WHERE job_id=? AND run_id=?", (source_job_id, run_id)).fetchone()
+        if source is None:
+            return None
+        legacy_prefix = f"{source['logical_key']}:retry:"
+        for row in connection.execute("SELECT * FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' ORDER BY created_at,job_id", (run_id,)).fetchall():
+            cursor = _load_object(row["cursor_json"])
+            if cursor.get("retry_of_job_id") == source_job_id or (
+                isinstance(row["logical_key"], str) and row["logical_key"].startswith(legacy_prefix)
+            ):
+                return row
+        return None
+
+    @staticmethod
+    def _provider_retry_eligible(job: Any, *, allow_legacy: bool = False) -> bool:
+        del allow_legacy
+        code = normalize_provider_error_code(job["error_code"])
+        if job["status"] not in {"needs_review", "failed"}:
+            return False
+        return code in ITEM_LOCAL_PROVIDER_ERROR_CODES
+
+    @staticmethod
+    def _legacy_review_retry_eligible(job: Any) -> bool:
+        code = normalize_provider_error_code(job["error_code"])
+        return (job["status"] == "needs_review" and code == "LOW_CONFIDENCE") or (
+            job["status"] == "skipped" and code == "AI_BATCH_CANCELLED"
+        )
+
+    def create_provider_retry_job(
+        self,
+        database: WorkspaceDatabase,
+        run_id: str,
+        source_job_id: str,
+        *,
+        approve: bool = False,
+        allow_legacy: bool = False,
+        variant_ids_override: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Create or return the deterministic child for one Provider job."""
+
+        connection = database.connection
+        source = connection.execute(
+            "SELECT * FROM jobs WHERE run_id=? AND job_id=? AND stage='AI_ANNOTATE'",
+            (run_id, source_job_id),
+        ).fetchone()
+        if source is None or not (
+            self._provider_retry_eligible(source)
+            or (allow_legacy and self._legacy_review_retry_eligible(source))
+        ):
+            raise ValueError("source job is not an eligible Provider retry")
+        existing = self._retry_child_for_source(connection, run_id, source_job_id)
+        if existing is not None:
+            if approve:
+                cursor = _load_object(existing["cursor_json"])
+                cursor["approved"] = True
+                connection.execute("UPDATE jobs SET cursor_json=? WHERE job_id=?", (canonical_json(cursor), existing["job_id"]))
+            return {
+                "source_job_id": source_job_id,
+                "job_id": existing["job_id"],
+                "input_signature": existing["input_signature"],
+                "logical_key": existing["logical_key"],
+                "idempotent": True,
+                "approved": bool(_load_object(existing["cursor_json"]).get("approved")) or approve,
+            }
+        source_cursor = _load_object(source["cursor_json"])
+        source_variant_ids = variant_ids_override or source_cursor.get("variant_ids", [])
+        if not isinstance(source_variant_ids, list) or not source_variant_ids or any(not isinstance(item, str) for item in source_variant_ids):
+            raise ValueError("source job has no variant lineage")
+        nonce = "sha256:" + hashlib.sha256(f"{source_job_id}\0{source['input_signature']}".encode("utf-8")).hexdigest()
+        logical_key = f"{source['logical_key']}:retry:{nonce[7:15]}"
+        profile = self._run_profile(database, run_id)
+        signature, payload = _batch_input_signature(
+            database,
+            list(source_variant_ids),
+            profile,
+            run_id=run_id,
+            retry_nonce=nonce,
+        )
+        job_id = _stable_job_id(run_id, logical_key, signature)
+        cursor = {
+            "approved": bool(approve),
+            "tile_ids": [item["tile_id"] for item in payload["tile_map"]],
+            "variant_ids": list(source_variant_ids),
+            "input_hash": signature,
+            "payload_signature": signature,
+            "retry_nonce": nonce,
+            "retry_of_job_id": source_job_id,
+        }
+        connection.execute(
+            "INSERT OR IGNORE INTO jobs(job_id,run_id,stage,logical_key,input_signature,status,priority,cursor_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (job_id, run_id, "AI_ANNOTATE", logical_key, signature, "pending", 0, canonical_json(cursor), utc_now()),
+        )
+        source_input_signature = source["input_signature"]
+        for review in connection.execute(
+            "SELECT review_id,target_id,evidence_json FROM review_tasks WHERE minecraft_version='26.2' AND status='open' AND reason_code='PROVIDER_FAILURE' AND target_type='variant'",
+        ).fetchall():
+            evidence = _review_evidence_values(review["evidence_json"])
+            explicitly_bound = f"job:{source_job_id}" in evidence
+            legacy_id = _review_task_id(
+                "variant",
+                str(review["target_id"]),
+                "PROVIDER_FAILURE",
+                "high",
+                source_input_signature,
+            )
+            legacy_bound = not evidence and review["review_id"] == legacy_id
+            if review["target_id"] in source_variant_ids and (explicitly_bound or legacy_bound):
+                connection.execute(
+                    "UPDATE review_tasks SET status='resolved',resolved_at=? WHERE review_id=? AND status='open'",
+                    (utc_now(), review["review_id"]),
+                )
+        connection.execute(
+            "UPDATE stage_runs SET status='pending',worker_id=NULL,heartbeat_at=NULL,finished_at=NULL WHERE run_id=? AND stage IN ('AI_ANNOTATE','VALIDATE','HUMAN_REVIEW') AND status != 'cancelled'",
+            (run_id,),
+        )
+        connection.execute(
+            "UPDATE runs SET status='pending',current_stage='AI_ANNOTATE',boundary_event=NULL,finished_at=NULL WHERE run_id=? AND status NOT IN ('succeeded','cancelled')",
+            (run_id,),
+        )
+        now = utc_now()
+        connection.execute(
+            "INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)",
+            (_id("audit"), "AI_PROVIDER_RETRY_CREATED", run_id, job_id, _json({"source_job_id": source_job_id, "retry_nonce": nonce, "approved": approve}), now),
+        )
+        return {
+            "source_job_id": source_job_id,
+            "job_id": job_id,
+            "input_signature": signature,
+            "logical_key": logical_key,
+            "retry_nonce": nonce,
+            "variant_ids": list(source_variant_ids),
+            "idempotent": False,
+            "approved": approve,
+        }
+
+    def provider_retry_spec(self, database: WorkspaceDatabase, run_id: str, source_job_id: str) -> dict[str, Any]:
+        """Compute a retry child identity without writing persistence."""
+
+        connection = database.connection
+        source = connection.execute(
+            "SELECT * FROM jobs WHERE run_id=? AND job_id=? AND stage='AI_ANNOTATE'",
+            (run_id, source_job_id),
+        ).fetchone()
+        if source is None or not self._provider_retry_eligible(source):
+            raise ValueError("source job is not an eligible Provider retry")
+        existing = self._retry_child_for_source(connection, run_id, source_job_id)
+        if existing is not None:
+            return {
+                "source_job_id": source_job_id,
+                "child_job_id": existing["job_id"],
+                "child_logical_key": existing["logical_key"],
+                "child_input_signature": existing["input_signature"],
+                "source_input_signature": source["input_signature"],
+                "variant_ids": list(_load_object(source["cursor_json"]).get("variant_ids", [])),
+                "existing": True,
+            }
+        source_cursor = _load_object(source["cursor_json"])
+        variant_ids = source_cursor.get("variant_ids", [])
+        if not isinstance(variant_ids, list) or not variant_ids or any(not isinstance(item, str) for item in variant_ids):
+            raise ValueError("source job has no variant lineage")
+        nonce = "sha256:" + hashlib.sha256(f"{source_job_id}\0{source['input_signature']}".encode("utf-8")).hexdigest()
+        logical_key = f"{source['logical_key']}:retry:{nonce[7:15]}"
+        profile = self._run_profile(database, run_id)
+        signature, payload = _batch_input_signature(database, list(variant_ids), profile, run_id=run_id, retry_nonce=nonce)
+        return {
+            "source_job_id": source_job_id,
+            "child_job_id": _stable_job_id(run_id, logical_key, signature),
+            "child_logical_key": logical_key,
+            "child_input_signature": signature,
+            "source_input_signature": source["input_signature"],
+            "retry_nonce": nonce,
+            "variant_ids": list(variant_ids),
+            "tile_ids": [item["tile_id"] for item in payload["tile_map"]],
+            "existing": False,
+        }
+
+    def create_retry_ai_job(self, database: WorkspaceDatabase, run_id: str, target_id: str, review_id: str) -> dict[str, Any]:
+        """Backward-compatible review action mapped to a source job."""
+
+        connection = database.connection
+        review = connection.execute("SELECT reason_code,evidence_json FROM review_tasks WHERE review_id=?", (review_id,)).fetchone()
+        if review is None:
+            raise ValueError("review task missing")
+        source = None
+        for item in _review_evidence_values(review["evidence_json"]):
+            if isinstance(item, str) and item.startswith("job:"):
+                source = connection.execute("SELECT * FROM jobs WHERE run_id=? AND job_id=? AND stage='AI_ANNOTATE'", (run_id, item[4:])).fetchone()
+                if source is not None:
+                    break
+        if source is None:
+            for job in connection.execute("SELECT * FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' ORDER BY logical_key,job_id", (run_id,)).fetchall():
+                cursor = _load_object(job["cursor_json"])
+                if target_id in cursor.get("variant_ids", []) and (
+                    self._provider_retry_eligible(job) or self._legacy_review_retry_eligible(job)
+                ):
+                    source = job
+                    break
+        if source is None:
+            raise ValueError("review target is not an AI batch")
+        legacy = not self._provider_retry_eligible(source)
+        override = [target_id] if legacy and review["reason_code"] == "AI_BATCH_CANCELLED" else None
+        return self.create_provider_retry_job(
+            database,
+            run_id,
+            source["job_id"],
+            allow_legacy=legacy,
+            variant_ids_override=override,
+        )
+
     def heartbeat(self, run_id: str, job_id: str | None = None) -> None:
         with self.run_lock(run_id):
             with self.open_database(run_id) as database:
@@ -761,3 +1969,407 @@ def _source_machine_tags(source: dict[str, Any]) -> Iterable[str]:
     if behavior.get("emissive") is True:
         tags.append("behavior:emissive")
     return tags
+
+
+def _load_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        parsed = json.loads(value or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _review_evidence_values(value: Any) -> list[Any]:
+    try:
+        parsed = json.loads(value or "[]") if isinstance(value, str) else value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if isinstance(parsed, list):
+        return list(parsed)
+    if parsed is None:
+        return []
+    return [parsed]
+
+
+def _is_sha256_hash(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+def _validate_persisted_ai_identity(job: Any) -> dict[str, Any]:
+    input_signature = job["input_signature"]
+    cursor = _load_object(job["cursor_json"])
+    payload_signature = cursor.get("payload_signature")
+    input_hash = cursor.get("input_hash")
+    tile_ids = cursor.get("tile_ids")
+    variant_ids = cursor.get("variant_ids")
+    if not _is_sha256_hash(input_signature) or not _is_sha256_hash(payload_signature) or not _is_sha256_hash(input_hash):
+        raise ValueError("AI job persisted hash is invalid")
+    if payload_signature != input_signature or input_hash != input_signature:
+        raise ValueError("AI job persisted hashes disagree")
+    if (
+        not isinstance(tile_ids, list)
+        or not isinstance(variant_ids, list)
+        or not tile_ids
+        or not variant_ids
+        or len(tile_ids) != len(variant_ids)
+        or any(not isinstance(value, str) or not value for value in tile_ids)
+        or any(not isinstance(value, str) or not value for value in variant_ids)
+        or len(set(tile_ids)) != len(tile_ids)
+        or len(set(variant_ids)) != len(variant_ids)
+    ):
+        raise ValueError("AI job persisted tile/variant identity is invalid")
+    return {
+        "input_signature": input_signature,
+        "tile_ids": list(tile_ids),
+        "variant_ids": list(variant_ids),
+    }
+
+
+def _stable_job_id(run_id: str, logical_key: str, input_signature: str) -> str:
+    return "job_" + hashlib.sha256(f"{run_id}\0{logical_key}\0{input_signature}".encode("utf-8")).hexdigest()[:32]
+
+
+def _review_task_id(target_type: str, target_id: str, reason_code: str, severity: str, dedupe_key: str | None) -> str:
+    return "review_" + hashlib.sha256(
+        canonical_json(
+            {
+                "target_type": target_type,
+                "target_id": target_id,
+                "reason_code": reason_code,
+                "severity": severity,
+                "dedupe_key": dedupe_key,
+            }
+        ).encode("utf-8")
+    ).hexdigest()[:32]
+
+
+def build_ai_plan_hash(run_id: str, effective_config_hash: str | None, jobs: list[dict[str, str]]) -> str:
+    """Hash exactly the D-040 remaining-plan identity."""
+
+    return sha256_json(
+        {
+            "run_id": run_id,
+            "effective_config_hash": effective_config_hash,
+            "jobs": [
+                {
+                    "job_id": job["job_id"],
+                    "logical_key": job["logical_key"],
+                    "recomputed_payload_signature": job.get(
+                        "recomputed_payload_signature", job.get("input_signature")
+                    ),
+                }
+                for job in jobs
+            ],
+        }
+    )
+
+
+def build_retry_wave_hash(run_id: str, effective_config_hash: str | None, jobs: list[dict[str, str]]) -> str:
+    return sha256_json(
+        {
+            "run_id": run_id,
+            "effective_config_hash": effective_config_hash,
+            "jobs": [
+                {
+                    "source_job_id": job["source_job_id"],
+                    "child_job_id": job["child_job_id"],
+                    "source_input_signature": job["source_input_signature"],
+                    "child_input_signature": job["child_input_signature"],
+                }
+                for job in jobs
+            ],
+        }
+    )
+
+
+def _request_id(logical_key: str, input_signature: str, *, run_id: str = "", job_id: str = "") -> str:
+    return "Req" + hashlib.sha256(f"{run_id}\0{job_id}\0{logical_key}\0{input_signature}".encode("utf-8")).hexdigest()[:32]
+
+
+def _provider_result(value: Any) -> dict[str, Any]:
+    if isinstance(value, ProviderResult):
+        return {
+            "status": value.status,
+            "parsed_artifact": value.parsed_artifact,
+            "attempts_used": value.attempts_used,
+            "error_code": value.error_code,
+            "error_class": value.error_class,
+            "cache_key": value.cache_key,
+            "artifact_hash": value.artifact_hash,
+            "request_id": value.request_id_redacted,
+            "validation_diagnostic": sanitize_validation_diagnostic(value.validation_diagnostic),
+        }
+    if isinstance(value, dict):
+        artifact = value.get("parsed_artifact", value.get("artifact", value if value.get("schema_id") else None))
+        return {
+            "status": value.get("status", "succeeded" if artifact is not None else "needs_review"),
+            "parsed_artifact": artifact,
+            "attempts_used": int(value.get("attempts_used", 1) or 0),
+            "error_code": value.get("error_code"),
+            "error_class": value.get("error_class", "unknown"),
+            "cache_key": value.get("cache_key"),
+            "artifact_hash": value.get("artifact_hash"),
+            "request_id": value.get("request_id_redacted") or value.get("request_id"),
+            "validation_diagnostic": sanitize_validation_diagnostic(value.get("validation_diagnostic")),
+        }
+    return {
+        "status": "needs_review",
+        "parsed_artifact": None,
+        "attempts_used": 0,
+        "error_code": "PROVIDER_UNKNOWN",
+        "error_class": "unknown",
+        "cache_key": None,
+        "artifact_hash": None,
+        "request_id": None,
+        "validation_diagnostic": None,
+    }
+
+
+def _provider_exception_code(exc: Exception) -> str:
+    candidate = getattr(exc, "error_code", None) or getattr(exc, "code", None)
+    if not isinstance(candidate, str) and exc.args and isinstance(exc.args[0], str):
+        candidate = exc.args[0]
+    if candidate in FATAL_PROVIDER_ERROR_CODES or candidate in ITEM_LOCAL_PROVIDER_ERROR_CODES or candidate in {
+        "PROVIDER_STORAGE_UNSUPPORTED",
+        "PROVIDER_CANCELLED",
+    }:
+        return normalize_provider_error_code(candidate) or "PROVIDER_UNKNOWN"
+    return "PROVIDER_UNKNOWN"
+
+
+def _provider_request_evidence(
+    *,
+    request_id: str,
+    profile: ProviderProfile,
+    job: Any,
+    envelope: dict[str, Any],
+    attempts: int,
+    cache_key: str,
+    validated_artifact_sha256: str | None,
+    error_code: str | None,
+    error_class: str | None,
+    status: str,
+) -> dict[str, Any]:
+    allowed_classes = {"retryable", "non_retryable", "validation", "authentication", "capability", "unknown"}
+    return {
+        "request_id": request_id,
+        "profile_id": profile.profile_id,
+        "stage": "offline_annotation",
+        "wire_schema_id": "annotation-batch-output.v1",
+        "attempt": max(1, min(2, attempts)),
+        "cache_key": cache_key,
+        "input_sha256": job["input_signature"],
+        "validated_artifact_sha256": validated_artifact_sha256,
+        "error_code": error_code,
+        "error_class": error_class if error_class in allowed_classes else "unknown",
+        "envelope_json": canonical_json(envelope),
+        "status": status if status in {"pending", "succeeded", "failed", "needs_review"} else "needs_review",
+        "created_at": utc_now(),
+    }
+
+
+def _insert_provider_request(connection: Any, evidence: dict[str, Any]) -> None:
+    connection.execute(
+        "INSERT OR IGNORE INTO provider_requests(request_id,profile_id,stage,wire_schema_id,attempt,cache_key,input_sha256,validated_artifact_sha256,error_code,error_class,envelope_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            evidence["request_id"],
+            evidence["profile_id"],
+            evidence["stage"],
+            evidence["wire_schema_id"],
+            evidence["attempt"],
+            evidence["cache_key"],
+            evidence["input_sha256"],
+            evidence["validated_artifact_sha256"],
+            evidence["error_code"],
+            evidence["error_class"],
+            evidence["envelope_json"],
+            evidence["status"],
+            evidence["created_at"],
+        ),
+    )
+
+
+def _build_annotation_payload(
+    database: WorkspaceDatabase,
+    variant_ids: list[Any],
+    *,
+    run_id: str | None = None,
+    prompt_version: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(variant_ids, list) or not variant_ids or any(not isinstance(value, str) for value in variant_ids):
+        raise ValueError("AI batch has no variant IDs")
+    variants: list[tuple[str, bytes, dict[str, Any], dict[str, Any]]] = []
+    for variant_id in variant_ids:
+        row = database.fetchone("SELECT record_json FROM variants WHERE variant_id=? AND status='selected'", (variant_id,))
+        if row is None or row["record_json"] is None:
+            raise ValueError("AI variant missing")
+        record = json.loads(row["record_json"])
+        if record.get("candidate_qualification") not in {"eligible", "conditional"}:
+            raise ValueError("AI variant is not searchable")
+        render = record.get("render", {})
+        relative = safe_relative_posix_ref(render.get("preview_path", ""))
+        image = (database.path.parent / relative).read_bytes()
+        feature_row = database.fetchone("SELECT feature_json FROM features WHERE variant_id=?", (variant_id,))
+        feature = json.loads(feature_row["feature_json"]) if feature_row is not None else {}
+        metadata = safe_machine_metadata(record, feature)
+        variants.append((variant_id, image, metadata, record))
+    variants.sort(key=lambda item: item[0].encode("utf-8"))
+    sheet = make_contact_sheet([(item[0], item[1]) for item in variants])
+    tile_map: list[dict[str, Any]] = []
+    metadata_list: list[dict[str, Any]] = []
+    machine_metadata: dict[str, Any] = {}
+    source_images: dict[str, bytes] = {}
+    for index, (variant_id, image, metadata, _record) in enumerate(variants):
+        tile_id = f"T{index + 1:02d}"
+        machine_metadata[variant_id] = metadata
+        source_images[tile_id] = image
+        tile_map.append(
+            {
+                "tile_id": tile_id,
+                "variant_id": variant_id,
+                "image_sha256": sha256_bytes(image),
+                "machine_metadata_sha256": sha256_json(metadata),
+            }
+        )
+        metadata_list.append(metadata)
+    if run_id is None:
+        run = database.fetchone("SELECT run_id FROM runs LIMIT 1")
+        run_id = str(run["run_id"]) if run is not None else ""
+    import_row = database.fetchone(
+        "SELECT export_id FROM imports WHERE import_id=(SELECT import_id FROM runs WHERE run_id=?)",
+        (run_id,),
+    )
+    feature_values: dict[str, Any] = {}
+    for variant_id, _, _, _ in variants:
+        feature_row = database.fetchone("SELECT output_hash FROM features WHERE variant_id=?", (variant_id,))
+        if feature_row is not None:
+            feature_values[variant_id] = feature_row["output_hash"]
+    return {
+        "export_id": import_row["export_id"] if import_row is not None else None,
+        "contact_sheet": sheet,
+        "tile_map": tile_map,
+        "machine_metadata": machine_metadata,
+        "machine_metadata_hash": sha256_json(machine_metadata),
+        "source_images": source_images,
+        "feature_hash": sha256_json(feature_values),
+        "prompt": safe_prompt(metadata_list, tile_map, prompt_version=prompt_version),
+    }
+
+
+def _annotation_payload_signature(
+    payload: dict[str, Any],
+    profile: ProviderProfile,
+    *,
+    retry_nonce: str | None = None,
+) -> str:
+    source_images = payload.get("source_images", {})
+    source_hashes = {
+        str(tile_id): sha256_bytes(bytes(image))
+        for tile_id, image in sorted(source_images.items(), key=lambda item: str(item[0]).encode("utf-8"))
+    }
+    material = {
+        "stage": "offline_annotation",
+        "contact_sheet_sha256": payload["contact_sheet"].image_sha256,
+        "tile_map": list(payload["tile_map"]),
+        "machine_metadata_hash": payload["machine_metadata_hash"],
+        "prompt_sha256": sha256_bytes(str(payload["prompt"]).encode("utf-8")),
+        "source_image_hashes": source_hashes,
+        "feature_hash": payload["feature_hash"],
+        "export_id": payload.get("export_id"),
+        "profile_id": profile.profile_id,
+        "adapter": profile.adapter,
+        "model_id": profile.model_id,
+        "base_url_stable_id": profile.base_url_stable_id,
+        "prompt_version": profile.prompt_version,
+        "wire_schema_id": "annotation-batch-output.v1",
+        "wire_format_name": "annotation_batch_output_v1",
+        "retry_nonce": retry_nonce,
+    }
+    return sha256_json(material)
+
+
+def _canonical_annotation_cache_key(payload: dict[str, Any], profile: ProviderProfile) -> str:
+    contact_sheet = payload["contact_sheet"]
+    return build_cache_key(
+        {
+            "adapter": profile.adapter,
+            "image_hash": contact_sheet.image_sha256,
+            "machine_metadata_hash": payload["machine_metadata_hash"],
+            "prompt_version": profile.prompt_version,
+            "model_id": profile.model_id,
+            "schema_version": "annotation-batch-output.v1",
+            "base_url_stable_id": profile.base_url_stable_id,
+            "stage": "offline_annotation",
+        },
+        context={
+            "preview_hash": contact_sheet.image_sha256,
+            "feature_hash": payload["feature_hash"],
+        },
+    )
+
+
+def _batch_input_signature(
+    database: WorkspaceDatabase,
+    variant_ids: list[str],
+    profile: ProviderProfile,
+    *,
+    run_id: str | None = None,
+    retry_nonce: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    payload = _build_annotation_payload(
+        database,
+        variant_ids,
+        run_id=run_id,
+        prompt_version=profile.prompt_version,
+    )
+    return _annotation_payload_signature(payload, profile, retry_nonce=retry_nonce), payload
+
+
+def _sampled_quality_review(database: WorkspaceDatabase, run_id: str, variant_id: str) -> bool:
+    run = database.fetchone("SELECT config_snapshot_json FROM runs WHERE run_id=?", (run_id,))
+    config = _load_object(run["config_snapshot_json"] if run is not None else "{}")
+    try:
+        rate = int(config.get("sample_rate", 100))
+    except (TypeError, ValueError):
+        rate = 100
+    rate = max(0, min(100, rate))
+    if rate == 0:
+        return False
+    if rate == 100:
+        return True
+    digest = int(hashlib.sha256(f"{run_id}\0{variant_id}".encode("utf-8")).hexdigest()[:8], 16) % 10000
+    return digest < rate * 100
+
+
+def build_ai_batch_specs(
+    database: WorkspaceDatabase,
+    run_id: str,
+    profile: ProviderProfile,
+    *,
+    batch_size: int,
+    sample_rate: int,
+    retry_nonce: str | None = None,
+) -> list[dict[str, Any]]:
+    """Create stable logical batch identities without writing persistence."""
+
+    if not 8 <= batch_size <= 16 or not 0 <= sample_rate <= 100:
+        raise ValueError("invalid R3 batch configuration")
+    selected: list[str] = []
+    for row in database.fetchall("SELECT variant_id,record_json FROM variants WHERE status='selected' ORDER BY variant_id"):
+        variant_id = str(row["variant_id"])
+        record = json.loads(row["record_json"] or "{}")
+        if record.get("candidate_qualification") not in {"eligible", "conditional"}:
+            continue
+        selected.append(variant_id)
+    specs: list[dict[str, Any]] = []
+    for index in range(0, len(selected), batch_size):
+        variant_ids = selected[index : index + batch_size]
+        signature, payload = _batch_input_signature(database, variant_ids, profile, run_id=run_id, retry_nonce=retry_nonce)
+        logical_key = f"ai_batch_{index // batch_size:04d}" if retry_nonce is None else f"ai_batch_retry_{index // batch_size:04d}_{retry_nonce[7:15]}"
+        specs.append({"logical_key": logical_key, "input_signature": signature, "tile_ids": [item["tile_id"] for item in payload["tile_map"]], "variant_ids": variant_ids, "payload_signature": signature})
+    return specs
+
+
+__all__ = ["StaleMarker", "StageFailure", "WorkerService", "build_ai_batch_specs"]

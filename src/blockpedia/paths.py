@@ -12,6 +12,10 @@ from typing import Mapping
 DATA_ROOT_ENV = "BLOCKPEDIA_DATA_ROOT"
 MINECRAFT_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
 EXPORT_ID_RE = re.compile(r"^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$")
+RELEASE_CHECK_ID_RE = re.compile(r"^check_[0-9a-f]{32}$")
+RELEASE_BUILD_ID_RE = re.compile(r"^build_[0-9a-f]{32}$")
+RELEASE_ID_RE = re.compile(r"^rel_[0-9a-f]{32}$")
+RELEASE_STAGING_ID_RE = re.compile(r"^\.rel_[0-9a-f]{32}\.staging$")
 
 
 class UnsafeReference(ValueError):
@@ -86,6 +90,17 @@ class DataRoot:
         if "/" in run_id:
             raise UnsafeReference(run_id)
         return self.workspace / minecraft_version / run_id
+
+    def release_check_dir(self, check_id: str) -> Path:
+        if RELEASE_CHECK_ID_RE.fullmatch(check_id) is None:
+            raise UnsafeReference(check_id)
+        return self.cache / "release-checks" / check_id
+
+    def release_dir(self, minecraft_version: str, release_id: str) -> Path:
+        validate_minecraft_version(minecraft_version)
+        if RELEASE_ID_RE.fullmatch(release_id) is None:
+            raise UnsafeReference(release_id)
+        return self.releases / minecraft_version / release_id
 
     def relative_ref(self, path: Path) -> str:
         candidate = Path(path).absolute()

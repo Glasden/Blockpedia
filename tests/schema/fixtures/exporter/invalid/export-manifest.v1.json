@@ -55,7 +55,7 @@
   },
   "policies": {
     "state_policy_version": "state-policy.v1",
-    "render_policy_version": "render.v1",
+    "render_policy_version": "render.v2",
     "fixture_policy_version": "fixture.v1",
     "dedupe_policy_version": "dedupe.v1"
   },

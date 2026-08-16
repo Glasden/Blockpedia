@@ -1,0 +1,90 @@
+{% set run_view = run|default({}, true) %}
+{% set run_identifier = run_view.get('run_id', run_identifier|default('unavailable')) %}
+<section
+  class="release-candidate"
+  data-release-candidate
+  data-candidate-run-id="{{ run_identifier }}"
+  data-candidate-version="{{ run_view.get('minecraft_version', '26.2') }}"
+  data-candidate-check-route="/api/releases/check"
+  data-candidate-build-route="/api/releases/build"
+  data-state="ready"
+  aria-labelledby="release-candidate-heading"
+>
+  <header class="release-candidate__header">
+    <div>
+      <p class="section-index"><span>PHASE C</span> / BUILD_RELEASE</p>
+      <h2 id="release-candidate-heading">不可变候选</h2>
+      <p>先检查当前运行快照。只有检查结果允许构建时，才会出现构建操作。</p>
+    </div>
+    <div class="candidate-safety-note" role="note">
+      <span aria-hidden="true">◇</span>
+      <p><b>构建后仍未激活</b><br>该操作不会修改 <code>current</code>。</p>
+    </div>
+  </header>
+
+  <ol class="candidate-step-rail" aria-label="候选检查与构建步骤">
+    <li class="is-current" data-candidate-step="check"><span>01</span><div><b>候选检查</b><small>读取当前运行快照</small></div></li>
+    <li data-candidate-step="build"><span>02</span><div><b>不可变构建</b><small>仅在检查允许后执行</small></div></li>
+  </ol>
+
+  <div class="candidate-status-line" role="status" aria-live="polite" data-candidate-status>
+    <span class="status-badge status-badge--paused" data-candidate-badge>等待检查</span>
+    <p data-candidate-message>尚未对当前运行执行候选检查。</p>
+  </div>
+
+  <div class="candidate-action-row">
+    <div>
+      <span>运行</span><code>{{ run_identifier }}</code>
+      <span>版本</span><code>{{ run_view.get('minecraft_version', '26.2') }}</code>
+    </div>
+    <button class="button button--primary" type="button" data-candidate-check>运行候选检查 <span aria-hidden="true">→</span></button>
+  </div>
+
+  <section class="candidate-check-result" data-candidate-check-result hidden aria-labelledby="candidate-check-result-heading">
+    <header>
+      <div><p class="section-index">CHECK RESULT</p><h3 id="candidate-check-result-heading">检查快照</h3></div>
+      <span class="status-badge" data-candidate-result-badge>等待结果</span>
+    </header>
+    <dl>
+      <div><dt>check_id</dt><dd><code data-candidate-field="check_id">—</code></dd></div>
+      <div><dt>release_build_id</dt><dd><code data-candidate-field="release_build_id">—</code></dd></div>
+      <div><dt>snapshot fingerprint</dt><dd><code data-candidate-field="snapshot_fingerprint">—</code></dd></div>
+      <div><dt>quality report</dt><dd><code data-candidate-field="quality_report_sha256">—</code></dd></div>
+      <div><dt>created</dt><dd><time data-candidate-field="created_at">—</time></dd></div>
+      <div><dt>updated</dt><dd><time data-candidate-field="updated_at">—</time></dd></div>
+    </dl>
+  </section>
+
+  <div class="candidate-blocked" data-candidate-blocked hidden>
+    <span aria-hidden="true">!</span>
+    <p><b>当前快照不能构建</b><br>检查结果已保留。请回到运行与审核区域处理阻断项，再重新检查。</p>
+  </div>
+
+  <section class="candidate-build-action" data-candidate-build-action hidden aria-labelledby="candidate-build-heading">
+    <div>
+      <p class="section-index">BUILDABLE</p>
+      <h3 id="candidate-build-heading">检查已通过，可以构建。</h3>
+      <p>按钮会显式提交不可变构建确认。不会弹出第二次确认，也不会修改 <code>current</code>。</p>
+    </div>
+    <button class="button button--primary" type="button" data-candidate-build disabled>构建不可变候选（不激活） <span aria-hidden="true">→</span></button>
+  </section>
+
+  <section class="candidate-built" data-candidate-built hidden aria-labelledby="candidate-built-heading">
+    <span class="candidate-built__mark" aria-hidden="true">✓</span>
+    <div>
+      <p class="section-index">CANDIDATE BUILT / NOT ACTIVE</p>
+      <h3 id="candidate-built-heading">不可变候选已构建</h3>
+      <dl>
+        <div><dt>release_id</dt><dd><code data-candidate-built-field="release_id">—</code></dd></div>
+        <div><dt>built_at</dt><dd><time data-candidate-built-field="built_at">—</time></dd></div>
+        <div class="candidate-built__hashes"><dt>hashes</dt><dd data-candidate-hashes></dd></div>
+      </dl>
+      <p>候选保持未激活；本页面没有修改 <code>current</code>。</p>
+    </div>
+  </section>
+
+  <div class="candidate-error" role="alert" data-candidate-error hidden>
+    <span class="error-code" data-candidate-error-code>RELEASE_CHECK_FAILED</span>
+    <p data-candidate-error-message>候选操作未完成。</p>
+  </div>
+</section>

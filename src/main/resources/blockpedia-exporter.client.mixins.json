@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "package": "com.blockpedia.exporter.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "SubmitNodeStorageMaterialMixin",
+    "TextureAtlasAnimationMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

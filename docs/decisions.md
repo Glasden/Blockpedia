@@ -16,9 +16,9 @@
 | D-003 | Minecraft 基线为 Java 26.2、Java 25、Fabric Loader 0.19.3、Fabric API 0.157.0+26.2、Loom 1.17.19、Gradle 9.5.1；26.2 使用 native Mojang names/unobfuscated，不解析外部 mappings artifact；Python 基线为 CPython 3.14.7 | 导出包必须绑定完整环境清单；版本变化必须生成新索引，不得覆盖旧版本 |
 | D-004 | 默认架构为 Fabric + Python/FastAPI/Jinja2/HTMX + SQLite + 本地文件 + 进程内 Worker | 保持单机、可恢复和可复现；不引入额外服务或大型前端工程 |
 | D-005 | R0 退出前只 hash-lock R0 tooling 实际引入的 Python 依赖；后续依赖使用前必须精确/hash 锁定 | Windows 在对应阶段验证；Linux 依赖安装/运行、wheel/ABI 和最终双平台复现统一在 R5 验证；不预锁未实现的 R2-R4 栈，禁止浮动版本、未锁传递依赖和以最新版代替锁文件 |
-| D-006 | 只实现 OpenAI Responses、一个 `OpenAIResponsesProvider` adapter 和 strict JSON Schema | 可以保存多个 provider profile，但不实现 Chat Completions、Anthropic、其他 provider adapter、provider fallback 或多模型投票；每次请求最多一次总重试 |
-| D-007 | 兼容 Responses 语义的 `base_url` 是同一 provider 的用户批准配置 | 仍只实现 `OpenAIResponsesProvider`；兼容 endpoint 必须通过同一协议能力门并实际使用 `store=false`，不能借此引入其他 API/provider |
-| D-008 | `store=false` 是硬能力门 | 能力探测必须证明 endpoint 支持并实际接受/使用 `store=false`；无法证明即探测失败并禁止 enable，warning/ack 不得绕过 |
+| D-006 | 只实现 OpenAI Responses、一个 `OpenAIResponsesProvider` adapter 和 strict JSON Schema（**已由 D-038 supersede**） | D-038 改为 protocol-neutral `OpenAIProvider` 与两个显式协议 adapter；其余 provider、自动 fallback/切换和多模型投票仍不实现；每次请求最多一次总重试 |
+| D-007 | 兼容 Responses 语义的 `base_url` 是同一 provider 的用户批准配置（**已由 D-038 supersede**） | D-038 改为所选协议 adapter 的用户批准 endpoint 配置；不得把 `base_url` 当作协议 fallback 或第二 provider |
+| D-008 | `store=false` 是硬能力门（**已由 D-038 supersede**） | D-038 保留 Responses 请求 `store=false`、Chat Completions 省略 `store`，但 response echo 不再是 enable gate，任何协议都不证明远端存储策略 |
 | D-009 | 机器事实、AI 语义和人工覆盖必须分层 | ID、合法状态、几何、行为和发布事实不可被 AI 改写；人工覆盖必须可追溯、可重放 |
 | D-010 | 必须登记 `minecraft` 命名空间 100% 注册表 | 不得只收录候选方块；R1 没有变体时先保留 Block/State 并写 exporter machine skip/failure，candidate-build 前必须有独立可审核跳过及原因 |
 | D-011 | 候选资格使用 `eligible`、`conditional`、`excluded`，并允许人工审核跳过 | 资格不能由 LLM 生成；条件候选必须带警告；排除和跳过必须带审核证据 |
@@ -36,17 +36,24 @@
 | D-023 | stale 恢复必须由 WebUI 显式触发 | 启动只检测并展示 stale，不写回任务状态；`recover` 操作才可改变状态；成功任务不得重跑 |
 | D-024 | MCP 只使用 stdio 和四个工具 | 只允许 `index_info`、`search_blocks`、`get_block_details`、`compare_blocks`；无 Streamable HTTP、`resources`、任意 SQL 或写入 |
 | D-025 | MCP stdout 必须纯净且查询只读不可变 release | 协议消息只能写 stdout，诊断只写 stderr；不写日志文件、数据库、文件、cache、logs 或 current；模型不能改变发布数据或候选事实 |
-| D-026 | OpenAI 请求必须 `store=false` 且最小披露 | 不发送密钥、本地路径、整库或无关数据；不能以 warning/ack 绕过 `store=false` 硬门 |
-| D-027 | Provider profile 可保存多个但全局最多一个 active，且 active 约束只作用于 Studio 新写范围 | 非活动 profile 可用于切换；每个 release 冻结离线标注时完整非秘密 provider snapshot（`profile_id`、`model_id`、`base_url_stable_id`、不可逆 `secret_reference` 及相关版本）；MCP 不读可变 active 状态或 workspace 数据库，只按 resolved release snapshot 用同一 model 执行 QuerySpec/重排；secret 无法解析或能力不再通过时本地降级并 warning；release-bound snapshot 不算第二个 active，也不能用于 Studio 新写任务 |
+| D-026 | OpenAI 请求必须 `store=false` 且最小披露（**已由 D-038 supersede**） | D-038 保留最小披露、图片、strict output、本地校验和错误分类；Responses 使用 `store=false`，Chat Completions 省略 `store`；不声称远端存储已验证，第三方信任与策略由用户负责 |
+| D-027 | Provider profile 可保存多个但全局最多一个 active，且 active 约束只作用于 Studio 新写范围（**由 D-038 修订**） | 复用现有 `adapter` 字段并限制为 `openai_responses`/`openai_chat_completions`；每个 release 冻结包含 adapter 的完整非秘密 snapshot；MCP 不读可变 active 状态或 workspace 数据库，只按 resolved release snapshot 使用同一 model 和所选协议；release-bound snapshot 不算第二个 active，也不能用于 Studio 新写任务 |
 | D-028 | Token usage、费用和预算不属于 MVP | 数据库、WebUI、日志和契约均不记录或展示 Token、价格、预算字段 |
 | D-029 | 不使用通用 SQLite migration framework | R0 冻结一份 schema；结构变化先改高优先级契约并重建数据库，不能暗中迁移 |
-| D-030 | Schema ID 按边界分命名空间并冻结当前 ID 集合 | exporter：`export-manifest.v1`、`export-block.v1`、`export-state.v1`、`export-variant.v1`、`export-failure.v1`、`render-metadata.v1`；workspace/release：`block-record.v1`、`state-record.v1`、`visual-variant-record.v1`、`annotation-record.v1`、`manual-override.v1`、`skip-review.v1`、`qualification-review.v1`、`release-manifest.v1`、`release.v1`、`current-pointer.v1`；provider：`provider-batch-envelope.v1`、`annotation-batch-output.v1`、`annotation-wire-item.v1`、`query-spec-output.v1`、`rerank-output.v1`；MCP：`mcp-index-info-output.v1`、`mcp-search-blocks-output.v1`、`mcp-block-details-output.v1`、`mcp-compare-blocks-output.v1`，可共享 `mcp-error.v1`。旧 ID 不得作为新规范当前 ID；wire ID 与 Responses name 分开，固定 name 为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`；R0 要求物化真实 JSON Schema 并验收 |
+| D-030 | Schema ID 按边界分命名空间并冻结当前 ID 集合 | exporter：`export-manifest.v1`、`export-block.v1`、`export-state.v1`、`export-variant.v1`、`export-failure.v1`、`render-metadata.v1`；workspace/release：`block-record.v1`、`state-record.v1`、`visual-variant-record.v1`、`annotation-record.v1`、`manual-override.v1`、`skip-review.v1`、`qualification-review.v1`、`release-manifest.v1`、`release.v1`、`current-pointer.v1`；provider：`provider-batch-envelope.v1`、`annotation-batch-output.v1`、`annotation-wire-item.v1`、`query-spec-output.v1`、`rerank-output.v1`；MCP：`mcp-index-info-output.v1`、`mcp-search-blocks-output.v1`、`mcp-block-details-output.v1`、`mcp-compare-blocks-output.v1`，可共享 `mcp-error.v1`。旧 ID 不得作为新规范当前 ID；wire ID 与各协议 structured-output format name 分开，固定 name 为 `annotation_batch_output_v1`、`query_spec_output_v1`、`rerank_output_v1`；R0 要求物化真实 JSON Schema 并验收 |
 | D-031 | 不把原版 Minecraft 资产放入仓库 | 公开内容只能是源码、文档、真实 JSON Schema、空数据库和 fixture 生成器源码；不得提交生成后的 PNG、非空数据库、真实索引、预览、导出包、人工覆盖或秘密；真实数据只能本地生成/保存 |
 | D-032 | 原始设计稿仅为历史背景/最低优先级 | 原始稿不与新文档一起执行；其中冲突内容禁止实现，发现冲突须在高优先级文档留下影响记录 |
 | D-033 | 黄金查询集、Top-5 和排序调优后置 | 不作为路线图必做项、MVP 退出门或已达成的质量声明 |
 | D-034 | 不制作安装包、容器、服务或自动更新 | 交付为源码锁依赖和本地运行说明；不增加部署层 |
 | D-035 | 等价技术替换必须先记录影响并获项目所有者明确批准 | 记录必须证明单机、复现、无额外服务、MCP 只读和数据契约不受破坏；未经批准不得编码 |
 | D-036 | R0 物化采用最小闭合：精确字段形状唯一由 `schemas/{exporter,workspace,provider,mcp}` 下的 26 个真实 Schema 文件拥有；Markdown 只拥有核心产品、组件和安全行为，示例仅为说明 | 不重复穷举字段形状；R0 只做轻量 inventory/fixture/provider wire 基础验证，不引入通用规则引擎、额外 Schema ID、词汇 artifact、服务或 R2-R4 内部视图设计；项目 owner 已于 2026-08-13 在本会话批准该简化 |
+| D-037 | R3 Phase C candidate check/build 契约按 owner 批准的 Recommended Oracle 方案冻结 | 只增加 WebUI 同步 check/build、check cache、逻辑 snapshot fingerprint、独立 `release-index.v1.sql`、Gate C 质量报告、release 内人工记录包和安全提交边界；不改变 `workspace.v1.sql`、26 个 JSON Schema、依赖、服务、Python CLI、R4 或 R5；Phase C 不实现 activation/current/MCP 或第二 release |
+| D-038 | 2026-08-15 owner-approved：protocol-neutral `OpenAIProvider` 与显式 `openai_responses`/`openai_chat_completions` adapter；Responses `POST /responses`+`store=false`，Chat `POST /chat/completions` 且省略 `store`；不自动 fallback/switch，response echo 不再是 enable gate | Supersedes/revises D-006/D-007/D-008/D-026/D-027；复用现有 `adapter` 字段，不新增 required field、依赖、服务、CLI、SQL column、migration 或 Schema ID；未来才将 adapter 纳入 envelope/cache/signature/release lineage；任何协议都不证明远端 retention，旧 `openai_responses` profiles/releases immutable，in-flight cache/workspace invalidated/rerun |
+| D-039 | 2026-08-15 owner-approved：忽略第三方 gateway 返回的 model identity mismatch；仍要求成功响应存在 string `model`，但不与请求的 `model_id` 比较 | `ProviderProfile.model_id` 仍是每阶段原样发送并用于 cache/run/envelope/release lineage 的 requested identity；返回 model 只作不可信结构字段，不持久化、不展示为已验证实际模型、不替换配置值；不自动切换/fallback，不新增字段、依赖、Schema、SQL、服务、CLI、migration 或 release rewrite |
+| D-040 | 2026-08-15 owner-approved：手动逐批默认；一次明确 WebUI 确认只授权 unchanged frozen remaining batch plan 的自动顺序提交，concurrency 固定为 1；item-local provider failure 继续，fatal provider/config/auth/capability failure 立即停止；支持一次 WebUI bulk retry wave | 复用现有 per-job cursor 的 `approved`、payload signature、audit、`cursor_json` 和 job lineage；不新增 state、DB column/table/migration、config schema、JSON Schema ID/field、dependency、service、CLI、protocol/model fallback 或 retry budget；retry 使用 terminal AI job 的 child cursor/generation，并保持原始 evidence/request rows 可见 |
+| D-041 | 2026-08-15 owner-approved：aggregate plan preview/confirmation 使用已持久化 pending job identity，完整 one-batch rebuild 延迟到每次实际 send 前；仅 supersede D-040 的 aggregate preview/confirmation 全量重算要求 | 复用现有 `job_id`、`logical_key`、`input_signature`、`cursor_json` 中的 payload/hash/tile/variant 数据、`effective_config_hash` 和 frozen provider snapshot；保留 `recomputed_payload_signature` 名称及既有 plan-hash object；不新增 state、SQL、migration、config field、Schema/version、dependency、service、CLI、protocol 或 retry budget |
+| D-042 | 2026-08-15 owner-approved：`prompt.v2` 的首阶段 slim model-visible annotation text、兼容 legacy prompt、最终 Schema diagnostic 和现有 evidence/API/UI 脱敏边界 | 既有 wire/Schema、envelope、cache/signature/release lineage、full local validation 和一次 retry budget 不变；`prompt.v1` 与其它历史 prompt version 原样 replay，只有 exact `prompt.v2` 选择新 text；不新增 provider field/column/table/migration/Schema ID、依赖、服务、CLI 或自动迁移 |
+| D-043 | 2026-08-16 owner-approved：R1 Phase 1 最小渲染纠错、`render.v2` 当前策略、透明 edge-on quadrant/材料真相/动画确定性和历史证据边界 | 当前 exporter 使用 `render.v2`；既有 `render.v1` Schema ID 同时接受 v1/v2，历史导出与 R3 run 不原地修改；仅修正 exporter 运行时与其必要契约，保留无 block-entity fixture 范围、两次同环境导出证据门和 Linux→R5，不继续旧导出 candidate 工作；stable pre-render selection token 进入 `logical_input_signature`，replacement exports 不复用旧签名 |
 
 ## 关键边界的执行解释
 
@@ -132,3 +139,181 @@ Loom `1.17` 替换为精确 `1.17.19`，并将 Minecraft 26.2 mappings 澄清为
 项目 owner 于 2026-08-14 在本会话明确批准将路线图中所有 Linux 实际验证统一重分配到 R5：包括 R2 CPython 依赖安装、`pip check`、产品 Web/平台行为，R4 MCP stdio，Linux wheel/ABI（`manylinux_2_17` / glibc `>=2.17`）、Java/runtime/exporter，以及最终双平台源码锁依赖和运行时复现。该记录只改变验证时点和阶段归属，不删除 Windows/Linux 正式支持、不放宽 Linux 基线、不声称 Linux 已通过；R0-R4 只要求其对应 Windows、静态和 fixture/功能证据，不得因缺少 Linux 证据阻塞退出。
 
 该阶段门重分配不改变本地单机运行、可复现构建目标、无额外服务、MCP stdio 只读边界、既有 Schema/数据契约、release/current 语义或秘密安全边界。R5 必须完整承接上述 Linux 义务并在最终双平台门中验证；R0-R4 的报告可以记录 Linux `deferred`，但不得记录 Linux `passed`。
+
+## R3 provider 契约纠错与生命周期收敛记录
+
+### 2026-08-14 — owner 批准的 R3 契约纠错
+
+项目 owner 明确批准以下 R3 纠错与生命周期收敛，作为当前契约执行，不新增兼容层、服务、migration 或 Schema ID：
+
+1. `provider-batch-envelope.v1` 删除 `vocabulary_version` 和 `vocabulary_sha256` 的 required/properties；不新增 vocabulary artifact，继续保持 26 个 Schema 和 52 个 fixtures。`query_spec` stage 的 `input_summary` 必须精确为 `query_sha256` 单字段；`offline_annotation` 仍只接受 tile-to-variant 映射，`visual_rerank` 仍只接受完整候选映射。
+2. `QuerySpec` 的精确字段、required 集合和枚举以真实 `query-spec-output.v1` Schema 为唯一 owner。文档不再复制字段定义；`source_model_id`、`source_prompt_version`、`values`、`exclude_behaviors` 和 `require_behaviors` 不属于当前 wire Schema。可信 model/prompt 只来自 profile、provider envelope 或 release manifest snapshot。
+3. provider snapshot 只写入 `release-manifest.v1` 对应的 `manifest.json`；`release.v1` 对应的 `release.json` 只使用其 Schema 允许的 release identity、`manifest_sha256` 及其它 release 元数据，不承载 provider snapshot。
+4. `store=false` probe 只有原始 provider response 顶层正式 `store: false` 回显才算通过；请求体、HTTP 2xx、fake endpoint、warning/ack 均不足以证明能力。无回显必须 fail closed；用户批准的兼容 endpoint 使用完全相同的门。
+5. 全局非秘密 profiles 原子保存于 `<data-root>/cache/provider-profiles.json`；workspace 的 `provider_profiles` 只保存 run snapshot。`POST /api/runs` 配置并启动 import 已预留的同一 run，不分配第二 workspace/run。
+
+上述变更不破坏本地单机运行、可复现构建、MCP 只读边界、data-root 高层布局或既有 Schema ID；项目 owner 已于 2026-08-14 在当前会话明确批准。
+
+## R3 Phase C 契约补充影响记录
+
+### 2026-08-15 — owner 批准的 R3 Phase C freeze (Recommended)
+
+项目所有者明确回复 **“批准 R3 Phase C freeze (Recommended)”**。本记录冻结 R3 Phase C 的高优先级契约，依据为 [`webui-and-operations.md`](webui-and-operations.md)、[`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)、[`quality-and-testing.md`](quality-and-testing.md)、[`data-and-schemas.md`](data-and-schemas.md)、[`security-and-distribution.md`](security-and-distribution.md) 和 [`architecture.md`](architecture.md)。这是已批准的契约收敛，**不是技术替换**，不触发兼容层、迁移或旧实现保留义务。
+
+Phase C 只冻结两个同步 WebUI 操作：严格 `POST /api/releases/check` 与严格 `POST /api/releases/build`。check 的 authoritative cache 为 `cache/release-checks/{check_id}/state.json` 和不可修改的同目录 `quality_report.json`；build 只接受最新、未 stale 且 `can_build=true` 的 check，并从该逻辑 snapshot 派生新的 release quality report。发布目录使用独立的 `release-index.v1.sql` 投影契约；`schema_meta.format_version=1` 不是 JSON Schema ID。`manual-overrides.json` 只保存原样完整的三类已审核记录，quality/manual 文件均不新增 Schema ID。`schemas.sha256` 只列 Phase C 实际使用的 Schema，不列 `current-pointer.v1` 或 MCP Schema；`checksums.sha256` 除自身外覆盖 release 中全部普通文件。
+
+本补充明确不改变 `workspace.v1.sql` 和现有 26 个 JSON Schema，不新增 Python 依赖、运行服务、产品 CLI、数据库 migration framework、R4 MCP 实现或 R5 验证要求。Phase C 不实现、不测试 activation、`current.json`、MCP 或第二个 release；这些后续边界只由路线图和对应后续阶段契约引用。该收敛保持本地单机运行、可复现构建、无额外服务、MCP 只读边界和既有数据分层不变。
+
+## D-038：双 OpenAI 协议 adapter 与隐私表述修订
+
+### 2026-08-15 — owner-approved replacement
+
+项目所有者于 **2026-08-15** 在本会话明确批准以下替换；本记录显式 supersede/revise D-006、D-007、D-008、D-026 和 D-027，并作为 D-035 要求的影响记录。它是冻结 MVP provider 边界的治理修订，不代表实现、Schema、测试或 R3 退出证据已经存在。
+
+1. Provider 层使用 protocol-neutral `OpenAIProvider`。每个 profile 复用现有 `adapter` 字段，且只能取显式枚举 `openai_responses` 或 `openai_chat_completions`；每个值对应明确的 wire adapter/codec。禁止自动 protocol fallback/switch、Anthropic/其他 provider adapter 和 model voting。
+2. `openai_responses` 使用 `POST /responses`、图片输入、strict JSON Schema structured output 和 `store=false`；`openai_chat_completions` 使用 `POST /chat/completions`、图片输入、strict JSON Schema structured output，并省略 `store`。两种协议使用同一 model 覆盖 offline annotation、QuerySpec 和 visual rerank 三阶段，使用同一总 retry budget、local validation、stable error classification 和 minimal disclosure。
+3. Responses response echo 不再验证，也不再是 enable gate。任何协议都不能证明远端 retention；规范和实现不得声称 storage 已验证，第三方服务的 trust、retention 和 policy 由用户负责。能力探测仍须按所选协议证明 endpoint、图片输入、strict output 和错误分类能力，但不能依赖 storage echo 推导远端策略，也不能自动改用另一协议。
+4. 不新增 required profile field、dependency、service、CLI、SQL column、migration framework 或 Schema ID。现有 `openai_responses` profiles/releases 仍然有效且不可变；变更前的 in-flight caches/workspaces 不迁移，必须 invalidated/rerun。未来实现才把 adapter 纳入 envelope、cache、signature 和 release lineage，并按协议使用 conditional `store`；当前记录不宣称这些代码已存在。
+
+### D-035 impact proof
+
+- **Local single-machine operation**：仍是现有 Python/FastAPI/SQLite/local files/in-process Worker；两个协议只替换同一 provider boundary，不增加运行服务或远程状态依赖。
+- **Reproducibility**：adapter、wire codec、endpoint、model、prompt/schema versions、retry budget 和 protocol-conditional store 行为进入未来的 request/cache/signature/release lineage；旧 immutable release 不原地修改，旧 cache/workspace 通过 invalidation/rerun 重新获得确定性输入。
+- **No extra service**：不新增 package、daemon、queue、database 或 CLI；复用现有 `adapter` profile field、provider schemas 的现有 IDs 和 data-root。
+- **MCP read-only**：MCP 继续只读 resolved immutable release snapshot，不读可变 active profile/workspace，不写 database、files、cache、logs 或 current；协议 adapter 不扩大 MCP tool 或 selector 边界。
+- **Data layering and release immutability**：机器事实、AI semantic suggestions、manual overrides 仍分层；release-bound provider snapshot 增加 adapter 语义但 release 生成后仍 immutable，旧 `openai_responses` release 不迁移、不重写。
+
+## D-039：第三方 gateway model identity mismatch 信任边界
+
+### 2026-08-15 — owner-approved amendment
+
+项目所有者于 **2026-08-15** 明确批准本项修订。观察到第三方 gateway 可能返回与请求不同的 string `model`；Blockpedia 继续把 profile 中精确配置的 `model_id` 原样发送到三个 stage，并把它作为唯一 requested identity。成功的 Responses/Chat 响应仍必须包含 string `model` 才满足结构有效性；缺失或非 string 仍按既有 `PROVIDER_MODEL_UNAVAILABLE` 或等价 fail-closed structural error 处理，但不同 string 不再使 probe/request 失败。
+
+返回的 model 是不可信 informational echo：不得持久化、展示为已验证的远端实际模型，或替换 annotation、cache、run、provider envelope、release lineage 中的 configured `model_id`。Blockpedia 不声称第三方确实执行了 requested model；第三方路由和模型身份与 retention 一样属于用户负责的 trust/policy 边界。Blockpedia 仍不自动 model switching/fallback，仍只发送 configured `model_id`。
+
+### D-035 impact proof
+
+- **Local single-machine operation**：仍使用现有 Python/FastAPI/SQLite/local files/in-process Worker；仅放宽不可信 response echo 的 equality check，不增加服务或远程状态依赖。
+- **Reproducibility**：可复现性限定为 configured/requested `model_id`、所选 adapter/wire、输入和本地 validated output 的可复现；不能宣称或验证远端实际执行的模型身份。requested `model_id` 继续进入 cache/run/envelope/release lineage，旧 immutable release 不改写。
+- **No extra service**：不新增 profile field、依赖、服务、CLI、SQL、migration、Schema ID、cache 字段或 release rewrite。
+- **MCP read-only**：MCP 继续只读 resolved immutable release snapshot，不读取可变 active profile/workspace，不写 database、files、cache、logs 或 current。
+- **Data layering and release immutability**：返回 echo 不进入 AI semantic、machine-fact 或 manual-override 层；配置的 requested `model_id` 继续作为 release-bound lineage，既有 release 保持 immutable。
+
+## D-040：批次授权、顺序 drain、致命停止与 Provider 重试波次
+
+### 2026-08-15 — owner-approved workflow contract
+
+项目所有者于 **2026-08-15** 明确批准本项持久工作流契约：手动 per-batch mode 仍是默认；一次明确的 WebUI confirmation 可以授权 unchanged frozen remaining batch plan 自动 sequential submission；concurrency 保持 `1`；item-local failure 继续到下一个 approved batch；fatal provider/config/auth/capability failure 在后续 send 前停止；一个 WebUI action 可以为全部 eligible Provider-failed AI batch records 创建一个 bulk retry wave。本记录冻结语义，不代表实现、迁移、真实 provider 请求或测试证据已经存在。
+
+1. **不扩张契约面**：不新增 state、DB column/table/migration、config schema、JSON Schema ID/field、dependency、service、CLI、protocol/model fallback 或 retry budget。manual per-batch approval 仍可单独使用；auto mode 不是新的持久 mode、stage、cursor 或 config snapshot。
+2. **计划授权**：计划只使用现有每个 job 的 cursor `approved`、recomputed payload signature 和 audit。计划 hash 精确为对以下 JCS canonical JSON 的 SHA-256：
+
+   ```json
+   {
+     "run_id": "<run_id>",
+     "effective_config_hash": "<effective_config_hash>",
+     "jobs": [
+       {
+         "job_id": "<job_id>",
+         "logical_key": "<logical_key>",
+         "recomputed_payload_signature": "<signature>"
+       }
+     ]
+   }
+   ```
+
+   `jobs` 必须按冻结计划顺序排列，不得加入其它参与 hash 的字段。确认前所有计划 batch 必须可 inspect，并且计划绑定 immutable plan hash、run-frozen provider 和 requested `model_id`。一次 SQLite transaction 必须重新计算所有 payload signature；任一 TOCTOU、pending 集合、config/provider/requested model 或 hash 不一致时 approve none；全部仍为 included `pending` 且一致时，设置所有 included jobs 的 cursor `approved`，写入 one plan audit 和每个 job 的 approval audit。Worker 在每次 send 前立即再次检查。
+3. **顺序和 lineage**：确认只授权确认时仍 unchanged 的 frozen remaining plan；Worker send concurrency 固定为 `1`。Worker 必须使用 run-frozen profile；可变 global active profile 只作用于新的 Studio work/profile management，绝不能替换已有 run 的 adapter、model 或 base URL。任一 payload/config lineage 改变都会使 approval 对 send 无效；startup 不清除持久化 auto-approved cursor，只有显式 WebUI `recover` 才能改变 stale state。
+4. **逐项与致命错误**：以下 item-local Provider errors 都是 high `needs_review`，但不阻塞 AI_ANNOTATE drain：`PROVIDER_NETWORK_ERROR`、`PROVIDER_TIMEOUT`、`PROVIDER_RATE_LIMITED`、`PROVIDER_SERVER_ERROR`、`PROVIDER_SCHEMA_INVALID_REPAIRABLE`、`PROVIDER_SCHEMA_INVALID`、`PROVIDER_REQUEST_INVALID`、`PROVIDER_PAYLOAD_TOO_LARGE`、`PROVIDER_REFUSAL`、`PROVIDER_INCOMPLETE`、`PROVIDER_OUTPUT_ID_MISMATCH`、`PROVIDER_MACHINE_FACT_CONFLICT`、`PROVIDER_UNKNOWN`，以及 Worker-local `PROVIDER_CACHE_KEY_INVALID`、`IDEMPOTENCY_CONFLICT`。旧 `PROVIDER_STORAGE_UNSUPPORTED` 若意外出现，按 `PROVIDER_UNKNOWN` high review 处理。`PROVIDER_CANCELLED` 是 control signal，不属于 bulk retry。Fatal codes 为 `PROVIDER_NOT_CONFIGURED`、`PROVIDER_CONFIG_INVALID`、`PROVIDER_CAPABILITY_MISSING`、`PROVIDER_AUTH_FAILED`、`PROVIDER_PERMISSION_DENIED`、`PROVIDER_MODEL_UNAVAILABLE`；fatal 必须 atomically persist request evidence、review、job `failed`、stage `failed`、run `failed` 和 audit，并在 later sends 前停止。
+5. **阶段语义**：item `needs_review` 不会停止 AI_ANNOTATE drain；valid low-confidence item 和上述 item-local failure 都继续进入 `VALIDATE`，再进入 `HUMAN_REVIEW`。只有 fatal 才立即终止 AI_ANNOTATE 和后续发送；其余审核仍由 candidate gate 阻断，直到人工处理。
+6. **Provider retry generation**：retry source 必须是 terminal `needs_review|failed` 的 AI job，且具有 eligible item-local Provider error；fatal codes、`PROVIDER_CANCELLED` 和没有 Provider error 的 job 不 eligible。不能以单个 variant review 作为 source。source 必须是 leaf（没有 child）；新 child cursor 必须包含 `retry_of_job_id`，nonce 必须由 source `job_id + input_signature` 确定性生成，每个 source 只能生成一个 child；failed child 可作为下一次显式 generation 的 source。创建时在同一 transaction resolve source 的所有 open provider-review siblings，同时保留原 job、evidence 和 provider request rows。重复 row/bulk POST 必须 idempotent；legacy retry rows 只兼容读取，不重写。Generic `retry-failed` 必须排除 fatal/provider AI jobs，不能把同一 logical request 重跑超过两次总尝试预算。
+7. **UI 与控制**：所有 actionable `running`/`failed`/`needs_review` rows 必须在同一 scrollable work area 内可见；pending/recent summary 可以 bounded。Provider error row 提供 row retry；一次 confirmed bulk action retry all eligible failed leaf batches 并 auto-approve that retry wave。succeeded 和没有 Provider error 的 low-confidence `needs_review` 不得进入该 wave；原始 evidence 始终可见。pause/cancel 只停止 future sends；SSE/browser disconnect 不停止工作。
+
+### D-035 impact proof
+
+- **Local single-machine operation**：只复用现有 WebUI、SQLite transaction、`cursor_json`、进程内 Worker 和 audit；不会引入队列服务、后台常驻服务或远程授权服务。
+- **Reproducibility and lineage**：计划 hash 只绑定 run、effective config 和 ordered recomputed payload signatures；run-frozen provider/requested model 与 immediate pre-send recheck 防止 active profile 或 TOCTOU 改写既有 run。retry child 以 source job/input signature 生成确定性 identity，旧 evidence/request rows 保持可回放。
+- **No extra service or schema**：`approved`、payload signature、audit、existing job cursor/lineage 足以表达授权和 generation；不增加 SQL、migration、JSON Schema、config field、dependency、CLI 或 retry budget。
+- **MCP read-only and release immutability**：该契约只作用于 WebUI/Worker workspace workflow；MCP 仍只读 resolved immutable release，不读取可变 active profile/workspace，也不写 current、release 或日志。
+- **Security and recovery**：一次确认不是永久授权；计划/lineage mismatch fail closed，fatal failure 以同一 transaction 写齐证据并停止 later sends；startup stale detection 仍 read-only，只有显式 `recover` 改变 stale state。项目所有者已于 2026-08-15 明确批准，实际实现和 focused acceptance evidence 仍待对应 R3 工作完成。
+
+## D-041：聚合计划预览的持久身份与最终发送前重建
+
+### 2026-08-15 — owner-approved amendment
+
+项目所有者于 **2026-08-15** 明确批准本项 amendment。动机是一次真实运行中有 `118` 个 pending batches；只读 aggregate plan preview 超过 `180` 秒，而单个 per-batch preview/send 仍然有界。本记录不保存 endpoint、profile、local secret 或本地数据细节。D-041 **只 supersede D-040 中“aggregate plan preview/confirmation 必须为全部 jobs 重新生成 contact sheet/prompt/payload signature”的要求**；D-040 的 manual default、concurrency `1`、item-local continue、fatal stop、retry、审计和其余授权语义全部保持有效。本 amendment 是契约冻结，不代表实现或测试已经完成。
+
+1. **Aggregate plan identity**：aggregate plan preview/confirmation 使用已经持久化的 pending job identity：`job_id`、`logical_key`、`jobs.input_signature`、cursor 中的 `payload_signature`/`input_hash`、cursor 中的 `tile_ids`/`variant_ids`、run `effective_config_hash` 和 frozen provider snapshot。系统必须验证这些持久化 hash 彼此一致且有效；任何缺失、冲突或无效都 fail closed，并在 confirmation transaction 中 approve none。aggregate path **MUST NOT** 为全部 pending jobs rebuild images、contact sheets、prompt text 或 machine metadata。
+2. **Plan-hash compatibility**：既有 canonical plan-hash object 和 field name `recomputed_payload_signature` 必须保留，不引入另一种 format、Schema 或 version；D-041 定义该字段在 plan time 的值为“通过持久化 hash 校验的 persisted payload signature”。它不是对所有 jobs 重新构建后得到的临时 signature。
+3. **Lazy individual inspection**：aggregate confirmation 前，每个 planned batch 仍必须可以通过既有 safe preview 完整 inspect；该 one-batch preview 可以重建其有界 payload、图片/联系表、prompt 和 machine metadata，不得把所有 batch 的重建合并进 aggregate operation。
+4. **Final TOCTOU gate**：在 **每一次** actual external send 前，Worker 仍必须依据 frozen run profile rebuild complete one-batch payload/contact sheet/prompt/machine metadata，recompute full signature，并与 approved job signature 比较。任一 mismatch 必须 revoke that job approval、在任何 HTTP request 前 pause，并不得发送该 batch；该 gate 不被 aggregate persisted identity shortcut 绕过。
+5. **Unchanged remainder and scope**：一次 confirmation 仍只授权 displayed unchanged persisted plan；confirmation 前 DB job、persisted signature、pending identity 或 config/provider lineage 改变时，沿用 D-040 all-or-none conflict。manual mode/default、concurrency `1`、item-local continue、fatal stop、retry generation/idempotency/sibling resolution、图片与 structured output、no fallback 和 audit 不变。
+6. **No expansion**：不新增 schema、SQL column/table、migration、persisted state、config field、dependency、service、CLI、protocol/model fallback 或 retry budget；不改 `recomputed_payload_signature` 的格式或字段名。
+7. **Focused evidence**：验收使用 call-count/monkeypatch evidence，而不是 flaky wall-clock threshold：aggregate preview/confirm 对 `100+` pending jobs 不调用 per-job contact-sheet/prompt rebuild；persisted signature mismatch approve zero；pre-send full recompute mismatch 产生 zero provider calls；per-job preview 仍展示 exact safe text/image/metadata。
+
+### D-035 impact proof
+
+- **Local single-machine operation and performance**：aggregate operation 只读取并验证已有 SQLite job/cursor identity，完整重建保留在单个 batch 的 bounded preview/send；不引入服务、并发队列或远程依赖。
+- **Reproducibility**：plan hash 的 canonical object 和 `recomputed_payload_signature` 名称不变；plan-time value 明确来自 validated persisted signature，实际发送前仍由 frozen profile 完整重建和复算，避免以性能优化削弱最终 TOCTOU gate。
+- **No schema or data-contract change**：复用现有 job/cursor/config/provider snapshot 和 audit；不增加 SQL、migration、state/config field、Schema/version、依赖、CLI 或 retry budget。
+- **Security and recovery**：每个 batch 的 lazy safe preview 保留用户可检视性；persisted mismatch fail closed，pre-send mismatch 在 HTTP 前 revoke/pause；D-040 的 all-or-none confirmation、fatal stop、stale read-only 和 explicit recover 语义不变。
+
+## D-042：`prompt.v2` 首阶段 slim annotation text 与最终失败诊断
+
+### 2026-08-15 — owner-approved amendment
+
+项目所有者于 **2026-08-15** 批准本项第一阶段简化。当前运行证据摘要为 `8` 个 terminal batches（`4` transport、`4` final schema invalid）、`0` artifacts、`118` pending；本记录不推断错误成因，不记录 endpoint、profile 或本地 ID。D-042 只冻结新 prompt version、最终诊断保留和兼容边界，不声称实现、重跑或 R3 退出已经完成。
+
+1. **Prompt version compatibility**：现有 frozen runs/releases 必须保留其 `prompt_version` 和精确 legacy prompt behavior；`prompt.v1` 必须可 replay。禁止原地修改、自动迁移或为当前 pending jobs 自动 re-sign。只有 exact `prompt.v2` 选择新行为；其它已有历史 version string 继续使用 legacy behavior。使用 `prompt.v2` 必须创建新的 run/profile snapshot。
+2. **`prompt.v2` model-visible input**：trusted instruction 必须要求 annotate existing tiles、逐个复制 tile 已有的 exact `variant_id`、绝不创建/修改 ID 或 machine facts；contact sheet 和 tile labels 保留。模型可见 `tiles` 只含 `tile_id`、`variant_id`；每 tile metadata 只含 `tile_id` 和一份去重、有界的 `geometry_classes`。模型 text 移除 `image_sha256`、`machine_metadata_sha256`、`block_id`、`canonical_state_id`、exact dimensions/volume、全部 behavior booleans/emission、`machine_tags`、feature metrics、`feature_extractor_version`、feature `input_sha256` 以及重复的 feature geometry/tags。完整 machine metadata、hashes、source images、envelope/cache/signature/release lineage 仍只在本地，校验规则不变。
+3. **Wire compatibility**：D-042 不修改 current output wire/Schema；模型仍返回 `schema_id`、`variant_id` 和当前 `annotation-wire-item.v1` 要求的全部 13 个 item fields。local `schema_id` injection、`tile_id` codec 和 semantic-field reduction 不在本项实现；只有 diagnostics 足以支持另一个 owner decision 并物化相应 Schema change 后，才能改变它们。
+4. **Final diagnostic**：只有 FINAL annotation validation 在总 retry budget 用尽后仍失败时，才可产生一条 sanitized diagnostic。allowlist 严格为：`stage`（`offline_annotation`）、`phase`（`json_parse`、`output_shape`、`wire_schema`）、`path`（有界 JSON path，parse/shape 使用 `$`）、`keyword`（有界稳定 validator/parse keyword）、`observed_type`（allowlisted JSON type 或 `missing`）、`observed_length`（非负有界 integer 或 `null`）。禁止 raw/prefix/value、provider message、exception text、repair context、prompt/image/secret 和 response/value hash。第一次 repairable failure 在第二次成功时不得持久化。
+5. **Diagnostic path and retention**：diagnostic 通过 internal `ProviderResult` 传递，并追加到既有 `PROVIDER_FAILURE` `review_tasks.evidence_json`，保留现有 job/provider request refs。provider envelope、`provider_requests` column、table/report、migration 和 Schema ID 均不增加；既有 evidence rows 继续有效。Review/API/UI 只可用普通 labels 展示这六个字段，不能从 `path` 派生或渲染 raw value。
+6. **Validation boundaries**：Provider-side full wire validation 继续用于 repair；Worker-side full validation 继续用于 persistence/custom providers；ID/hash/cache/annotation-record/variant/`VALIDATE`/release boundaries、local `uniqueItems`、max-one-retry 全部保留。只移除 freshly produced by `_hash_json` hash 上的 tautological regex check；其它 diagnostic merge/move 只有在 externally observable classification 不变时允许。
+7. **Lineage and pending jobs**：`prompt.v2` 通过 frozen `prompt_version` 改变 signature/cache identity，必须使用 fresh run。当前 `118` pending v1 jobs 保持 untouched/paused，不自动 cancel、delete 或 re-sign。
+8. **Focused evidence**：两种 adapter 都须以 v2 text 发送 exact allowlisted model-visible fields，同时 local envelope/hash checks 仍使用 full metadata；验证 v1 byte-for-byte/current behavior compatibility 与 source-change TOCTOU；malformed JSON、missing required、wrong type、additional property、duplicate-array 的 final failure 只保留六个安全诊断字段，successful repair 不保留诊断；DB/API/UI 不出现 raw output/value/prefix/secret/path-like value；现有 Provider/Worker/release validation 继续通过。prompt size comparison 只能作为 evidence，不得写成 quality claim。
+
+### D-035 impact proof
+
+- **Local single-machine operation**：只调整选定 prompt version 的模型可见输入和已有 review evidence 传递，不增加服务、依赖、CLI、数据库结构或远程状态。
+- **Compatibility and reproducibility**：`prompt.v1` 与其它历史 version string 保持 byte-for-byte legacy replay；`prompt.v2` 通过新 run/profile snapshot 进入现有 signature/cache/release lineage，旧 release、旧 pending jobs 和旧 evidence 不原地改写。
+- **Data contract and validation**：wire Schema、13 个 item fields、provider envelope、full local validation、ID/hash/cache/release gates 不变；diagnostic 是既有 review evidence 的六字段 allowlist，不是新的 Schema 或 provider payload。
+- **Security and disclosure**：v2 仅减少 model-visible metadata；完整机器事实、hash、图片和 lineage 留在本地。最终失败只保留六个有界字段，成功 repair 不落诊断，API/UI 不回显 raw value、secret、prompt、image 或 provider body。
+
+## D-043：R1 Phase 1 exporter 渲染纠错与历史兼容
+
+### 2026-08-16 — owner-approved Phase 1 contract
+
+项目所有者批准本项最小 exporter 纠错范围；本项随后由 Gate 3 closure 条目记录了最终 corrected runtime evidence，但不代表 R3、candidate 或人工审核退出证据已经存在。两个旧导出、各自 validator 报告和现有 R3 run 必须原样保留为历史证据；不得从它们继续 candidate 工作。现有 R3 run 虽有 `1000` 个已验证 annotation，其渲染输入来自缺陷 exporter，必须视为历史/被 supersede 的 run；其中 `152` 个 rerender events 继续作为审计证据，不能执行为本次修复，也不能删除或静默解决。
+
+1. **最小渲染纠错**：当前 exporter policy 固定为 `render.v2`。四视角 composite 中允许一个或多个透明的 edge-on quadrant；只要 composite 非空就保留该变体，`nether_portal` 也按此规则保留。整个 composite 全透明仍然失败。不得用本项引入 block-entity/NBT fixture、邻接组合、任意流体或其它超出当前范围的夹具；预期仍保留 `43` 个 block-entity fixture skips 和 `10` 个 invisible/technical skips。
+2. **Schema 与 replay 兼容**：现有 `export-manifest.v1`、`export-variant.v1` 和 `visual-variant-record.v1` Schema ID 不变，其 active `render_policy_version` 接受 `render.v1` 与 `render.v2`。未修改的历史 `render.v1` records、workspace/release data 在当前 v1 Schema ID 下必须保持 valid，并可在其 record/run context replay；新的/current fixtures 和后续 exporter 默认使用 `render.v2`。preserved old export package 不在 repository Schema bytes 变化后由 current external validator 重新验证；其 embedded `schemas.sha256`/`schema_inventory` 继续是 binding evidence，任何 current validation 必须报告 `SCHEMA_INVENTORY_HASH_MISMATCH`。不得 bypass hash、自动迁移、增加 historical Schema snapshot layer 或使用 version-aware validator fallback；必须保留旧 package bytes 和 reports，不伪造新 policy。
+3. **缺失材料真相**：Java 对 resolved submission 的 material identity 是 authoritative，覆盖 whole-model/material missing、整个 missing model、vanilla material/quads，以及 Fabric mesh；Fabric mesh 使用 block-atlas missing sprite 的 `SpriteFinder` 和 missing-sprite UV bounds 判定。`minecraft:missingno` 的精确 source checker 事实是四象限 `#F800F8`/`#000000`，但渲染后的颜色不具权威性。Python 不再使用宽松的全局 magenta/black 比例；只能以严格 canonical-checker 检查作 defense-in-depth，ambiguous pixels 不能单独证明 missing texture。不得新增第二个 authoritative material 规则。
+4. **动画与随机性确定性**：使用 scoped client-only gate；导出前调用并 await resource reload 以重置 atlas，导出期间只取消 block atlas (`TextureAtlas.LOCATION_BLOCKS`) 的 `cycleAnimationFrames`，成功和失败路径都清除 gate；不得修改 private field。保留 resolver 的固定 seed `42L`，不引入 world-position seed；实际动画/seed 控制必须进入现有 renderer options/environment identity，成为 render input 的一部分。
+5. **最小运行时证据**：实现完成后必须先有 targeted smoke，覆盖恢复的 thin geometry、保留的真实 skips、`nether_portal`、bubble-coral-like missing-material 判定和延迟动画重复；replacement exports `055316`/`060151` 虽通过 validator，但存在 `2` 个 dynamic preview mismatches，不是最终 pairwise evidence，必须保留。随后必须在同一冻结 Windows 环境恰好生成两次新的 corrected export；两次新导出都必须通过既有 R1 validator，且 pairwise 的所有 `preview.png`、`mask.png`、`render.json` 以及规范化 records/masks 与现有 validator 结果一致。Linux Java/runtime/exporter 和最终双平台证据仍统一 deferred 到 R5。
+
+### D-035 impact proof
+
+- **Local single-machine operation**：只调整现有 Fabric exporter 的渲染接受条件、resolved-material 判定和客户端动画控制；不增加服务、依赖、CLI、SQLite 或 Python 重渲染职责。
+- **Reproducibility**：`render.v2`、固定 resolver seed `42L`、atlas reload/freeze 控制和实际 renderer options/environment identity 进入既有 render input lineage；历史 `render.v1` records/workspace/release data 和旧 reports、旧 R3 run 不改写，preserved old export package 不在 repository Schema bytes 变化后由 current external validator 重新验证，corrected export 使用新 policy 和 fresh lineage。
+- **Data contract and scope**：复用现有三个 v1 Schema ID，仅扩展 policy enum；保留 `nether_portal` 非空 composite、43 个 block-entity skips、10 个 invisible/technical skips 和既有 failure/review 语义，不增加 fixture/schema namespace。
+- **Material and security boundary**：Java resolved submission 保持机器事实 authority；Python canonical checker 只作防御性校验，不能从模糊像素推断缺失材料；不记录原版资源、秘密或额外运行时状态。
+- **Platform boundary**：Windows targeted smoke 与两次同环境导出属于当前修复证据；Linux 保持 R5 义务，不以缺失 Linux 证据阻塞本 Phase 1 contract freeze。
+
+### 2026-08-16 — owner-approved dynamic-render scope amendment
+
+项目所有者停止 dynamic-render research，并批准 `minecraft:end_portal` 与 `minecraft:end_gateway` 作为 non-building 的 explicit machine pending skips。两个精确 block ID 必须继续登记并保留全部合法 states；exporter 必须在进入渲染前使用现有 `BLOCK_ENTITY_FIXTURE_UNSUPPORTED` 写入 ordinary auditable pending skip：不生成 preview、mask 或 render directory，failure/variant/state mapping 仍沿用现有 skip 关系并要求后续 human review，绝不能静默过滤。不得新增 reason code、Schema ID 或 allowlist framework；`nether_portal` 仍按 D-043 原批准规则 renderable。
+
+这项 scope amendment 将 baseline 从 `41` 个 block-entity + `10` 个 invisible/technical skips（`51`）更新为 `43` + `10`（`53`）。单独观察到的 `melon_stem`、`pumpkin_stem`、`tripwire` `OBJECT_TOO_SMALL` 项仍保持 reviewable，本 amendment 不重新分类它们。replacement exports `055316`/`060151` 已通过 validator，但有 `2` 个 dynamic preview mismatches，不是最终 pairwise evidence，必须保留；corrected evidence 仍要求同一环境下恰好两次新的 exports。本 amendment 不代表实现、pairwise PASS、R3 退出或 candidate 完成。
+
+### 2026-08-16 — owner-approved logical selection-policy identity amendment
+
+`minecraft:end_portal`/`minecraft:end_gateway` 的稳定逻辑 selection-policy token 精确冻结为：`pre-render-skip.v1;reason=BLOCK_ENTITY_FIXTURE_UNSUPPORTED;ids=minecraft:end_gateway,minecraft:end_portal`。该 token 必须在 `logical_input_signature` 中按固定 framing 顺序写入：紧接 `dedupe_policy_version` 之后、resource snapshot 与 registry hashes 之前；它是 logical selection，不是 graphics environment，**不得**写入 `renderer_options`。因此该 token 的变化会 transitively 改变 `render_input_signature`；任何会影响输出的 pre-render skip policy 变化都必须修改这个 exact token，不能静默改变语义或引入 generic framework。
+
+既有 `render.v2`、Schema ID 和 `BLOCK_ENTITY_FIXTURE_UNSUPPORTED` reason enum 保持不变。replacement exports `055316`/`060151` 使用旧 logical/render signatures；后续 replacement/corrected exports 必须具有不同的 `logical_input_signature` 和 `render_input_signature`。本 amendment 冻结 identity；Gate 3 closure 条目已记录相应 runtime evidence，但不代表 R3、candidate 或人工审核完成。
+
+### 2026-08-16 — Oracle Gate 3/R1 P0 closure evidence
+
+Oracle Gate 3 判定 PASS。最终 pair 为 `run/blockpedia-data/exports/26.2/export_20260816T091512Z/` 与 `run/blockpedia-data/exports/26.2/export_20260816T093009Z/`；两者均为 `1196` blocks/variants、`32366` states、`1140` selected、`56` pending skips。两个 validator reports 均通过，SHA-256 分别为 `d7c6c166695ac4b56ae3f2720aa972b749429f2ed4d89c1738a4293891c2aa3d` 和 `5ffaccdfb35e010bc2333504e4d223635b76e4d6afb7a88d3d8111a7c3d3904b`。
+
+Pairwise report `run/blockpedia-data/reports/export_20260816T091512Z--export_20260816T093009Z-pairwise.json` 的 SHA-256 为 `a328dc6e64ce3423995ec268d760d8108c2bf79dd0ff9d2ee7b8afe7d8254699`，status=`passed`；全部 `3420` 个 render artifacts match。pair 的 logical/render signatures 以 `f39a...` 与 `fbd3...` 报告，在 pair 内一致且不同于 pre-amendment signatures。该证据只关闭 D-043/R1 P0；3 个 `OBJECT_TOO_SMALL`（`melon_stem`、`pumpkin_stem`、`tripwire`）保持 ordinary reviewable R3 pending items，不重新分类为 R1 blocker。旧 exports/runs/reports 继续作为历史证据保留；本条不代表 R3、candidate 或人工审核完成。

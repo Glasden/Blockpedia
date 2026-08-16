@@ -12,6 +12,7 @@ import net.minecraft.network.chat.Component;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.concurrent.CompletableFuture;
 
 public final class BlockpediaExporterClient implements ClientModInitializer {
     private static ExportJob activeJob;
@@ -37,7 +38,14 @@ public final class BlockpediaExporterClient implements ClientModInitializer {
             source.sendError(Component.literal("Blockpedia export is already running."));
             return 0;
         }
-        activeJob = new ExportJob(source.getClient());
+        try {
+            activeJob = new ExportJob(source.getClient());
+        } catch (Throwable throwable) {
+            String message = throwable.getMessage() == null
+                ? throwable.getClass().getSimpleName() : throwable.getMessage();
+            source.sendError(Component.literal("Blockpedia export could not start: " + message));
+            return 0;
+        }
         source.sendFeedback(Component.literal("Blockpedia export queued."));
         return 1;
     }
@@ -49,26 +57,56 @@ public final class BlockpediaExporterClient implements ClientModInitializer {
         }
         try {
             if (job.advance()) {
+                job.clearAnimationFreezeGate();
                 activeJob = null;
             }
         } catch (Throwable throwable) {
-            job.fail(throwable);
-            activeJob = null;
+            try {
+                job.fail(throwable);
+            } finally {
+                job.clearAnimationFreezeGate();
+                activeJob = null;
+            }
         }
     }
 
     private static final class ExportJob {
         private final Minecraft minecraft;
+        private final CompletableFuture<Void> resourceReload;
         private ExportPackage exportPackage;
         private Stage stage = Stage.QUEUED;
+        private volatile boolean reloadComplete;
+        private volatile Throwable reloadFailure;
+        private boolean animationFreezeGateCleared;
 
         private ExportJob(Minecraft minecraft) {
             this.minecraft = minecraft;
+            boolean gateEnabled = false;
+            try {
+                AnimationFreezeGate.enable();
+                gateEnabled = true;
+                resourceReload = minecraft.reloadResourcePacks();
+                resourceReload.whenComplete((ignored, failure) -> {
+                    reloadFailure = failure;
+                    reloadComplete = true;
+                });
+            } catch (Throwable throwable) {
+                if (gateEnabled) {
+                    AnimationFreezeGate.clear();
+                }
+                throw throwable;
+            }
         }
 
         private boolean advance() throws IOException {
             switch (stage) {
                 case QUEUED -> {
+                    if (!reloadComplete) {
+                        return false;
+                    }
+                    if (reloadFailure != null) {
+                        throw new IOException("resource reload failed", reloadFailure);
+                    }
                     feedback("Blockpedia export running: EXPORT_REGISTRY");
                     exportPackage = ExportPackage.prepare(minecraft);
                     stage = Stage.EXPORT_REGISTRY;
@@ -107,6 +145,13 @@ public final class BlockpediaExporterClient implements ClientModInitializer {
                 }
             }
             minecraft.gui.hud.getChat().addClientSystemMessage(Component.literal("Blockpedia export failed: " + message));
+        }
+
+        private void clearAnimationFreezeGate() {
+            if (!animationFreezeGateCleared) {
+                animationFreezeGateCleared = true;
+                AnimationFreezeGate.clear();
+            }
         }
 
         private void feedback(String message) {

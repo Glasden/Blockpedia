@@ -8,7 +8,7 @@
 
 相关组件契约：
 
-- [`openai-provider.md`](openai-provider.md)：唯一 `OpenAI Responses` profile、能力探测和严格重试；
+- [`openai-provider.md`](openai-provider.md)：protocol-neutral `OpenAIProvider`、显式 adapter、能力探测和严格重试；
 - [`search-and-ranking.md`](search-and-ranking.md)：搜索测试台、`QuerySpec`、硬过滤和降级；
 - [`mcp-api.md`](mcp-api.md)：MCP 只读 release 与四工具协议；
 - [`quality-and-testing.md`](quality-and-testing.md)：服务层/路由层验收和发布门；
@@ -23,7 +23,7 @@ WebUI 是本地单用户索引工作台，不是玩家账户系统、远程管�
 ```text
 HTTP/Jinja/HTMX routes
   → application services/use cases
-  → repositories + OpenAIResponsesProvider + file/release store
+  → repositories + OpenAIProvider + file/release store
   → SQLite/local files
 ```
 
@@ -62,6 +62,7 @@ block-index mcp [--data-root <path>]
   exports/<minecraft_version>/<export_id>/
   workspace/<minecraft_version>/<run_id>/
   cache/
+    provider-profiles.json
   releases/<minecraft_version>/<release_id>/
   current.json
   logs/
@@ -79,7 +80,9 @@ CLI startup arguments > environment variables > profile/project configuration > 
 
 来源冲突或类型不兼容必须返回 `CONFIG_PRECEDENCE_CONFLICT`，不得静默合并。CLI 只能覆盖 `data-root` 等非冻结启动项；host/port 不属于配置，永远固定为 `127.0.0.1:8765`。环境变量包括 `BLOCKPEDIA_DATA_ROOT` 和 `OPENAI_API_KEY`（后者只作为秘密回退）；profile/project 配置包含 `model_id`、非秘密 `base_url`、版本、超时、并发、Schema/prompt 和搜索版本；精确字段形状由真实 Schema 文件拥有，内置默认只提供冻结值。
 
-最终生效配置必须计算 `effective_config_hash` 并写入 run/job snapshot。snapshot 可以包含：`profile_id`、`model_id`、`base_url_stable_id`、`minecraft_version`、`resolved_release_id`、`manifest_sha256`、并发、超时、Schema/prompt/search 版本、重试策略和非秘密路径稳定标识；**MUST NOT** 包含 API key、Authorization、图片 bytes、完整 provider response、Token usage、成本或预算。
+最终生效配置必须计算 `effective_config_hash` 并写入 run/job snapshot。snapshot 可以包含 configured/requested `model_id`、`adapter`、`profile_id`、`base_url_stable_id`、`minecraft_version`、`resolved_release_id`、`manifest_sha256`、并发、超时、Schema/prompt/search 版本、重试策略和非秘密路径稳定标识；**MUST NOT** 包含 API key、Authorization、图片 bytes、完整 provider response、response model echo、Token usage、成本或预算。
+
+全局非秘密 profiles 的唯一持久来源是 `<data-root>/cache/provider-profiles.json`。WebUI 必须以临时文件、flush/fsync 和原子替换保存该文件；文件不得包含 API key 或其它秘密。workspace 的 `provider_profiles` 仅作为 run snapshot，不能作为全局配置库；该收敛不新增服务、migration 或 Schema ID。
 
 ### 3.3 秘密
 
@@ -111,15 +114,15 @@ MVP **MUST NOT** 使用通用 SQLite migration framework。schema 在 R0 冻结�
 
 | 区域 | 必须能力 | 明确禁止 |
 |---|---|---|
-| `Provider` | 多个非活动 profile、唯一 active profile、Keyring/env 状态、能力探测、enable/disable、待发送预览 | Chat Completions、Anthropic、第二 model、usage/成本、`store=false` 硬门绕过 |
+| `Provider` | 多个非活动 profile、唯一 active profile、显式 `openai_responses`/`openai_chat_completions` selector、Keyring/env 状态、协议感知能力探测、enable/disable、待发送预览、requested model warning | 协议自动切换、Anthropic、第二 model、usage/成本、retention/远端模型身份验证或绕过字段 |
 | `Import` | 版本选择、导出包 check、导入到 workspace、逐项错误 | 直接覆盖 release、CLI 导入 |
-| `Pipeline` | run/pause/resume/status、heartbeat、失败恢复、单项显式重试 | 无限自动重试、无审计后台写入 |
+| `Pipeline` | run/pause/resume/status、heartbeat、失败恢复、手动逐批默认、计划确认后的顺序提交、单项/批量 Provider retry | 无限自动重试、无审计后台写入、并发发送 |
 | `Review` | normal/high 队列、机器事实只读、语义编辑、声明式 override、skip | 修改机器事实、无原因 skip、静默发布 |
 | `Release` | check/build/activation-check/apply/rollback/cleanup、hash、审计 | 原地改 release、删除回滚证据 |
 | `Search test` | QuerySpec、hard filter、Top-24、family 去重、联系表、降级结果 | 持久化测试 query、隐藏 warning、放宽 hard |
 | `Settings/Logs` | data root、日志级别/保留、脱敏日志 | 远程遥测、秘密查看、Token/成本仪表盘 |
 
-Provider 页面可以保存多个非活动 `openai_responses` profile，但全局最多一个 active profile；active 只控制 Studio 新写任务和新 release。release-bound MCP 使用已解析 release 冻结的 provider snapshot，不读取或比较可变 active profile。每个 profile 在 enable 前必须通过图片、实际 Responses Structured Outputs strict Schema、错误分类和实际 `store=false` 四项硬能力门。任一项失败都禁止 enable；不得用确认、豁免或其他路径绕过 `store=false`。具体字段见 [`openai-provider.md`](openai-provider.md)。
+Provider 页面可以保存多个非活动 profile，但全局最多一个 active profile；每个 profile 必须显式选择 `openai_responses` 或 `openai_chat_completions`，并显示所选 endpoint、请求字段和隐私边界。页面必须显示简短警告：`model_id` 是发送的 requested identity，第三方 gateway 可能改写 response model；Blockpedia 不验证或声称远端实际模型身份。active 只控制 Studio 新写任务和新 release；既有 Responses profile/release 继续有效。release-bound MCP 使用已解析 release 冻结的 provider snapshot，不读取或比较可变 active profile。每个 profile 在 enable 前必须通过所选 adapter 的图片、strict Structured Outputs、错误分类、requested model/auth 和协议 wire 形状能力门；Responses 发送 `store=false`、Chat 省略 `store`，两者都不证明远端 retention。任一能力失败都禁止 enable；不得提供协议 fallback、retention/模型身份确认或绕过字段。具体字段见 [`openai-provider.md`](openai-provider.md)。
 
 页面初始 HTML 必须由服务端渲染。状态 hero 的可滚动区域必须展示完整的 11-stage timeline（顺序仍为 `PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS → VALIDATE_RENDERS → EXTRACT_FEATURES → AI_ANNOTATE → VALIDATE → HUMAN_REVIEW → BUILD_RELEASE → ACTIVATE_RELEASE`）。下方使用统一 live work 区域展示 heartbeat、item aggregates、current step、recent steps 和 latest allowlisted audit projection。浏览器刷新后以持久化的 `check_id`/run snapshot 恢复；不要求 `localStorage`。EventSource 是 live DOM 更新的权威来源，HTMX/普通页面刷新不得与其维护第二套状态。
 
@@ -155,7 +158,7 @@ Provider 页面可以保存多个非活动 `openai_responses` profile，但全�
 
 `GET /api/provider/profile` 返回无秘密 `ProviderProfile`。
 
-`PUT /api/provider/profile` 的精确字段由真实 Schema 文件拥有；请求 Schema 不包含任何存储确认或绕过字段。出现 `api_key`、`provider` 非 `openai_responses`、第二 model 或未知字段必须返回 `PROVIDER_CONFIG_INVALID`。保存状态为非活动 `unverified`；改变 base URL、model、secret ref、Schema、prompt 或排序版本必须使能力变为 `unverified` 并禁用该 profile 的新 AI job。`draft` 只能作为配置编辑命令/事件，不得作为持久化 run、stage 或 item 状态。
+`PUT /api/provider/profile` 的精确字段由真实 Schema 文件拥有；请求必须显式提供合法 `adapter`，且不包含任何存储确认、协议 fallback 或绕过字段。出现 `api_key`、未知 adapter、第二 model 或未知字段必须返回 `PROVIDER_CONFIG_INVALID`。保存状态为非活动 `unverified`，并原子更新 `<data-root>/cache/provider-profiles.json`；改变 adapter、base URL、model、secret ref、Schema、prompt 或排序版本必须使能力变为 `unverified` 并禁用该 profile 的新 AI job。`draft` 只能作为配置编辑命令/事件，不得作为持久化 run、stage 或 item 状态。
 
 `POST /api/provider/probe` 请求只接受 profile 标识，不提供任何存储确认或绕过字段：
 
@@ -163,9 +166,9 @@ Provider 页面可以保存多个非活动 `openai_responses` profile，但全�
 {"profile_id": "default"}
 ```
 
-服务使用原创最小 PNG，并实际发送生产使用的三个 strict wire Schema/name 对（`annotation-batch-output.v1`/`annotation_batch_output_v1`、`query-spec-output.v1`/`query_spec_output_v1`、`rerank-output.v1`/`rerank_output_v1`）探测图片、Structured Outputs、错误分类和实际 `store=false`，返回 `verified|failed`、能力布尔值、错误码、脱敏 request ID 和时间。任一能力不能证明时必须是 `failed`，包括 `PROVIDER_STORAGE_UNSUPPORTED`；不得提供确认、豁免或其他继续 enable 的路径。
+服务使用原创最小 PNG，并只按 profile 选定的 adapter 实际发送生产使用的三个 strict wire Schema/name 对（`annotation-batch-output.v1`/`annotation_batch_output_v1`、`query-spec-output.v1`/`query_spec_output_v1`、`rerank-output.v1`/`rerank_output_v1`），探测图片、Structured Outputs、稳定错误分类、requested model/auth 和协议 wire 形状。Responses 请求/probe 发送 `store=false`，不检查 store 或 response model echo equality；Chat 请求/probe 省略 `store`、检查请求没有该字段，也不检查 model echo equality。成功响应仍必须有 string `model`，缺失/非 string 必须 fail closed；不同 echo 不进入 verified identity。返回 `adapter`、`verified|failed`、能力布尔值、错误码、脱敏 request ID 和时间；不返回或声称 `storage_verified` 或 `remote_model_identity_verified`。任一所选 adapter 能力不能证明时必须是 `failed`，不得提供协议 fallback、确认或豁免路径。
 
-`POST /api/provider/enable`/`disable` 只接受 `profile_id`。enable 只允许 capability status 为 `verified` 且四项硬能力门均通过；disable 停止新 AI job，不删除历史产物。Keyring/env 无法解析时不得 enable。
+`POST /api/provider/enable`/`disable` 只接受 `profile_id`。enable 只允许 capability status 为 `verified` 且所选 adapter 的协议感知能力门均通过；disable 停止新 AI job，不删除历史产物。Keyring/env 无法解析时不得 enable。
 
 ### 5.2 Import routes
 
@@ -214,7 +217,7 @@ PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS
 
 item 状态固定为 `pending|running|succeeded|needs_review|failed|skipped`；run/stage 状态固定为 `pending|running|paused|needs_review|failed|succeeded|cancelled`。合法持久转换为 `pending→running`、`running→paused`、`paused→running`、`running→needs_review|failed|succeeded|cancelled`；pause/cancel 只作为命令或 event，不作为持久状态。release 的 build/apply 独立于 run 状态；recover 只能恢复 heartbeat 超时且未完成的 job；成功 job 不重跑。
 
-`POST /api/runs` 请求至少包含：`import_id`、`minecraft_version`、`profile_id`、联系表大小和置信度阈值；不得接受或要求 `release_build_id`。服务必须检查版本、导出契约、profile capability、Schema/semantic constraints、阈值和 R0–R3 前置门，返回 `run_id`、`status=pending`、`effective_config_hash` 和非秘密 snapshot。后续 `POST /api/releases/check` 以 `run_id` 创建并返回 `release_build_id`。
+`POST /api/runs` 请求至少包含：已预留 import 的 `import_id`、`minecraft_version`、`profile_id`、联系表大小和置信度阈值；不得接受或要求 `release_build_id`。服务必须在配置并启动该 import 时复用 import 已预留的同一 `run_id`/workspace，返回该 `run_id`、`status=pending`、`effective_config_hash` 和非秘密 snapshot，绝不分配第二 workspace/run。后续 `POST /api/releases/check` 以同一 `run_id` 创建并返回 `release_build_id`。
 
 `GET /api/runs/{run_id}` 至少返回：`run_id`、精确版本、run status、stage、progress、heartbeat、非秘密 config snapshot 和 warnings。启动时 stale 只读展示，不改变这些状态；不得返回 Token usage、费用、图片 base64 或完整 provider response。
 
@@ -238,7 +241,21 @@ POST /api/runs/{run_id}/retry-failed
 POST /api/runs/{run_id}/recover
 ```
 
-Worker job 字段至少包括：`job_id`、`run_id`、`stage`、`logical_key`、`status`、`auto_attempt`、`priority`、`heartbeat_at`、`cursor_json`、`output_hash`、`error_code`、脱敏 `error_message`、创建/开始/完成时间。每个 provider 逻辑请求总尝试最多两次（包含 SDK），最终离线失败进入审核；详细分类见 [`openai-provider.md`](openai-provider.md)。
+Worker job 字段至少包括：`job_id`、`run_id`、`stage`、`logical_key`、`status`、`auto_attempt`、`priority`、`heartbeat_at`、`cursor_json`、`output_hash`、`error_code`、脱敏 `error_message`、创建/开始/完成时间。现有 `cursor_json` 可保存 per-job `approved` 和 retry lineage；这不是新的 state、column 或 schema field。每个 provider 逻辑请求总尝试最多两次（包含 SDK），显式 retry wave 创建新的 child generation，不增加单个逻辑请求的自动 retry budget；最终离线失败进入审核，详细分类见 [`openai-provider.md`](openai-provider.md)。
+
+#### 5.3.1 `AI_ANNOTATE` 批次授权、顺序 drain 和 Provider retry
+
+手动 per-batch approval 是默认行为。WebUI 可以在用户确认前展示 unchanged frozen remaining batch plan；只有当每个计划 batch 都可 inspect、计划绑定 immutable plan hash、run-frozen provider 和 requested `model_id` 时，一次明确 confirmation 才能授权该计划自动顺序提交。没有该确认时，不能把多个 pending batch 当作自动波次发送。
+
+计划 hash 必须只对 `run_id`、`effective_config_hash` 和按冻结顺序排列的 `job_id`、`logical_key`、recomputed payload signature 计算；canonical 形状和 TOCTOU all-or-none 语义以 [`decisions.md`](decisions.md) 的 D-040/D-041 为准。D-041 下 aggregate preview/confirmation 使用已持久化且已验证的 `jobs.input_signature`、cursor `payload_signature`/`input_hash`、`tile_ids`/`variant_ids`、run effective config 和 frozen provider snapshot；`recomputed_payload_signature` 名称保留，其 plan-time value 是 validated persisted payload signature。aggregate operation 不为所有 pending jobs 重建图片、contact sheet、prompt 或 machine metadata。确认 transaction 只验证 persisted identity；任一计划、pending 集合、持久化 hash、config/provider/requested model 或 hash 不一致时 approve none，否则只把所有 included pending jobs 的现有 cursor `approved` 置为可发送，并写一个 plan audit 和每个 job 的 approval audit。不存在 auto-mode field、stage cursor 或 config snapshot。
+
+每个 planned batch 在 aggregate confirmation 前仍必须通过既有 safe preview lazy inspect；该 one-batch preview 可以重建其 bounded payload。Immediately before **every** actual external send，Worker 必须使用 frozen run profile 重建该 batch 的完整 payload/contact sheet/prompt/machine metadata，重新计算 full signature 并与 approved job signature 比较。任一 mismatch 必须 revoke that job approval、在任何 HTTP request 前 pause，且不得发送；该 final TOCTOU gate 不得被 aggregate persisted identity shortcut 绕过。D-041 不改变 manual mode/default、concurrency `1`、item-local continue、fatal stop、retry 或 audit。
+
+自动计划的 send concurrency 固定为 `1`，并且只能使用 run-frozen profile；global active profile 的变化只影响新的 Studio work/profile management，不能替换已有 run 的 adapter、model 或 base URL。item-local Provider failure 会记录 high `needs_review`，但继续下一个 approved batch；fatal Provider/config/auth/capability failure 必须在后续 send 前停止。`needs_review` item 不阻塞 AI_ANNOTATE drain：valid low-confidence item 和 item-local failure 继续到 `VALIDATE`、再到 `HUMAN_REVIEW`；只有 fatal 才终止 stage/run。
+
+Provider retry 必须从 terminal `needs_review|failed` 的 AI job 行发起，且该 job 有 eligible item-local Provider error；fatal、`PROVIDER_CANCELLED` 和无 Provider error 的 job 不 eligible，variant review 不是 retry source。source 必须为 leaf；child cursor 包含 `retry_of_job_id`，nonce 由 source `job_id` 与 `input_signature` 确定性生成，每个 source 只有一个 child，failed child 可作为下一次显式 generation。row retry 与 bulk action 都必须在同一 transaction 内保持 source/evidence/provider request 可见并 resolve source 的 open provider-review siblings；重复 POST 返回同一结果，不产生第二个 child。bulk action 只覆盖 eligible failed leaf batches，且自动 approve 该 retry wave；succeeded 和无 Provider error 的 low-confidence review 不进入 wave。generic `retry-failed` 不得重跑 fatal/provider AI jobs。
+
+页面必须在同一可滚动 work area 内展示全部 actionable `running`、`failed`、`needs_review` rows；pending/recent summary 可以 bounded。Provider error row 必须有 row retry，bulk action 必须明确确认；原始 request evidence、review 和错误分类继续可见。startup 只读检测 stale；auto-approved cursor 持久保留，只有显式 `recover` 改变 stale state。pause/cancel 停止 future sends，SSE/browser disconnect 不改变后台工作。
 
 ### 5.4 Review routes 和声明式 override
 
@@ -266,21 +283,87 @@ qualification 只能是 `eligible`、`conditional`、`excluded`；`conditional` 
 
 ### 5.5 Release routes
 
-`POST /api/releases/check`（`candidate-build gate`）：
+`POST /api/releases/check` 与 `POST /api/releases/build` 的 R3 Phase C 契约如下；本节是这两个路由的 authoritative WebUI owner。两者都必须同步完成，不得返回 `202`、排队后台 job 或让客户端轮询替代本次响应。Phase C 只依赖 R0–R3 与 candidate-build 前置。
+
+#### `POST /api/releases/check`
+
+请求 JSON 必须严格等于以下两个字段，未知字段、缺字段、错误类型和额外 query/body 输入均返回 `400 INVALID_INPUT`：
 
 ```json
 {"run_id": "run_01J", "minecraft_version": "26.2"}
 ```
 
-返回 `check_id`、`release_build_id`、固定 candidate-build 检查数组、failure codes、artifact hashes 和 `can_build`。该 check 只接受 `run_id`，并创建对应的 `release_build_id`；不接受客户端传入的 `release_build_id`。candidate-build gate 只检查该单 release 的内容完整性，不包含 MCP smoke、`TWO_INDEPENDENT_RELEASES` 或 current 切换。它的前置只要求 R0–R3 和 candidate-build 前置，不要求 R4。检查项见 [`quality-and-testing.md`](quality-and-testing.md)。
-
-`POST /api/releases/build`：
+成功始终返回 HTTP `200`，包括门禁阻断但 check 本身完成的情况。成功 envelope 的 `data` 字段必须且只能是：
 
 ```json
-{"check_id": "release_check_01J", "confirm_immutable_release": true}
+{
+  "check_id": "check_<32 lowercase hex>",
+  "release_build_id": "build_<32 lowercase hex>",
+  "run_id": "run_01J",
+  "minecraft_version": "26.2",
+  "status": "passed",
+  "can_build": true,
+  "snapshot_fingerprint": "sha256:<64 lowercase hex>",
+  "quality_report_sha256": "sha256:<64 lowercase hex>",
+  "created_at": "2026-08-15T12:00:00Z",
+  "updated_at": "2026-08-15T12:00:00Z"
+}
 ```
 
-build 只能引用最新且未修改的通过 candidate check；它的前置只要求 R0–R3 和 candidate-build 前置，不要求 R4。必须构建不可变但未激活的 `releases/<minecraft_version>/<release_id>/`，包括 `release.json`、`manifest.json`、`index.sqlite3`、`previews/`、`quality_report.json`、`manual-overrides.json`、`schemas.sha256` 和 `checksums.sha256`，完成 fsync/hash 后原子 rename，并以 `built_at` 记录构建时间。release 生成后不得原地修改。第一份 release 可以 build，但不能 apply。
+Provider retry 不由一个 variant review 单独授权或创建；review 只保留 evidence/审核关联，实际 retry source 必须是满足 D-040 的 terminal AI job。`retry_ai` 不能绕过该 job、leaf、generation、sibling-resolution 和总尝试预算约束。
+
+`can_build=false` 是合法的 HTTP `200` 结果；具体 12 项与 `quality_report.json` 由 [`quality-and-testing.md`](quality-and-testing.md) 定义。响应不内嵌质量报告，不返回绝对路径或 workspace 数据。check cache 的精确持久化字段、最新 check 和 stale/TOCTOU 规则由 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md) 定义。
+
+#### `POST /api/releases/build`
+
+请求 JSON 必须严格等于以下两个字段；`confirm_immutable_release` 不是可选确认，必须是 JSON boolean `true`。未知字段、缺字段、错误类型或 `false` 一律返回 HTTP `400 INVALID_INPUT`：
+
+```json
+{"check_id": "check_<32 lowercase hex>", "confirm_immutable_release": true}
+```
+
+首次成功同步返回 HTTP `201`。成功 envelope 的 `data` 字段必须且只能是：
+
+```json
+{
+  "check_id": "check_<32 lowercase hex>",
+  "release_build_id": "build_<32 lowercase hex>",
+  "release_id": "rel_<32 lowercase hex>",
+  "run_id": "run_01J",
+  "minecraft_version": "26.2",
+  "relative_path": "releases/26.2/rel_<32 lowercase hex>",
+  "status": "built",
+  "manifest_sha256": "sha256:<64 lowercase hex>",
+  "quality_report_sha256": "sha256:<64 lowercase hex>",
+  "checksums_sha256": "sha256:<64 lowercase hex>",
+  "built_at": "2026-08-15T12:00:00Z"
+}
+```
+
+build 只能引用该 `(run_id, minecraft_version)` 的最新、未修改、`can_build=true` check；首次成功只构建一个新的不可变 candidate。check 的 `quality_report.json` 不得修改，release 内的 `quality_report.json` 必须由同一 snapshot 派生。成功完成后必须在同一 WebUI 操作边界内：将 `BUILD_RELEASE` 标为 `succeeded`，将 run 标为 `paused`，将 `current_stage` 设为 `ACTIVATE_RELEASE`，将 `ACTIVATE_RELEASE` 设为 `pending`，并写入边界标记 `R3_CANDIDATE_BUILT_ACTIVATION_PENDING`。Phase C **MUST NOT** 写 `current.json`。
+
+这两个路由的 Phase C 精确错误映射为：
+
+`RELEASE_CHECK_NOT_READY` 只表示 run 尚未满足 Gate C 前置，或 build 请求引用的 check 已完成但 `can_build=false`；`RELEASE_CHECK_FAILED` 只表示 check 执行本身以失败终止；`RELEASE_CHECK_STALE` 只表示该 check 不再是最新 check 或 fingerprint/TOCTOU 复核不一致。
+
+| `error_code` | HTTP status | `retryable` |
+|---|---:|---:|
+| `INVALID_INPUT`（未知字段或 `false` confirm） | 400 | 否 |
+| `RUN_NOT_FOUND` | 404 | 否 |
+| `RELEASE_CHECK_NOT_READY` | 409 | 否 |
+| `RELEASE_VERSION_MISMATCH` | 409 | 否 |
+| `DATABASE_SCHEMA_MISMATCH` | 422 | 否 |
+| `RELEASE_CHECK_NOT_FOUND` | 404 | 否 |
+| `RELEASE_CHECK_FAILED` | 422 | 否 |
+| `RELEASE_CHECK_STALE` | 409 | 否 |
+| `RELEASE_ALREADY_BUILT` | 409 | 否 |
+| `RELEASE_BUILD_INTEGRITY_FAILED` | 422 | 否 |
+| `WORKER_UNAVAILABLE` | 503 | 是 |
+| `RELEASE_BUILD_FAILED` | 500 | 否 |
+
+错误 envelope 继续使用本文第 5 节的严格 `error_code`/`message`/`field_errors`/`retryable` 字段；上述列表不得用 `INTERNAL_ERROR` 或其它泛化码替代，`RELEASE_CHECK_FAILED` 只用于 check 执行失败而不是可审核的 `can_build=false` 结果。
+
+#### 后续 R4/R5 activation routes（不属于 R3 Phase C）
 
 `POST /api/releases/activation-check`：请求包含已 build 的 release 和精确 `minecraft_version`，执行 activation gate；其前置要求 R0–R4。它检查该版本至少两个独立 candidate release、四工具 MCP smoke、原子 current 准备和 candidate report/hash 引用；只复核 `excluded`/skip 审计报告及其 hash，不首次补做资格内容审计。返回 `activation_check_id`、检查数组和 `can_apply`。
 
@@ -330,10 +413,10 @@ import/run/review service 必须验证各自的 R0–R3 前置；`/api/releases/
 | `LOOPBACK_ONLY` | host 非 loopback | 否 |
 | `DATABASE_SCHEMA_MISMATCH` | schema hash 不匹配 | 否 |
 | `CONFIG_PRECEDENCE_CONFLICT` | 配置来源冲突 | 否 |
-| `PROVIDER_CONFIG_INVALID` | 非 Responses、第二 model、未知字段 | 否 |
+| `PROVIDER_CONFIG_INVALID` | adapter 非 `openai_responses`/`openai_chat_completions`、第二 model、未知字段 | 否 |
 | `PROVIDER_NOT_CONFIGURED` | 无 secret 或无可用 active profile | 否 |
 | `PROVIDER_CAPABILITY_MISSING` | 图片/strict/错误分类未通过 | 否 |
-| `PROVIDER_STORAGE_UNSUPPORTED` | endpoint 不支持或不能证明实际 `store=false` | 否 |
+| `PROVIDER_STORAGE_UNSUPPORTED` | 旧兼容诊断码；不得用于声称或要求远端 retention 已验证 | 否 |
 | `IMPORT_NOT_FOUND` | check/import 不存在 | 否 |
 | `IMPORT_INCOMPLETE` | 导出包缺失/版本/hash/Schema 错 | 否 |
 | `IMPORT_CHECK_IN_PROGRESS` | import 引用的 check 仍为 `running` | 否 |
@@ -360,7 +443,7 @@ import/run/review service 必须验证各自的 R0–R3 前置；`/api/releases/
 
 1. 只注册 `block-index web`/`block-index mcp`；非法 host 失败，默认 `127.0.0.1:8765`；MCP 不监听 HTTP。
 2. CLI/env/profile/default 优先级可观测；Keyring 优先、环境回退；key/Authorization/path/图片/完整 response/usage 不进入 SQLite、snapshot、日志、响应。
-3. Provider 页面只允许一个活动 Responses profile；能力探测的 `store=false` 硬门和待发送预览生效。
+3. Provider 页面只允许一个活动 profile；`adapter` 只能显式选择 `openai_responses`/`openai_chat_completions`，能力探测只验证所选协议的 wire 形状，Responses 发送 `store=false`、Chat 省略 `store`，且不声称远端 retention 已验证；待发送预览生效。
 4. `imports/check`、import、run、pause/resume/status、recover、normal/high review、override、release check/apply/rollback/cleanup、search test 的字段、状态和错误码稳定。
 5. 机器事实修改、无审计 skip、未解决 high review、失败 release check、少于两个 release 均不能 apply。
 6. current 只由 WebUI service 原子写；release 内容 immutable；MCP 和 search test 不产生写入。

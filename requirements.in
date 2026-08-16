@@ -1,7 +1,8 @@
-# R2 runtime and test dependencies. The transitive lock is generated from this file.
+# Product runtime and test dependencies. The transitive lock is generated from this file.
 fastapi==0.141.1
 uvicorn==0.52.3
 Jinja2==3.1.6
 jsonschema==4.26.0
 pytest==8.4.2
 httpx==0.28.1
+keyring==25.7.0
