@@ -229,7 +229,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "camera_policy_version": { "const": "camera.v1" },
+        "camera_policy_version": { "enum": ["camera.v1", "camera.v2"] },
         "camera_sha256": { "$ref": "#/$defs/hash" },
         "lighting_policy_version": { "const": "lighting.v1" },
         "lighting_sha256": { "$ref": "#/$defs/hash" },

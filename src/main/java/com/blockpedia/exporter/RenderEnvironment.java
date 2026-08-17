@@ -45,12 +45,13 @@ record RenderEnvironment(
             device.driver(),
             device.backend(),
             "512x512",
-            JsonCanonical.sha256String("camera.v1:projection=orthographic;extent=2.0x2.0;invertY=false;zNear=-10.0;zFar=10.0;modelView=identity,translate(0.5,0.5,1.0),translate(0.5,0.5,0.5),rotateY(-yaw),rotateX(-pitch),translate(-0.5,-0.5,-0.5);views=isometric(yaw=45.0,pitch=30.0),front(yaw=0.0,pitch=0.0),side(yaw=90.0,pitch=0.0),top(yaw=0.0,pitch=-90.0)"),
+            JsonCanonical.sha256String("camera.v2:projection=orthographic;extent=2.0x2.0;invertY=false;zNear=-10.0;zFar=10.0;modelView=identity,translate(0.5,0.5,1.0),translate(0.5,0.5,0.5),rotateY(-yaw),rotateX(-pitch),translate(-0.5,-0.5,-0.5);views=isometric(yaw=45.0,pitch=30.0),front(yaw=0.0,pitch=0.0),side(yaw=90.0,pitch=0.0),top(yaw=0.0,pitch=-90.0);banner_types=BannerBlock,WallBannerBlock;banner_parent_transform=" + ExporterConstants.BANNER_PARENT_TRANSFORM),
             JsonCanonical.sha256String("lighting.v1:full_bright:overlay=no_overlay:shader_disabled"),
             JsonCanonical.sha256String("background.v1:transparent"),
             JsonCanonical.sha256String("backboard.v1:none"),
             JsonCanonical.sha256String("fixture.v1:isolated_default:none"),
             "shader=disabled;post_processing=disabled;fov=70;camera=orthographic;"
+                + "banner_parent_transform=" + ExporterConstants.BANNER_PARENT_TRANSFORM + ";"
                 + "block_model_resolver_seed=42L;"
                 + "block_atlas_reload=awaited_before_prepare;"
                 + "block_atlas_animation=cycleAnimationFrames_cancelled_while_exporting"
@@ -81,7 +82,7 @@ record RenderEnvironment(
 
     JsonObject policyJson() {
         JsonObject result = new JsonObject();
-        result.addProperty("camera_policy_version", "camera.v1");
+        result.addProperty("camera_policy_version", ExporterConstants.CAMERA_POLICY_VERSION);
         result.addProperty("camera_sha256", cameraHash);
         result.addProperty("lighting_policy_version", "lighting.v1");
         result.addProperty("lighting_sha256", lightingHash);

@@ -10,15 +10,23 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DecimalStyle;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 /** Allocates the public export directory name and its one staging directory. */
 final class ExportIdentity {
+    private static final Pattern EXPORT_ID_PATTERN = Pattern.compile(
+        "^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$"
+    );
     private static final DateTimeFormatter EXPORT_TIMESTAMP = DateTimeFormatter
         .ofPattern("yyyyMMdd'T'HHmmss'Z'", Locale.ROOT)
         .withDecimalStyle(DecimalStyle.STANDARD)
         .withZone(ZoneOffset.UTC);
 
     private ExportIdentity() {
+    }
+
+    static boolean isValidExportId(String exportId) {
+        return exportId != null && EXPORT_ID_PATTERN.matcher(exportId).matches();
     }
 
     static Allocation allocate(Path exportParent, Instant startedAt) throws IOException {

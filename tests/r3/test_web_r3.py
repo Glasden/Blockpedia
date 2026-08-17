@@ -6,9 +6,279 @@ from pathlib import Path
 import pytest
 
 from blockpedia.paths import DataRoot
+from blockpedia.provider import ProviderProfile
 from blockpedia.services import R3Error, StudioService
 
 from .test_pipeline_review import _FakeProvider, _service
+
+
+def _d044_stages(concurrency: int) -> dict[str, dict[str, int]]:
+    return {
+        "offline_annotation": {"batch_size": 12, "concurrency": concurrency},
+        "query_spec": {"batch_size": 1, "concurrency": 1},
+        "visual_rerank": {"batch_size": 1, "concurrency": 1},
+    }
+
+
+def _d044_profile_form(*, concurrency: int, model_id: str = "fixture-model") -> dict[str, str]:
+    return {
+        "profile_id": "default",
+        "adapter": "openai_responses",
+        "model_id": model_id,
+        "base_url": "http://127.0.0.1:8766/v1",
+        "secret_reference": "env:OPENAI_API_KEY",
+        "prompt_version": "prompt.v1",
+        "request_timeout_ms": "60000",
+        "offline_annotation_batch_size": "12",
+        "offline_annotation_concurrency": str(concurrency),
+        "query_spec_batch_size": "1",
+        "query_spec_concurrency": "1",
+        "visual_rerank_batch_size": "1",
+        "visual_rerank_concurrency": "1",
+    }
+
+
+def test_d044_provider_concurrency_ui_and_json_bounds(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).parents[2])
+    app_module = __import__("blockpedia.web", fromlist=["create_app"])
+    app = app_module.create_app(
+        data_root=DataRoot(tmp_path),
+        repo_root=Path(__file__).parents[2],
+        service=service,
+        start_worker=False,
+    )
+    payload = {
+        "profile_id": "default",
+        "adapter": "openai_responses",
+        "model_id": "fixture-model",
+        "base_url": "http://127.0.0.1:8766/v1",
+        "stages": _d044_stages(5),
+    }
+    try:
+        with TestClient(app) as client:
+            new_profile_page = client.get("/provider")
+            assert new_profile_page.status_code == 200
+            assert 'name="offline_annotation_concurrency" type="number" value="1" required min="1" max="5" step="1"' in new_profile_page.text
+            assert "并发 AI 批次" in new_profile_page.text
+            assert "自动重试预算" in new_profile_page.text
+
+            saved = client.put("/api/provider/profile", json=payload)
+            assert saved.status_code == 200
+            assert saved.json()["data"]["profile"]["stages"] == _d044_stages(5)
+
+            current_page = client.get("/provider")
+            assert 'name="offline_annotation_concurrency" type="number" value="5" required min="1" max="5" step="1"' in current_page.text
+            assert 'name="query_spec_concurrency" value="1"' in current_page.text
+            assert 'name="visual_rerank_concurrency" value="1"' in current_page.text
+
+            too_high = client.put(
+                "/api/provider/profile",
+                json={**payload, "stages": _d044_stages(6)},
+            )
+            assert too_high.status_code == 400
+            assert too_high.json()["error_code"] == "PROVIDER_CONFIG_INVALID"
+
+            invalid_online = _d044_stages(5)
+            invalid_online["query_spec"]["concurrency"] = 2
+            online_response = client.put(
+                "/api/provider/profile",
+                json={**payload, "stages": invalid_online},
+            )
+            assert online_response.status_code == 422
+            assert online_response.json()["error_code"] == "PROVIDER_CONFIG_INVALID"
+    finally:
+        service.close()
+
+
+def test_d044_concurrency_only_ui_save_preserves_active_verification(tmp_path: Path, monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-secret")
+    service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).parents[2])
+    profile = ProviderProfile(
+        profile_id="default",
+        model_id="fixture-model",
+        base_url="http://127.0.0.1:8766/v1",
+        secret_reference="env:OPENAI_API_KEY",
+    )
+    service.profile_store.save(profile)
+    service.profile_store.record_probe(
+        {
+            "profile_id": "default",
+            "adapter": "openai_responses",
+            "capability_status": "verified",
+            "image_input_supported": True,
+            "structured_outputs_supported": True,
+            "error_classification_supported": True,
+        }
+    )
+    service.enable_provider("default")
+    app_module = __import__("blockpedia.web", fromlist=["create_app"])
+    app = app_module.create_app(
+        data_root=DataRoot(tmp_path),
+        repo_root=Path(__file__).parents[2],
+        service=service,
+        start_worker=False,
+    )
+    try:
+        with TestClient(app) as client:
+            concurrency_only = client.post(
+                "/ui/provider/profile",
+                data=_d044_profile_form(concurrency=4),
+            )
+            assert concurrency_only.status_code == 200
+            assert "唯一 active" in concurrency_only.text
+            assert 'name="offline_annotation_concurrency" type="number" value="4" required min="1" max="5" step="1"' in concurrency_only.text
+            preserved = service.profile_store.load()["default"]
+            assert preserved.enabled is True
+            assert preserved.capability_status == "verified"
+            assert preserved.to_dict()["stages"] == _d044_stages(4)
+
+            other_edit = client.post(
+                "/ui/provider/profile",
+                data=_d044_profile_form(concurrency=4, model_id="fixture-model-v2"),
+            )
+            assert other_edit.status_code == 200
+            invalidated = service.profile_store.load()["default"]
+            assert invalidated.enabled is False
+            assert invalidated.capability_status == "unverified"
+    finally:
+        service.close()
+
+
+def test_d044_run_and_plan_views_show_frozen_concurrency_without_provider_call(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    fake = _FakeProvider()
+    service, run_id, _ = _service(tmp_path, fake)
+    app_module = __import__("blockpedia.web", fromlist=["create_app"])
+    app = app_module.create_app(
+        data_root=DataRoot(tmp_path),
+        repo_root=Path(__file__).parents[2],
+        service=service,
+        start_worker=False,
+    )
+    try:
+        with TestClient(app) as client:
+            run_page = client.get(f"/runs/{run_id}")
+            assert run_page.status_code == 200
+            assert "1 个并发 AI 批次" in run_page.text
+            assert "已为此运行冻结" in run_page.text
+            assert 'data-offline-concurrency="1"' in run_page.text
+            assert "active profile 后续变化不会改写" in run_page.text
+
+            plan = client.get(f"/api/runs/{run_id}/ai-batches/plan")
+            assert plan.status_code == 200
+            assert plan.json()["data"]["offline_annotation_concurrency"] == 1
+            assert "运行冻结并发度" in run_page.text
+            assert fake.calls == 0
+    finally:
+        service.close()
+
+
+def test_d045_banner_refresh_ui_is_bounded_and_calls_the_single_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from blockpedia.banner_refresh import BANNER_TARGET_IDS
+
+    fake_provider = _FakeProvider()
+    service, run_id, _ = _service(tmp_path, fake_provider)
+    captured: dict[str, object] = {}
+
+    def refresh_banner_export(called_run_id: str, **kwargs: object) -> dict[str, object]:
+        captured.update({"run_id": called_run_id, **kwargs})
+        return {
+            "run_id": called_run_id,
+            "new_import_id": "import_banner_refresh",
+            "new_export_id": "export_20260817T120000Z",
+            "target_count": 32,
+            "new_variant_count": 32,
+            "new_feature_count": 32,
+            "new_ai_job_count": 3,
+            "current_stage": "AI_ANNOTATE",
+            "idempotent": False,
+        }
+
+    monkeypatch.setattr(service, "refresh_banner_export", refresh_banner_export)
+    app_module = __import__("blockpedia.web", fromlist=["create_app"])
+    app = app_module.create_app(
+        data_root=DataRoot(tmp_path),
+        repo_root=Path(__file__).parents[2],
+        service=service,
+        start_worker=False,
+    )
+    try:
+        with TestClient(app) as client:
+            hidden = client.get(f"/runs/{run_id}")
+            assert hidden.status_code == 200
+            assert "data-banner-refresh" not in hidden.text
+
+            with service.worker.open_database(run_id) as database:
+                base = database.fetchone(
+                    "SELECT imports.export_id FROM imports JOIN runs ON runs.import_id=imports.import_id WHERE runs.run_id=?",
+                    (run_id,),
+                )
+                assert base is not None
+                base_export_id = str(base["export_id"])
+                with database.transaction() as connection:
+                    connection.execute(
+                        "UPDATE runs SET status='needs_review',current_stage='HUMAN_REVIEW',boundary_event=NULL WHERE run_id=?",
+                        (run_id,),
+                    )
+                    connection.execute(
+                        "UPDATE stage_runs SET status='needs_review' WHERE run_id=? AND stage='HUMAN_REVIEW'",
+                        (run_id,),
+                    )
+
+            visible = client.get(f"/runs/{run_id}")
+            assert visible.status_code == 200
+            assert "data-banner-refresh" in visible.text
+            assert base_export_id in visible.text
+            assert "Banner 定向修复" in visible.text
+            assert "Import Check" in visible.text and "banner-repair" in visible.text
+            assert "32 个 Banner 变体与特征" in visible.text
+            assert "三个未批准的 AI 批次" in visible.text
+            assert 'name="check_id" type="text" required' in visible.text
+            assert 'name="confirm" type="checkbox" value="true" required' in visible.text
+            assert "data-explicit-confirmation-submit" in visible.text
+            assert 'name="target_ids"' not in visible.text
+            assert 'name="expected_base_export_id"' not in visible.text
+
+            missing_confirmation = client.post(
+                f"/ui/runs/{run_id}/banner-export-refresh",
+                data={"check_id": "check_" + "a" * 32},
+                headers={"HX-Request": "true"},
+            )
+            assert missing_confirmation.status_code == 400
+            assert missing_confirmation.headers["HX-Retarget"] == "#banner-refresh-feedback"
+            assert captured == {}
+
+            applied = client.post(
+                f"/ui/runs/{run_id}/banner-export-refresh",
+                data={"check_id": "check_" + "a" * 32, "confirm": "true"},
+                headers={"HX-Request": "true"},
+            )
+            assert applied.status_code == 200
+            assert "Banner 定向修复已应用" in applied.text
+            assert "32 个 Banner 变体与离线特征已加入" in applied.text
+            assert "三个新的 AI 批次" in applied.text
+            assert "预览并批准这三个批次" in applied.text
+            assert "没有自动批准，也没有调用 provider" in applied.text
+            assert captured == {
+                "run_id": run_id,
+                "check_id": "check_" + "a" * 32,
+                "expected_base_export_id": base_export_id,
+                "target_ids": list(BANNER_TARGET_IDS),
+                "confirm": True,
+            }
+            assert fake_provider.calls == 0
+    finally:
+        service.close()
 
 
 @pytest.mark.parametrize("adapter", ("openai_responses", "openai_chat_completions"))

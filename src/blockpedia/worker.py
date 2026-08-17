@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
 import re
 import sys
 import threading
+import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -78,6 +81,68 @@ class StageFailure(RuntimeError):
 
 class LeaseLost(RuntimeError):
     pass
+
+
+class _AIClaimConflict(RuntimeError):
+    pass
+
+
+RunScope = tuple[str, str]
+TaskKey = tuple[str, str, str]
+
+
+@dataclass(slots=True)
+class _RegisteredAITask:
+    """In-memory ownership for one claimed AI batch."""
+
+    root_key: str
+    run_id: str
+    job_id: str
+    owner_worker_id: str
+    future: Future[Any] | None = None
+    send_started: bool = False
+    completion_in_progress: bool = False
+
+    @property
+    def scope(self) -> RunScope:
+        return (self.root_key, self.run_id)
+
+    @property
+    def task_key(self) -> TaskKey:
+        return (self.root_key, self.run_id, self.job_id)
+
+
+class _ProcessCoordinator:
+    """The single process-wide AI executor, registry, and coordination lane."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.changed = threading.Condition(self.lock)
+        self.executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="blockpedia-ai")
+        self.registry: dict[TaskKey, _RegisteredAITask] = {}
+        self.run_locks: dict[RunScope, threading.RLock] = {}
+        self.owner_stops: dict[str, threading.Event] = {}
+        self.process_stopping = False
+
+    def shutdown(self) -> None:
+        with self.lock:
+            if self.process_stopping:
+                return
+            self.process_stopping = True
+            self.changed.notify_all()
+        self.executor.shutdown(wait=True, cancel_futures=False)
+
+
+_PROCESS_COORDINATOR = _ProcessCoordinator()
+
+
+def shutdown_process_ai_executor() -> None:
+    """Idempotent terminal shutdown used only at Python process exit."""
+
+    _PROCESS_COORDINATOR.shutdown()
+
+
+atexit.register(shutdown_process_ai_executor)
 
 
 _DERIVED_REVIEW_CODES = {
@@ -173,19 +238,186 @@ class WorkerService:
         self.profile_store = profile_store or ProviderProfileStore(path=self.data_root.cache / "provider-profiles.json")
         self.secret_resolver = secret_resolver or SecretResolver()
         self.worker_id = "worker_" + uuid.uuid4().hex
+        self._root_key = os.path.normcase(str(self.data_root.root.resolve(strict=False)))
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lifecycle_lock = threading.RLock()
         self._closed = False
-        self._run_locks: dict[str, threading.RLock] = {}
-        self._run_locks_guard = threading.Lock()
+        self._closing = False
+        self._stopping = False
+        # These aliases deliberately point at the process-wide objects.  They
+        # retain the narrow inspection surface used by existing tests without
+        # creating per-worker executors, registries, or run locks.
+        self._ai_registry = _PROCESS_COORDINATOR.registry
+        self._ai_registry_lock = _PROCESS_COORDINATOR.lock
+        self._ai_registry_changed = _PROCESS_COORDINATOR.changed
+        with _PROCESS_COORDINATOR.lock:
+            _PROCESS_COORDINATOR.owner_stops[self.worker_id] = self._stop
 
     @contextmanager
     def run_lock(self, run_id: str):
-        with self._run_locks_guard:
-            lock = self._run_locks.setdefault(run_id, threading.RLock())
+        scope = self._scope(run_id)
+        # Lookup is protected, but the shared run lock is acquired only after
+        # releasing the coordinator lock.  This keeps the lock order at
+        # shared run lock -> SQLite transaction -> coordinator operation.
+        with _PROCESS_COORDINATOR.lock:
+            lock = _PROCESS_COORDINATOR.run_locks.setdefault(scope, threading.RLock())
         with lock:
             yield
+
+    def _scope(self, run_id: str) -> RunScope:
+        return (self._root_key, run_id)
+
+    def _task_key(self, run_id: str, job_id: str) -> TaskKey:
+        return (self._root_key, run_id, job_id)
+
+    @property
+    def _ai_executor(self) -> ThreadPoolExecutor:
+        """Compatibility view of the one process-wide AI executor."""
+
+        return _PROCESS_COORDINATOR.executor
+
+    def _owner_has_live_entries_locked(self) -> bool:
+        return any(entry.owner_worker_id == self.worker_id for entry in _PROCESS_COORDINATOR.registry.values())
+
+    def _scope_entries_locked(self, scope: RunScope, *, exclude_entry_key: TaskKey | None = None) -> tuple[_RegisteredAITask, ...]:
+        return tuple(
+            entry
+            for entry in _PROCESS_COORDINATOR.registry.values()
+            if entry.scope == scope and entry.task_key != exclude_entry_key
+        )
+
+    def has_live_ai_futures(self, run_id: str) -> bool:
+        """Return whether any worker owns a claimed AI task in this run."""
+
+        with _PROCESS_COORDINATOR.lock:
+            return bool(self._scope_entries_locked(self._scope(run_id)))
+
+    has_registered_ai_jobs = has_live_ai_futures
+
+    def registered_ai_jobs(self, run_id: str | None = None) -> tuple[dict[str, Any], ...]:
+        """Return a narrow, thread-safe view of registered AI tasks."""
+
+        with _PROCESS_COORDINATOR.lock:
+            entries = (
+                self._scope_entries_locked(self._scope(run_id))
+                if run_id is not None
+                else tuple(_PROCESS_COORDINATOR.registry.values())
+            )
+            return tuple(
+                {
+                    "run_id": entry.run_id,
+                    "job_id": entry.job_id,
+                    "owner_worker_id": entry.owner_worker_id,
+                    "send_started": entry.send_started,
+                    "completion_in_progress": entry.completion_in_progress,
+                    "future_done": bool(entry.future is not None and entry.future.done()),
+                }
+                for entry in entries
+            )
+
+    def is_ai_job_send_started(self, run_id: str, job_id: str) -> bool:
+        with _PROCESS_COORDINATOR.lock:
+            entry = _PROCESS_COORDINATOR.registry.get(self._task_key(run_id, job_id))
+            return bool(entry is not None and entry.send_started)
+
+    def _reserve_ai_task(self, run_id: str, job_id: str, run_concurrency: int) -> _RegisteredAITask | None:
+        scope = self._scope(run_id)
+        key = self._task_key(run_id, job_id)
+        with _PROCESS_COORDINATOR.lock:
+            owner_stop = _PROCESS_COORDINATOR.owner_stops[self.worker_id]
+            if (
+                _PROCESS_COORDINATOR.process_stopping
+                or owner_stop.is_set()
+                or key in _PROCESS_COORDINATOR.registry
+                or len(_PROCESS_COORDINATOR.registry) >= 5
+                or len(self._scope_entries_locked(scope)) >= run_concurrency
+            ):
+                return None
+            entry = _RegisteredAITask(self._root_key, run_id, job_id, self.worker_id)
+            _PROCESS_COORDINATOR.registry[key] = entry
+            _PROCESS_COORDINATOR.changed.notify_all()
+            return entry
+
+    def _set_ai_future(self, entry: _RegisteredAITask, future: Future[Any]) -> None:
+        with _PROCESS_COORDINATOR.lock:
+            if _PROCESS_COORDINATOR.registry.get(entry.task_key) is entry:
+                entry.future = future
+                _PROCESS_COORDINATOR.changed.notify_all()
+
+    def _unregister_ai_task(self, entry: _RegisteredAITask, future: Future[Any] | None = None) -> None:
+        with _PROCESS_COORDINATOR.lock:
+            current = _PROCESS_COORDINATOR.registry.get(entry.task_key)
+            if current is entry and (future is None or entry.future is future):
+                _PROCESS_COORDINATOR.registry.pop(entry.task_key, None)
+                _PROCESS_COORDINATOR.changed.notify_all()
+
+    def _begin_ai_completion(self, entry: _RegisteredAITask, future: Future[Any]) -> bool:
+        with _PROCESS_COORDINATOR.lock:
+            current = _PROCESS_COORDINATOR.registry.get(entry.task_key)
+            if current is not entry or entry.future is not future or entry.completion_in_progress:
+                return False
+            entry.completion_in_progress = True
+            _PROCESS_COORDINATOR.changed.notify_all()
+            return True
+
+    def _try_mark_send_started(self, entry: _RegisteredAITask, run_concurrency: int) -> bool:
+        """Linearize stop and the final pre-HTTP send decision."""
+
+        with _PROCESS_COORDINATOR.lock:
+            current = _PROCESS_COORDINATOR.registry.get(entry.task_key)
+            owner_stop = _PROCESS_COORDINATOR.owner_stops[self.worker_id]
+            scope_entries = self._scope_entries_locked(entry.scope)
+            if (
+                current is not entry
+                or entry.owner_worker_id != self.worker_id
+                or owner_stop.is_set()
+                or _PROCESS_COORDINATOR.process_stopping
+                or entry.completion_in_progress
+                or entry.send_started
+                or len(_PROCESS_COORDINATOR.registry) > 5
+                or len(scope_entries) > run_concurrency
+            ):
+                return False
+            entry.send_started = True
+            _PROCESS_COORDINATOR.changed.notify_all()
+            return True
+
+    def _owner_is_stopping(self) -> bool:
+        with _PROCESS_COORDINATOR.lock:
+            return _PROCESS_COORDINATOR.owner_stops[self.worker_id].is_set() or _PROCESS_COORDINATOR.process_stopping
+
+    def _submit_ai_task(self, entry: _RegisteredAITask, run_id: str, job_id: str) -> Future[Any] | None:
+        """Submit one entry in order while sharing the coordinator lane."""
+
+        with _PROCESS_COORDINATOR.lock:
+            owner_stop = _PROCESS_COORDINATOR.owner_stops[self.worker_id]
+            if (
+                _PROCESS_COORDINATOR.process_stopping
+                or owner_stop.is_set()
+                or _PROCESS_COORDINATOR.registry.get(entry.task_key) is not entry
+            ):
+                return None
+            try:
+                future = _PROCESS_COORDINATOR.executor.submit(self._run_ai_task, run_id, job_id)
+            except Exception:
+                return None
+            entry.future = future
+            _PROCESS_COORDINATOR.changed.notify_all()
+        future.add_done_callback(lambda completed, owned=entry: self._ai_task_done(owned, completed))
+        return future
+
+    def _wait_for_scope_empty(self, run_id: str) -> None:
+        scope = self._scope(run_id)
+        with _PROCESS_COORDINATOR.changed:
+            while self._scope_entries_locked(scope):
+                _PROCESS_COORDINATOR.changed.wait()
+
+    def _ai_registry_counts(self, run_id: str | None = None) -> tuple[int, int]:
+        with _PROCESS_COORDINATOR.lock:
+            total = len(_PROCESS_COORDINATOR.registry)
+            per_run = len(self._scope_entries_locked(self._scope(run_id))) if run_id is not None else 0
+            return total, per_run
 
     def database_for(self, run_id: str, minecraft_version: str | None = None) -> WorkspaceDatabase:
         if minecraft_version is None:
@@ -216,49 +448,79 @@ class WorkerService:
                 database.close()
         raise KeyError(run_id)
 
-    def close(self, *, timeout: float = 2.0) -> bool:
+    def close(self, *, timeout: float | None = 2.0) -> bool:
         with self._lifecycle_lock:
             if self._closed:
-                return self._thread is None or not self._thread.is_alive()
-            self._closed = True
-            return self.stop(timeout=timeout)
+                return True
+            self._closing = True
+        stopped = self.stop(timeout=timeout)
+        with self._lifecycle_lock:
+            if stopped:
+                self._closed = True
+            self._closing = False
+        return stopped
 
     def start(self, *, interval_seconds: float = 0.05) -> bool:
         with self._lifecycle_lock:
-            if self._closed:
+            if self._closed or self._closing or self._stopping:
                 return False
             if self._thread is not None:
                 if self._thread.is_alive():
                     return False
                 # A naturally exited thread is no longer an ownership barrier.
                 self._thread = None
-            self._stop.clear()
+            with _PROCESS_COORDINATOR.lock:
+                if _PROCESS_COORDINATOR.process_stopping or self._owner_has_live_entries_locked():
+                    return False
+                self._stop.clear()
             thread = threading.Thread(target=self._loop, args=(interval_seconds,), name="blockpedia-worker", daemon=True)
             self._thread = thread
             try:
                 thread.start()
             except Exception:
                 self._thread = None
-                self._stop.set()
+                with _PROCESS_COORDINATOR.lock:
+                    self._stop.set()
                 raise
             return True
 
-    def stop(self, *, timeout: float = 2.0) -> bool:
+    def stop(self, *, timeout: float | None = 2.0) -> bool:
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         with self._lifecycle_lock:
-            self._stop.set()
             thread = self._thread
-            if thread is None:
-                return True
-            if thread is threading.current_thread():
-                return False
-            thread.join(timeout=timeout)
-            if thread.is_alive():
-                # Keep both the thread reference and stop event.  A later
-                # start must not clear the event while this thread can still
-                # execute.
-                return False
-            if self._thread is thread:
+            self._stopping = True
+            self_join = thread is threading.current_thread()
+        with _PROCESS_COORDINATOR.lock:
+            self._stop.set()
+            _PROCESS_COORDINATOR.changed.notify_all()
+        if self_join:
+            with self._lifecycle_lock:
+                self._stopping = False
+            return False
+
+        owner_empty = self._wait_for_owner_entries(deadline)
+        if not owner_empty:
+            with self._lifecycle_lock:
+                self._stopping = False
+            return False
+
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        if thread is not None:
+            thread.join(timeout=remaining)
+        thread_dead = thread is None or not thread.is_alive()
+        with self._lifecycle_lock:
+            if thread_dead and thread is not None and self._thread is thread:
                 self._thread = None
+            self._stopping = False
+        return owner_empty and thread_dead
+
+    def _wait_for_owner_entries(self, deadline: float | None) -> bool:
+        with _PROCESS_COORDINATOR.changed:
+            while any(entry.owner_worker_id == self.worker_id for entry in _PROCESS_COORDINATOR.registry.values()):
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return False
+                _PROCESS_COORDINATOR.changed.wait(timeout=remaining)
             return True
 
     def _loop(self, interval_seconds: float) -> None:
@@ -320,6 +582,7 @@ class WorkerService:
         print(f"blockpedia worker diagnostic: {diagnostic}", file=sys.stderr)
 
     def tick(self, run_id: str, minecraft_version: str | None = None) -> dict[str, Any]:
+        serial_wait = False
         with self.open_database(run_id, minecraft_version) as database:
             run = database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,))
             if run is None:
@@ -342,16 +605,43 @@ class WorkerService:
             if stage == "EXTRACT_FEATURES":
                 self._extract_one(database, run_id)
             elif stage == "AI_ANNOTATE":
-                self._annotate_one(database, run_id)
+                # Serialize only the bounded claim/submission section.  The
+                # task body and its final send gate run after this lock is
+                # released so pause/cancel and provider completion callbacks
+                # can make progress concurrently.
+                with self.run_lock(run_id):
+                    self._annotate_one(database, run_id)
+                with _PROCESS_COORDINATOR.lock:
+                    serial_wait = bool(self._scope_entries_locked(self._scope(run_id)))
+                # Direct service-level callers historically used a
+                # default-concurrency tick as a completion boundary.  A
+                # serial run may retain that compatibility without
+                # changing the parallel scheduler for 2..5.
+                try:
+                    profile = self._run_profile(database, run_id)
+                except StageFailure:
+                    serial_wait = False
+                else:
+                    if int(getattr(profile.stages["offline_annotation"], "concurrency", 1)) != 1:
+                        serial_wait = False
             elif stage == "VALIDATE":
                 self._validate_r3_stage(database, run_id)
             elif stage == "HUMAN_REVIEW":
                 self._human_review_stage(database, run_id)
             else:
                 self._finish_simple_stage(database, run_id, stage)
-            return _row_dict(database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,)))
+            result = _row_dict(database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,)))
+        if serial_wait:
+            self._wait_for_scope_empty(run_id)
+            with self.open_database(run_id, minecraft_version) as database:
+                refreshed = database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,))
+                if refreshed is not None:
+                    result = _row_dict(refreshed)
+        return result
 
     def _run_is_stale(self, database: WorkspaceDatabase, run_id: str) -> bool:
+        if self.has_live_ai_futures(run_id):
+            return False
         row = database.fetchone(
             "SELECT heartbeat_at FROM stage_runs WHERE run_id=? AND status='running' ORDER BY ordinal LIMIT 1", (run_id,)
         )
@@ -674,77 +964,169 @@ class WorkerService:
                 )
 
     def _annotate_one(self, database: WorkspaceDatabase, run_id: str) -> None:
+        """Schedule a bounded approved prefix; task bodies receive IDs only."""
+
         try:
             self._ensure_ai_jobs_from_config(database, run_id)
         except StageFailure as exc:
             self._persist_stage_failure(database, run_id, "AI_ANNOTATE", exc)
             return
-        with self.run_lock(run_id):
-            pending = database.fetchone(
-                "SELECT * FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' AND status='pending' ORDER BY logical_key LIMIT 1",
-                (run_id,),
-            )
-            if pending is None:
-                unapproved = database.fetchone(
-                    "SELECT * FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' AND status IN ('pending','needs_review') ORDER BY logical_key LIMIT 1",
-                    (run_id,),
-                )
-                if unapproved is not None and not _load_object(unapproved["cursor_json"]).get("approved", False):
-                    self._pause_for_approval(database, run_id, unapproved)
-                    return
-                self._finish_ai_stage(database, run_id)
-                return
-            cursor = _load_object(pending["cursor_json"])
-            if cursor.get("approved") is not True:
-                self._pause_for_approval(database, run_id, pending)
-                return
-            claimed = database.connection.execute(
-                "UPDATE jobs SET status='running',worker_id=?,started_at=COALESCE(started_at,?),heartbeat_at=? WHERE job_id=? AND status='pending'",
-                (self.worker_id, utc_now(), utc_now(), pending["job_id"]),
-            )
-            if claimed.rowcount != 1:
-                return
-            job = database.fetchone("SELECT * FROM jobs WHERE job_id=?", (pending["job_id"],))
-        if job is None:
-            return
-        payload: dict[str, Any] | None = None
+        self._heartbeat_registered_ai(database, run_id)
         try:
             profile = self._run_profile(database, run_id)
         except StageFailure as exc:
-            self._commit_ai_failure(
-                database,
-                run_id,
-                job,
-                exc.error_code,
-                exc.error_code,
-                None,
-                None,
-                None,
-                attempts=0,
-                request_evidence=None,
+            pending = database.fetchone(
+                "SELECT * FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' AND status='pending' ORDER BY logical_key,job_id LIMIT 1",
+                (run_id,),
             )
-            return
-        try:
-            payload = self._ai_payload(database, job, prompt_version=profile.prompt_version)
-            payload_signature = _annotation_payload_signature(
-                payload,
-                profile,
-                retry_nonce=_load_object(job["cursor_json"]).get("retry_nonce"),
-            )
-            if payload_signature != job["input_signature"]:
-                self._refresh_ai_job_for_payload_change(database, run_id, job, payload_signature)
+            if pending is None:
+                self._persist_stage_failure(database, run_id, "AI_ANNOTATE", exc)
                 return
+            now = utc_now()
+            with database.transaction() as connection:
+                connection.execute(
+                    "UPDATE jobs SET status='running',worker_id=?,started_at=COALESCE(started_at,?),heartbeat_at=? WHERE job_id=? AND status='pending'",
+                    (self.worker_id, now, now, pending["job_id"]),
+                )
+            claimed = database.fetchone("SELECT * FROM jobs WHERE job_id=?", (pending["job_id"],))
+            if claimed is not None:
+                self._commit_ai_failure(database, run_id, claimed, exc.error_code, exc.error_code, None, None, None)
+            return
+        limit = int(getattr(profile.stages["offline_annotation"], "concurrency", 1))
+        total, per_run = self._ai_registry_counts(run_id)
+        slots = min(5 - total, limit - per_run)
+        if self._owner_is_stopping() or slots <= 0:
+            return
+
+        rows = database.fetchall(
+            "SELECT * FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' ORDER BY logical_key,job_id",
+            (run_id,),
+        )
+        selected: list[Any] = []
+        barrier: Any | None = None
+        for row in rows:
+            if row["status"] in {"succeeded", "needs_review", "failed", "skipped"}:
+                continue
+            if row["status"] != "pending":
+                barrier = row
+                break
+            cursor = _load_object(row["cursor_json"])
+            if cursor.get("approved") is not True:
+                barrier = row
+                break
+            try:
+                _validate_persisted_ai_identity(row)
+            except (TypeError, ValueError):
+                barrier = row
+                break
+            if len(selected) >= slots:
+                break
+            selected.append(row)
+
+        entries: list[tuple[_RegisteredAITask, str]] = []
+        if selected:
+            now = utc_now()
+            reserved: list[_RegisteredAITask] = []
+            try:
+                with database.transaction() as connection:
+                    for row in selected:
+                        entry = self._reserve_ai_task(run_id, str(row["job_id"]), limit)
+                        if entry is None:
+                            raise _AIClaimConflict("AI reservation changed before wave commit")
+                        reserved.append(entry)
+                        updated = connection.execute(
+                            "UPDATE jobs SET status='running',worker_id=?,started_at=COALESCE(started_at,?),heartbeat_at=? WHERE job_id=? AND run_id=? AND stage='AI_ANNOTATE' AND status='pending'",
+                            (self.worker_id, now, now, row["job_id"], run_id),
+                        )
+                        if updated.rowcount != 1:
+                            raise _AIClaimConflict("AI claim changed before wave commit")
+                entries = [(entry, str(row["job_id"])) for row, entry in zip(selected, reserved)]
+            except _AIClaimConflict:
+                for entry in reserved:
+                    self._unregister_ai_task(entry)
+                return
+            except Exception:
+                for entry in reserved:
+                    self._unregister_ai_task(entry)
+                raise
+
+        for index, (entry, job_id) in enumerate(entries):
+            future = self._submit_ai_task(entry, run_id, job_id)
+            if future is None:
+                suffix = entries[index:]
+                try:
+                    self._restore_claimed_unsent(run_id, [suffix_job_id for _suffix_entry, suffix_job_id in suffix])
+                finally:
+                    for suffix_entry, _suffix_job_id in suffix:
+                        self._unregister_ai_task(suffix_entry)
+                break
+
+        if not entries and not self.has_live_ai_futures(run_id):
+            if barrier is not None and barrier["status"] == "pending" and not _load_object(barrier["cursor_json"]).get("approved", False):
+                self._pause_for_approval(database, run_id, barrier)
+            else:
+                self._finish_ai_stage(database, run_id)
+
+    def _heartbeat_registered_ai(self, database: WorkspaceDatabase, run_id: str) -> None:
+        entries = self.registered_ai_jobs(run_id)
+        if not entries:
+            return
+        now = utc_now()
+        with database.transaction() as connection:
+            for item in entries:
+                connection.execute(
+                    "UPDATE jobs SET heartbeat_at=? WHERE run_id=? AND job_id=? AND status='running' AND worker_id=?",
+                    (now, run_id, item["job_id"], self.worker_id),
+                )
+            connection.execute(
+                "UPDATE stage_runs SET heartbeat_at=? WHERE run_id=? AND stage='AI_ANNOTATE' AND status='running' AND worker_id=?",
+                (now, run_id, self.worker_id),
+            )
+
+    def _restore_claimed_unsent(self, run_id: str, job_ids: Iterable[str]) -> None:
+        job_ids = tuple(job_ids)
+        if not job_ids:
+            return
+        with self.run_lock(run_id):
+            with self.open_database(run_id) as database:
+                with database.transaction() as connection:
+                    for job_id in job_ids:
+                        connection.execute(
+                            "UPDATE jobs SET status='pending',worker_id=NULL,heartbeat_at=NULL,finished_at=NULL WHERE run_id=? AND job_id=? AND status='running' AND worker_id=?",
+                            (run_id, job_id, self.worker_id),
+                        )
+
+    def _run_ai_task(self, run_id: str, job_id: str) -> None:
+        payload: dict[str, Any] | None = None
+        profile: ProviderProfile | None = None
+        send_started = False
+        job: Any = {"run_id": run_id, "job_id": job_id, "logical_key": job_id, "input_signature": None, "cursor_json": "{}"}
+        try:
+            with self.open_database(run_id) as database:
+                row = database.fetchone("SELECT * FROM jobs WHERE run_id=? AND job_id=?", (run_id, job_id))
+                if row is None:
+                    return
+                job = dict(row)
+                profile = self._run_profile(database, run_id)
+                payload = self._ai_payload(database, row, prompt_version=profile.prompt_version)
+                payload_signature = _annotation_payload_signature(
+                    payload,
+                    profile,
+                    retry_nonce=_load_object(row["cursor_json"]).get("retry_nonce"),
+                )
+
+            gated = self._final_ai_send_gate(run_id, job_id, payload_signature)
+            if gated is None:
+                return
+            job, profile = gated
+            send_started = True
             envelope = build_provider_batch_envelope(
                 profile,
-                request_id=_request_id(job["logical_key"], job["input_signature"], run_id=run_id, job_id=job["job_id"]),
+                request_id=_request_id(job["logical_key"], job["input_signature"], run_id=run_id, job_id=job_id),
                 stage="offline_annotation",
                 input_summary={"tile_variant_map": payload["tile_map"]},
                 export_id=payload["export_id"],
             )
-        except Exception as exc:
-            self._commit_ai_input_failure(database, run_id, job, _safe_diagnostic(exc, error_code="AI_BATCH_INPUT_INVALID"), payload)
-            return
-        try:
             provider = self._new_provider(profile)
             try:
                 result = provider.annotate(
@@ -759,22 +1141,88 @@ class WorkerService:
                 )
             finally:
                 self._close_provider(provider)
-            self._commit_ai_result(database, run_id, job, profile, envelope, payload, result)
+            with self.open_database(run_id) as database:
+                self._commit_ai_result(database, run_id, job, profile, envelope, payload, result)
+        except StageFailure as exc:
+            with self.open_database(run_id) as database:
+                self._commit_ai_failure(database, run_id, job, exc.error_code, exc.error_code, None, None, payload)
         except Exception as exc:
             error_code = _provider_exception_code(exc)
-            self._commit_ai_failure(
-                database,
-                run_id,
-                job,
-                _safe_diagnostic(exc, error_code=error_code),
-                error_code,
-                None,
-                None,
-                payload,
-                attempts=0,
-                request_evidence=None,
-            )
-        self._finish_ai_stage(database, run_id)
+            with self.open_database(run_id) as database:
+                if not send_started and profile is not None:
+                    self._commit_ai_input_failure(database, run_id, job, _safe_diagnostic(exc, error_code="AI_BATCH_INPUT_INVALID"), payload)
+                else:
+                    self._commit_ai_failure(database, run_id, job, _safe_diagnostic(exc, error_code=error_code), error_code, None, None, payload)
+
+    def _final_ai_send_gate(self, run_id: str, job_id: str, payload_signature: str) -> tuple[dict[str, Any], ProviderProfile] | None:
+        """Linearize the send only after a fresh, locked final read."""
+
+        with self.run_lock(run_id):
+            with self.open_database(run_id) as database:
+                with database.transaction() as connection:
+                    with _PROCESS_COORDINATOR.lock:
+                        entry = _PROCESS_COORDINATOR.registry.get(self._task_key(run_id, job_id))
+                    run = connection.execute("SELECT status,current_stage FROM runs WHERE run_id=?", (run_id,)).fetchone()
+                    stage = connection.execute("SELECT status,worker_id FROM stage_runs WHERE run_id=? AND stage='AI_ANNOTATE'", (run_id,)).fetchone()
+                    job = connection.execute("SELECT * FROM jobs WHERE run_id=? AND job_id=?", (run_id, job_id)).fetchone()
+                    profile: ProviderProfile | None = None
+                    try:
+                        profile = self._run_profile(database, run_id)
+                    except StageFailure:
+                        profile = None
+                    cursor = _load_object(job["cursor_json"]) if job is not None else {}
+                    valid = bool(
+                        entry is not None
+                        and run is not None
+                        and run["status"] == "running"
+                        and run["current_stage"] == "AI_ANNOTATE"
+                        and stage is not None
+                        and stage["status"] == "running"
+                        and stage["worker_id"] == self.worker_id
+                        and job is not None
+                        and job["status"] == "running"
+                        and job["worker_id"] == self.worker_id
+                        and cursor.get("approved") is True
+                        and cursor.get("payload_signature") == job["input_signature"]
+                        and cursor.get("input_hash") == job["input_signature"]
+                        and job["input_signature"] == payload_signature
+                        and _is_sha256_hash(payload_signature)
+                        and profile is not None
+                    )
+                    run_concurrency = int(getattr(profile.stages["offline_annotation"], "concurrency", 1)) if profile is not None else 1
+                    if valid and entry is not None and profile is not None and job is not None and self._try_mark_send_started(entry, run_concurrency):
+                        return ({key: job[key] for key in job.keys()}, profile)
+                    if job is None or entry is None:
+                        return None
+                    if run is not None and run["status"] == "cancelled":
+                        connection.execute("UPDATE jobs SET status='failed',worker_id=NULL,heartbeat_at=?,finished_at=?,error_code='RUN_CANCELLED',error_message='cancelled by operator' WHERE run_id=? AND job_id=? AND status='running' AND worker_id=?", (utc_now(), utc_now(), run_id, job_id, self.worker_id))
+                    elif run is not None and run["status"] == "failed":
+                        connection.execute("UPDATE jobs SET status='failed',worker_id=NULL,heartbeat_at=?,finished_at=?,error_code='PROVIDER_CANCELLED',error_message='run stopped' WHERE run_id=? AND job_id=? AND status='running' AND worker_id=?", (utc_now(), utc_now(), run_id, job_id, self.worker_id))
+                    elif (run is not None and (run["status"] == "paused" or stage is None or stage["status"] != "running")) or self._owner_is_stopping():
+                        connection.execute("UPDATE jobs SET status='pending',worker_id=NULL,heartbeat_at=NULL,finished_at=NULL WHERE run_id=? AND job_id=? AND status='running' AND worker_id=?", (run_id, job_id, self.worker_id))
+                    elif job["input_signature"] != payload_signature or cursor.get("approved") is not True:
+                        cursor["approved"] = False
+                        cursor["payload_signature"] = payload_signature
+                        cursor["input_hash"] = payload_signature
+                        now = utc_now()
+                        connection.execute("UPDATE jobs SET status='pending',worker_id=NULL,heartbeat_at=NULL,finished_at=NULL,input_signature=?,cursor_json=? WHERE run_id=? AND job_id=? AND status='running' AND worker_id=?", (payload_signature, canonical_json(cursor), run_id, job_id, self.worker_id))
+                        connection.execute("UPDATE stage_runs SET status='paused',worker_id=NULL,heartbeat_at=?,finished_at=? WHERE run_id=? AND stage='AI_ANNOTATE' AND status IN ('running','pending')", (now, now, run_id))
+                        connection.execute("UPDATE runs SET status='paused',current_stage='AI_ANNOTATE',boundary_event=NULL,finished_at=NULL WHERE run_id=? AND status IN ('pending','running')", (run_id,))
+                    else:
+                        connection.execute("UPDATE jobs SET status='pending',worker_id=NULL,heartbeat_at=NULL,finished_at=NULL WHERE run_id=? AND job_id=? AND status='running' AND worker_id=?", (run_id, job_id, self.worker_id))
+                    return None
+
+    def _ai_task_done(self, entry: _RegisteredAITask, future: Future[Any]) -> None:
+        if not self._begin_ai_completion(entry, future):
+            return
+        try:
+            with self.run_lock(entry.run_id):
+                with self.open_database(entry.run_id) as database:
+                    self._finish_ai_stage(database, entry.run_id, exclude_entry_key=entry.task_key)
+        except Exception as exc:
+            print(f"blockpedia worker diagnostic: {_safe_diagnostic(exc)}", file=sys.stderr)
+        finally:
+            self._unregister_ai_task(entry, future)
 
     def _pause_for_approval(self, database: WorkspaceDatabase, run_id: str, job: Any) -> None:
         with self.run_lock(run_id):
@@ -789,8 +1237,11 @@ class WorkerService:
                     (_id("audit"), "AI_BATCH_APPROVAL_REQUIRED", run_id, job["job_id"], _json({"logical_key": job["logical_key"], "input_signature": job["input_signature"]}), now),
                 )
 
-    def _finish_ai_stage(self, database: WorkspaceDatabase, run_id: str) -> None:
+    def _finish_ai_stage(self, database: WorkspaceDatabase, run_id: str, *, exclude_entry_key: TaskKey | None = None) -> None:
         with self.run_lock(run_id):
+            with _PROCESS_COORDINATOR.lock:
+                if self._scope_entries_locked(self._scope(run_id), exclude_entry_key=exclude_entry_key):
+                    return
             stage = database.fetchone("SELECT status,worker_id FROM stage_runs WHERE run_id=? AND stage='AI_ANNOTATE'", (run_id,))
             run = database.fetchone("SELECT status FROM runs WHERE run_id=?", (run_id,))
             remaining = database.fetchone("SELECT 1 FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' AND status IN ('pending','running')", (run_id,))
@@ -992,11 +1443,11 @@ class WorkerService:
                         (now, now, error_code, "fatal provider failure", job["job_id"], self.worker_id),
                     )
                     connection.execute(
-                        "UPDATE stage_runs SET status='failed',worker_id=NULL,heartbeat_at=?,finished_at=?,cursor_json=? WHERE run_id=? AND stage='AI_ANNOTATE' AND status='running' AND worker_id=?",
+                        "UPDATE stage_runs SET status='failed',worker_id=NULL,heartbeat_at=?,finished_at=?,cursor_json=? WHERE run_id=? AND stage='AI_ANNOTATE' AND status IN ('running','paused') AND (worker_id=? OR worker_id IS NULL)",
                         (now, now, canonical_json({"error_code": error_code, "job_id": job["job_id"]}), run_id, self.worker_id),
                     )
                     connection.execute(
-                        "UPDATE runs SET status='failed',finished_at=? WHERE run_id=? AND status='running'",
+                        "UPDATE runs SET status='failed',finished_at=? WHERE run_id=? AND status IN ('running','paused')",
                         (now, run_id),
                     )
                     event_type = "AI_BATCH_FATAL_FAILED"
@@ -1779,10 +2230,15 @@ class WorkerService:
         markers: list[StaleMarker] = []
         paths = self._run_database_paths()
         if run_id:
+            if self.has_live_ai_futures(run_id):
+                return []
             version = self._find_run_version(run_id)
             paths = [self.data_root.workspace_dir(version, run_id) / "work.sqlite3"]
         for path in paths:
             with WorkspaceDatabase.open(path, force_normalized_like=self.force_normalized_like, read_only=True) as database:
+                identity = database.fetchone("SELECT run_id FROM runs LIMIT 1")
+                if identity is not None and self.has_live_ai_futures(str(identity["run_id"])):
+                    continue
                 query = "SELECT job_id,run_id,stage,logical_key,heartbeat_at FROM jobs WHERE status='running'"
                 params: tuple[Any, ...] = ()
                 if run_id:
@@ -1805,6 +2261,8 @@ class WorkerService:
         """Recover one stale job, a stale stage-only lease, or the run target."""
 
         with self.run_lock(run_id):
+            if self.has_live_ai_futures(run_id):
+                raise RunStateConflict("live AI work cannot be recovered")
             with self.open_database(run_id) as database:
                 now = utc_now()
                 cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.stale_after_seconds)

@@ -986,6 +986,19 @@
     updateKeyringReference();
   };
 
+  const initializeExplicitConfirmation = (form) => {
+    if (form.dataset.confirmationReady === "true") return;
+    form.dataset.confirmationReady = "true";
+    const checkbox = form.querySelector("[data-explicit-confirmation-input]");
+    const submit = form.querySelector("[data-explicit-confirmation-submit]");
+    if (!checkbox || !submit) return;
+    const sync = () => {
+      submit.disabled = !checkbox.checked;
+    };
+    checkbox.addEventListener("change", sync);
+    sync();
+  };
+
   const applyProviderProbeView = (result) => {
     const card = result.closest("[data-provider-card]");
     if (!card) return;
@@ -1213,6 +1226,12 @@
         setText(control.querySelector("[data-ai-model-id]"), active.model_id);
         setText(control.querySelector("[data-ai-endpoint]"), active.base_url_stable_id || active.base_url || "未报告");
         setText(control.querySelector("[data-ai-prompt-version]"), active.prompt_version || "prompt.v1");
+        const frozenConcurrency = Number(control.dataset.offlineConcurrency);
+        const profileConcurrency = Number(active.stages?.offline_annotation?.concurrency || 1);
+        const visibleConcurrency = Number.isInteger(frozenConcurrency) && frozenConcurrency >= 1 && frozenConcurrency <= 5
+          ? `${frozenConcurrency} · 已为此运行冻结`
+          : `${Number.isInteger(profileConcurrency) && profileConcurrency >= 1 && profileConcurrency <= 5 ? profileConcurrency : 1} · 配置运行时冻结`;
+        setText(control.querySelector("[data-ai-concurrency]"), visibleConcurrency);
         setText(control.querySelector("[data-ai-credential]"), `${source} · ${credential.masked || "已配置"}`);
         configureForm.querySelector("[data-ai-profile-input]").value = active.profile_id;
         const preferredBatch = Number(active.stages?.offline_annotation?.batch_size || 12);
@@ -1226,6 +1245,7 @@
         setText(control.querySelector("[data-ai-model-id]"), "先到 Provider 页面启用");
         setText(control.querySelector("[data-ai-endpoint]"), "未配置");
         setText(control.querySelector("[data-ai-prompt-version]"), "未配置");
+        setText(control.querySelector("[data-ai-concurrency]"), "未配置");
         setText(control.querySelector("[data-ai-credential]"), "不可用");
         control.dataset.profileReady = "false";
         configureButton.disabled = true;
@@ -1681,6 +1701,7 @@
     setText(confirmation.querySelector("[data-ai-confirm-hash-label]"), spec.hashLabel || "确认哈希");
     setAIQueueFact(confirmation, "model", spec.model);
     setAIQueueFact(confirmation, "adapter", spec.adapter);
+    setAIQueueFact(confirmation, "concurrency", spec.concurrency ? `${spec.concurrency} · 已为此运行冻结` : null);
     setAIQueueFact(confirmation, "count", spec.count);
     setAIQueueFact(confirmation, "hash", spec.hash ? abbreviateAIQueueHash(spec.hash) : null);
     setAIQueueFact(confirmation, "batch", spec.batch);
@@ -1744,20 +1765,22 @@
       if (kind === "plan") {
         const adapter = ["openai_responses", "openai_chat_completions"].includes(data.adapter) ? data.adapter : null;
         const model = safeAIQueueText(data.requested_model_id || data.model_id, null, 200);
+        const concurrency = Number(data.offline_annotation_concurrency);
         const runId = safeAIQueueId(panel.dataset.runId);
         const planJobs = runId ? normalizeAIPlanJobs(data.jobs, count, runId) : null;
-        if (!adapter || !model || !planJobs) throw { code: "AI_QUEUE_PREVIEW_INVALID" };
+        if (!adapter || !model || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 5 || !planJobs) throw { code: "AI_QUEUE_PREVIEW_INVALID" };
         openAIQueueConfirmation(panel, button, {
           kind,
           hash,
           count,
           adapter,
           model,
+          concurrency,
           planJobs,
           title: "确认自动处理剩余批次",
           hashLabel: "不可变计划哈希",
-          copy: "确认后会向所选 provider 提交这些批次。手动逐批批准仍是默认方式；自动模式按不可变计划顺序一次处理一个批次。普通失败会记录后继续，认证或配置等致命错误会停止。",
-          submitLabel: "确认并开始顺序处理",
+          copy: "确认后会向所选 provider 提交这些批次，并使用此运行已冻结的离线并发度。更改 active profile 不会改写此计划；每个逻辑请求仍遵守原有自动重试预算。普通失败会记录后继续，认证或配置等致命错误会停止。",
+          submitLabel: "确认并按冻结并发度处理",
         });
       } else {
         openAIQueueConfirmation(panel, button, {
@@ -2277,6 +2300,7 @@
     }
     event.detail.target.querySelectorAll("[data-provider-form]").forEach(initializeProviderForm);
     event.detail.target.querySelectorAll("[data-review-form]").forEach(initializeReviewForm);
+    event.detail.target.querySelectorAll("[data-explicit-confirmation]").forEach(initializeExplicitConfirmation);
     if (document.querySelector("#provider-profile-list [data-provider-card]")) {
       document.querySelector("#provider-profile-list .provider-empty")?.remove();
     }
@@ -2289,6 +2313,7 @@
   document.querySelectorAll("[data-import-check-form]").forEach(initializeDirectoryChooser);
   document.querySelectorAll("[data-provider-form]").forEach(initializeProviderForm);
   document.querySelectorAll("[data-review-form]").forEach(initializeReviewForm);
+  document.querySelectorAll("[data-explicit-confirmation]").forEach(initializeExplicitConfirmation);
   document.querySelectorAll("[data-ai-control]").forEach(initializeAIControl);
   document.querySelectorAll("[data-release-candidate]").forEach(initializeReleaseCandidate);
   updateReviewContinue();

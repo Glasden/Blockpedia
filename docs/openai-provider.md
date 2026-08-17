@@ -28,7 +28,7 @@ query_spec
 visual_rerank
 ```
 
-同一 release 的离线标注、QuerySpec 和视觉重排必须使用同一 release-bound configured/requested `model_id` 和同一 `adapter`。`model_id` 与 `adapter` 是运行时配置，不得硬编码；每个 run 的非秘密配置快照、每个 AI 产物和 `manifest.json` **MUST** 记录 requested `model_id`、`adapter`、`profile_id`、`base_url_stable_id`、`secret_reference`、prompt/schema/search 版本。成功响应中的 string `model` 只是 untrusted informational echo；它可以不同于 requested `model_id`，不得作为已验证远端模型身份、持久化值或替换来源。非活动 profile 不得用于 Studio 新写任务或新 release；但 release-bound MCP 必须使用 `manifest.json` 冻结的 provider snapshot，不读取或比较可变的 active profile。切换 Studio active profile、adapter 或 endpoint 不影响旧 release，release snapshot 也不算另一个 active profile。改变其中任一值后，旧缓存不得被当作新输入的成功结果；尚未完成的旧 cache/workspace 必须失效并重新运行，不做协议迁移。`secret_reference` 只保存引用，不保存 key。既有 `openai_responses` profile 和 release 继续有效。
+同一 release 的离线标注、QuerySpec 和视觉重排必须使用同一 release-bound configured/requested `model_id` 和同一 `adapter`。`model_id` 与 `adapter` 是运行时配置，不得硬编码；每个 run 的非秘密配置快照、每个 AI 产物和 `manifest.json` **MUST** 记录 requested `model_id`、`adapter`、`profile_id`、`base_url_stable_id`、`secret_reference`、prompt/schema/search 版本。成功响应中的 string `model` 只是 untrusted informational echo；它可以不同于 requested `model_id`，不得作为已验证远端模型身份、持久化值或替换来源。非活动 profile 不得用于 Studio 新写任务或新 release；但 release-bound MCP 必须使用 `manifest.json` 冻结的 provider snapshot，不读取或比较可变的 active profile。切换 Studio active profile、adapter 或 endpoint 不影响旧 release，release snapshot 也不算另一个 active profile。除合法 offline-concurrency-only profile edit 外，改变其中任一值后，旧缓存不得被当作新输入的成功结果；尚未完成的旧 cache/workspace 必须失效并重新运行，不做协议迁移。`secret_reference` 只保存引用，不保存 key。既有 `openai_responses` profile 和 release 继续有效。
 
 ### 1.2 兼容 `base_url`
 
@@ -84,9 +84,9 @@ Provider profile 配置对象使用 JSON Schema Draft 2020-12，严格对象必�
 | `search_ranking_version` | 固定为当前搜索排序配置，例如 `search-ranking.v1` |
 | `request_timeout_ms` | 1000–600000 的整数 |
 | `batch_size` | `offline_annotation` 为 8–16；在线阶段固定为 1 |
-| `concurrency` | 1–4；不能借此绕过 provider 限流或重试上限 |
+| `concurrency` | `offline_annotation` 为整数 `1..5`、默认 `1`；`query_spec`/`visual_rerank` 必须为 `1`；计数 logical batch，不改变每 batch 最多两次总尝试 |
 
-profile 必须满足以下启用不变量：`adapter` 为两个显式枚举值之一、`enabled=true`、三个阶段使用同一 configured/requested `model_id`、能力状态严格为 `verified`、秘密可读取、实际 wire Schema ID/name 固定、Schema/prompt/search 版本存在，并且所选 adapter 的 endpoint/wire 能力门通过。成功响应的 model echo 不要求与 requested `model_id` 相等；缺失或非 string 仍必须 fail closed。保存非活动 profile 不需要探测，但不得用于 Studio 新写任务或新 release；release-bound MCP 例外使用已解析 release 冻结的 provider snapshot，不读取或比较可变 active profile。一个 profile 被启用后不得再启用第二个；变更活动 profile、adapter 或 endpoint 必须停止新 AI job，并在新 run 中使用新快照。
+profile 必须满足以下启用不变量：`adapter` 为两个显式枚举值之一、`enabled=true`、三个阶段使用同一 configured/requested `model_id`、能力状态严格为 `verified`、秘密可读取、实际 wire Schema ID/name 固定、Schema/prompt/search 版本存在，并且所选 adapter 的 endpoint/wire 能力门通过。成功响应的 model echo 不要求与 requested `model_id` 相等；缺失或非 string 仍必须 fail closed。保存非活动 profile 不需要探测，但不得用于 Studio 新写任务或新 release；release-bound MCP 例外使用已解析 release 冻结的 provider snapshot，不读取或比较可变 active profile。一个 profile 被启用后不得再启用第二个；变更活动 profile、adapter 或 endpoint 必须停止新 AI job，并在新 run 中使用新快照。只改变合法 `offline_annotation.concurrency` 的 profile edit 是唯一例外：保留 `verified`/`enabled` 且不需要 reprobe；`query_spec`/`visual_rerank` 仍固定为 `1`，其它配置变化继续沿用既有 invalidation。
 
 ### 2.2 配置来源和秘密
 
@@ -319,9 +319,19 @@ observed_length  = bounded non-negative integer | null
 
 手动 per-batch approval 是默认。WebUI 的一次明确 confirmation 只授权 unchanged frozen remaining batch plan；确认前每个 planned batch 都必须可 inspect，计划绑定 D-040 的 immutable plan hash、run-frozen provider 和 requested `model_id`。plan hash 精确只包含 `run_id`、`effective_config_hash` 和按顺序排列的 `job_id`、`logical_key`、recomputed payload signature；transaction 必须重新计算并执行 TOCTOU all-or-none，approve none 或批准全部 included pending jobs，写 one plan audit 和 per-job approval audits。Worker 在每次 send 前立即复核，lineage 变化时不发送。不得增加 auto-mode field、stage cursor、config snapshot 或改变 retry budget。
 
-Automatic plan submission 的 send concurrency 固定为 `1`，并按 frozen order 继续下一个 batch。Worker request 必须使用 run-frozen profile；mutable global active profile 仅适用于新的 Studio work/profile management，不得替换既有 run 的 adapter、requested model 或 base URL。item-local error 只创建 high `needs_review` 并继续 drain；fatal `PROVIDER_NOT_CONFIGURED`、`PROVIDER_CONFIG_INVALID`、`PROVIDER_CAPABILITY_MISSING`、`PROVIDER_AUTH_FAILED`、`PROVIDER_PERMISSION_DENIED`、`PROVIDER_MODEL_UNAVAILABLE` 必须 atomically persist request evidence/review/job/stage/run failure/audit，并在 later sends 前停止。低置信度的有效结果和 item-local failure 仍进入 `VALIDATE`/`HUMAN_REVIEW`。
+Automatic plan submission 的 send concurrency 由 D-044 bounded scheduler 约束：`offline_annotation` 为每个 run 冻结的整数 `1..5`（默认 `1`），`query_spec`/`visual_rerank` 固定为 `1`；它计数 logical batches，不计 HTTP attempts。一个 Python 进程只有一个 process-lifetime in-process executor，最多 `5` 个 worker slots，所有 runs 共享；global active sends `<=5`，每个 run `<=` 其 frozen offline bound。Worker request 必须使用 run-frozen profile；mutable global active profile 仅适用于新的 Studio work/profile management，不得替换既有 run 的 adapter、requested model 或 base URL。item-local error 只创建 high `needs_review` 并继续 drain；fatal `PROVIDER_NOT_CONFIGURED`、`PROVIDER_CONFIG_INVALID`、`PROVIDER_CAPABILITY_MISSING`、`PROVIDER_AUTH_FAILED`、`PROVIDER_PERMISSION_DENIED`、`PROVIDER_MODEL_UNAVAILABLE` 必须 atomically persist request evidence/review/job/stage/run failure/audit，并在 later sends 前停止。低置信度的有效结果和 item-local failure 仍进入 `VALIDATE`/`HUMAN_REVIEW`。
 
 Provider retry 的 source 是 terminal `needs_review|failed` 的 AI job，且必须有 eligible item-local Provider error；fatal、`PROVIDER_CANCELLED` 和没有 Provider error 的 job 不 eligible。variant review 不能单独作为 source。source 必须是 leaf；child cursor 包含 `retry_of_job_id`，nonce 由 source `job_id + input_signature` 确定性生成，每个 source 一个 child，failed child 可作为下一次显式 generation。row/bulk retry 在同一 transaction resolve source 的 open provider-review siblings，同时保留 source job/evidence/provider request；重复 POST 幂等，legacy retry rows 只兼容读取、不重写。bulk action 只处理 eligible failed leaf batches 并 auto-approve retry wave；generic `retry-failed` 排除 fatal/provider AI jobs，不能让同一 logical request 超过两次总尝试。`PROVIDER_CANCELLED` 是 control，不是 bulk retry。
+
+#### 5.3.1 D-044 发送线性化、恢复与 pristine reconfiguration
+
+Worker 必须按 frozen plan order 使用 ordered contiguous approved claim barrier：只有从当前未完成位置开始的连续 approved prefix 可以 claim，后续 batch 不得越过未 approved、失效或停止 barrier。每个 batch 在 HTTP 前必须完成 full payload/contact sheet/prompt/machine metadata rebuild、full signature、approval/lineage、run/stage、停止信号和 active-send bound 的最终 gate。HTTP 不得处于 SQLite transaction 内；DB connection/transaction、provider client 和 provider mutable state 不得跨线程共享。
+
+通过 final gate、占用 slot 并进入 provider HTTP call 的瞬间是 send-started linearization。pause/cancel/fatal 只阻止 claimed-unsent/later sends；already-started call 可以完成并持久化 request evidence 与 item terminal state，但不能 revive 已 failed/cancelled 的 run/stage。fatal supersedes paused，不 supersede 已 durable cancelled；不得 fake in-flight cancellation。没有 durable pending provider request reservation，也没有 remote exactly-once claim；hard crash after send before commit 最多留下 frozen concurrency 数量的 unknown outcomes。startup 不自动 resend，显式 `recover` 仍是必要恢复入口。
+
+该唯一 executor 在进程生命周期内复用；stop 必须等待 live futures，live futures 或 DB work 存在时不能 stale-recover 或报告完成，completion 要求二者均为零。调度 concurrency 只属于 profile/run runtime scheduling，不能进入 release snapshot、`release-manifest.v1` 或 provider wire/record Schema。除合法 offline-concurrency-only profile edit（保留 `verified`/`enabled`、无需 reprobe）外，其它 invalidation 规则不变。
+
+仅当 run/stage paused at `AI_ANNOTATE`、没有 live future/provider request、没有 provider-request evidence/annotation/AI artifact/provider or AI review/send/result/retry/cancel evidence，且每个 AI job 都是 pending、unapproved、ownerless、clean 时，才允许 strict pristine same-run reconfiguration。检查无法证明时 fail closed；通过后原子替换 frozen config/pending jobs，保留 R2/machine evidence，写 `R3_RUN_RECONFIGURED`，invalidate old plan，不重用 approval。不得新增服务、队列、per-run executor、adaptive concurrency、SQL/Schema/migration/status/dependency/CLI/fallback/retry 语义或伪造 cancellation。
 
 ### 5.4 响应保留边界
 

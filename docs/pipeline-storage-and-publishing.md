@@ -44,7 +44,7 @@ releases/              → 不可变发布 SQLite、图片和 manifest
 MCP                   → 只读根 current.json 与指定版本 release
 ```
 
-默认并发在一个 Python 进程内启动有限 Worker；不引入 Redis、Celery、Kafka、微服务或云对象存储。未来等价替换必须保留幂等键、游标、原子 release 和 MCP 只读边界。
+默认调度在一个 Python 进程内使用一个 process-lifetime 的有限 in-process executor；该 executor 最多 `5` 个 slots，所有 run 共享，不为每个 run 创建 executor。全局 active sends 不超过 `5`，每个 run 不超过其冻结的 `offline_annotation` concurrency。不得引入 Redis、Celery、Kafka、微服务或云对象存储。未来等价替换必须保留幂等键、游标、原子 release 和 MCP 只读边界；本项 D-044 不允许把该 executor 替换为服务或队列。
 
 ## 3. 本地数据根和目录
 
@@ -112,6 +112,16 @@ Python 导入只接受 passed check 的 `check_id` 和固定 `copy_mode=copy_to_
 
 输出：工作库中的只读机器事实投影、原始导出引用和导入完整性报告。
 
+#### 5.1.1 D-045 banner-export refresh
+
+Targeted refresh 是一个只由 WebUI 发起的窄操作，不是新的 Studio stage、import mode 或通用 patch/migration framework。它只接受 passed immutable full export check，并要求当前 run 在 `HUMAN_REVIEW/needs_review`、没有 live work、check 的 source export 与 `expected_base_export_id` 精确相等，且 target set 是稳定排序的 32 个 vanilla standing/wall banner IDs。输入 package 的 normalized semantic diff 必须严格为这 32 个 `skipped → selected` transitions 加上每个目标的三份 render files（共 96 个）；任何其它 record、state、artifact 或 source lineage 差异都 fail closed。
+
+在既有 run lock 内，服务先把新 complete replacement source export 和精确目标 render/feature files 写入 workspace-local staging，并用窄 journal/backup 记录可恢复的 source/file/SQLite projection replacement。只有文件和投影均校验成功才提交；异常时恢复 source、files 和 SQLite 到 refresh 前状态。该路径复用既有 tables、columns、state enum、validator、feature extractor、review/audit 和 lock，不新增 table、column、status、migration framework、service、queue 或 Python product CLI；Python 仍不选择 variant 或渲染图片。
+
+成功 refresh 保留早期已成功阶段；只将 `AI_ANNOTATE`、`VALIDATE`、`HUMAN_REVIEW` 置为 `pending`，并从 `AI_ANNOTATE` 继续。它保留全部既有 annotations、provider requests、jobs 和 reviews，只为新目标增加恰好三个未批准 AI jobs，按稳定目标顺序批量为 `12 + 12 + 8`，使用 `banner_refresh_*` logical keys。目标 feature files 可在该窄操作中确定性生成，但不把完整 `EXTRACT_FEATURES` stage 重新运行。
+
+`imports.report_json` 复用现有 JSON storage，必须保存严格的 `banner-refresh.v1` provenance：base/new import、export、manifest、checksum hashes、精确 sorted targets 和 banner policy token。它不是新的 Schema ID，也不触发 SQL migration。Release check/build 的 functional inputs 必须包含该 provenance；对于 preserved requests，只有排除全部 32 个 targets 且在 historical envelope export ID 下 current input 重算完全一致时，才允许继续使用 historical base export ID。新的 banner requests 必须使用 replacement export ID。这样可以保留不相关历史请求，同时阻止混用未经证明的 source lineage。
+
 ### 5.2 `VALIDATE_REGISTRY`
 
 复用 validator 已确认的 `registry_snapshot_sha256` 与排序后的 block ID 覆盖证据，并确认导入投影的版本和引用未改变；不重新对 exporter 全包执行同一 registry/Schema 扫描。缺记录、重复主键或投影不一致使阶段 `failed`，不得补造或跳过方块。
@@ -163,11 +173,23 @@ image_hash
 
 一次 aggregate confirmation transaction 使用并验证已经持久化的 pending identity：`jobs.input_signature`、cursor `payload_signature`/`input_hash`、`tile_ids`/`variant_ids`、run `effective_config_hash` 和 frozen provider snapshot；aggregate path 不为全部 jobs rebuild images、contact sheets、prompt text 或 machine metadata。既有 plan-hash object/field name `recomputed_payload_signature` 保持不变，其 plan-time value 是 validated persisted payload signature。任一持久化 hash 缺失、冲突、无效，或 pending 集合/provider/config lineage 发生 TOCTOU mismatch 时 approve none；全部一致时，使用现有 job `cursor_json` 的 `approved` 标记批准所有 included pending jobs，并写 one plan audit 与 per-job approval audits。不得增加 auto-mode field、stage cursor、config snapshot、数据库字段或 Schema。
 
-每个 planned batch 在 aggregate confirmation 前仍通过既有 safe preview lazy inspect；one-batch preview 可以重建其 bounded payload。Immediately before **every** actual external send，Worker 必须从 frozen run profile rebuild complete one-batch payload/contact sheet/prompt/machine metadata，recompute full signature，并与 approved job signature 比较。任一 mismatch 必须 revoke 该 job 的 approval、在任何 HTTP request 前 pause，并不得发送；不能用 aggregate persisted identity shortcut 绕过该 final TOCTOU gate。D-041 不改变 manual mode/default、send concurrency `1`、item-local continue、fatal stop、retry 或 audit。
+每个 planned batch 在 aggregate confirmation 前仍通过既有 safe preview lazy inspect；one-batch preview 可以重建其 bounded payload。Immediately before **every** actual external send，Worker 必须从 frozen run profile rebuild complete one-batch payload/contact sheet/prompt/machine metadata，recompute full signature，并与 approved job signature 比较。任一 mismatch 必须 revoke 该 job 的 approval、在任何 HTTP request 前 pause，并不得发送；不能用 aggregate persisted identity shortcut 绕过该 final TOCTOU gate。D-041 不改变 manual mode/default、D-044 当前 send concurrency、item-local continue、fatal stop、retry 或 audit。
 
-确认后的 automatic submission 严格按冻结顺序运行，send concurrency 固定为 `1`。Worker 只能使用 run-frozen profile；mutable global active profile 仅适用于新的 Studio work/profile management，不能替换已有 run。item-local Provider failure 变成 high `needs_review` 后继续下一个 approved batch；fatal provider/config/auth/capability failure 必须 atomically 写入 request evidence、review、job/stage/run failure 和 audit，并在后续 send 前停止。`needs_review` item 不阻塞 AI_ANNOTATE drain：valid low-confidence 和 item-local failure 继续进入 `VALIDATE`、`HUMAN_REVIEW`；fatal 才停止 stage/run。
+确认后的 automatic submission 严格按冻结顺序运行：`offline_annotation` 的 send concurrency 是每个 run 冻结的整数 `1..5`（默认 `1`），`query_spec`/`visual_rerank` 固定为 `1`，并计数 logical batch 而非 HTTP attempt。一个 process-lifetime in-process executor（最多 `5` slots）共享所有 run；global active sends `<=5`，per-run active sends `<=` frozen offline bound。Worker 只能使用 run-frozen profile；mutable global active profile 仅适用于新的 Studio work/profile management，不能替换已有 run。item-local Provider failure 变成 high `needs_review` 后继续下一个 approved batch；fatal provider/config/auth/capability failure 必须 atomically 写入 request evidence、review、job/stage/run failure 和 audit，并在后续 send 前停止。`needs_review` item 不阻塞 AI_ANNOTATE drain：valid low-confidence 和 item-local failure 继续进入 `VALIDATE`、`HUMAN_REVIEW`；fatal 才停止 stage/run。
 
 Provider retry source 必须是 terminal `needs_review|failed` 的 AI job，且 error 属于 eligible item-local Provider error；fatal、`PROVIDER_CANCELLED` 和没有 Provider error 的 job 不 eligible。variant review 不是 source。source 必须为 leaf；child cursor 包含 `retry_of_job_id`，nonce 由 source `job_id + input_signature` 确定性生成，每个 source 只能生成一个 child；failed child 可作为下一次显式 generation。row/bulk action 在同一 transaction 创建 child、resolve source 的 open provider-review siblings，并保留 source rows、evidence 和 provider request；重复 POST 幂等，legacy retry rows 只兼容读取、不重写。bulk action 只 retry eligible failed leaf batches 并 auto-approve retry wave；generic `retry-failed` 排除 fatal/provider AI jobs，不能绕过同一逻辑请求的两次总尝试预算。
+
+#### 5.6.2 D-044 claim barrier、send-started linearization 与执行器生命周期
+
+Worker 必须按 frozen plan order 使用 ordered contiguous approved claim barrier：只能 claim 从当前未完成位置开始的连续 approved prefix，遇到未 approved、approval/lineage 失效或 pause/cancel/fatal stop 时，后续 batch 不得越过 barrier。claim 不是 durable pending provider request reservation，也不向远端取得 exactly-once claim。
+
+在任何 HTTP 前，Worker 必须对每个 batch 完成完整 one-batch payload/contact sheet/prompt/machine metadata rebuild、full signature recomputation、approval/plan lineage、run/stage state、停止信号和 active-send bound 的 final gate。通过 gate、占用 active-send slot 并进入 provider HTTP call 的瞬间定义为 send-started linearization。HTTP 不得包在 SQLite transaction 中；发送前/后的 DB work 各自使用本地 transaction，SQLite connection/transaction、provider client 和 provider mutable state 不得跨线程共享。
+
+pause/cancel/fatal 只停止 claimed-unsent/later sends；already-started calls 可以完成并持久化既有 request evidence 与 item terminal state，但不得 revive 已 failed/cancelled 的 run/stage。fatal supersedes paused，不 supersede 已 durable cancelled；不得 fake in-flight cancellation。hard crash after send before commit 可能留下最多 frozen concurrency 数量的 unknown outcomes；没有 durable reservation 或 remote exactly-once claim，startup 不自动 resend，显式 `recover` 仍是必要入口。
+
+唯一 executor 在一个进程生命周期内创建并共享所有 run，stop 必须等待 live futures；live futures 或 DB work 存在时，相关 run 不能 stale-recover 或报告 completion。只有无 DB work 且无 futures 时才可完成 drain。调度 concurrency 只在 profile/run runtime scheduling 中冻结，不进入 release snapshot、`release-manifest.v1` 或 provider Schema。合法 offline-concurrency-only profile edit 保留 `verified`/`enabled` 且无需 reprobe；其它 invalidation 不变。
+
+同一 run 的 strict pristine reconfiguration 仅可在 paused `AI_ANNOTATE` 且无 live future/provider request、provider-request evidence/annotation/AI artifact/provider review/AI review/send/result/retry/cancel evidence，并且每个 AI job 都是 pending、unapproved、ownerless、clean 时执行。检查不能证明时 fail closed；通过后原子替换 frozen config/pending jobs，保留 R2/machine evidence，写 `R3_RUN_RECONFIGURED` 并 invalidate old plan，不重用 approval。不得增加服务、队列、per-run executor、adaptive concurrency、SQL/Schema/migration/status/dependency/CLI/fallback/retry 语义或 fake cancellation。
 
 ### 5.7 `VALIDATE`
 
@@ -229,6 +251,8 @@ staging_dir     = .rel_<32 lowercase hex>.staging
 对精确 `(run_id, minecraft_version)`，最新 check 是所有合法 `state.json` 中按 `(created_at, check_id)` 的 UTF-8 字节序升序取最大值；损坏、越界、链接/reparse 或未知字段的目录不是可用 check。每次新的同步 check 都产生新的 `check_id`；build 只接受该键的最新 state，旧 check 即使 `can_build=true` 也返回 `RELEASE_CHECK_STALE`。已 `built` 的 check 仍是历史状态，不得再次 build。
 
 `snapshot_fingerprint` 必须对逻辑数据做 canonical JSON（JCS）后计算 SHA-256，不得对 `work.sqlite3`、`-wal`、`-shm` 或任何 SQLite 文件 bytes 取 hash。输入固定包括：精确 `run_id`/`minecraft_version`/`source_export_id`、已验证 export manifest 与工具链锁定摘要、`workspace.v1.sql` 的已冻结版本标识、参与发布的 blocks/states/variants/features/annotations 的 allowlisted 逻辑列、完整人工三类记录、有效 provider snapshot、每个被引用普通 artifact 的规范相对路径与内容摘要，以及实际使用的 Schema ID inventory。数组按稳定主键排序，SQLite rowid、列返回顺序和 WAL checkpoint 状态不参与结果。
+
+若 workspace 使用 D-045 refresh，`imports.report_json` 中严格 `banner-refresh.v1` provenance（包括 base/replacement import/export/manifest/checksum hashes、exact targets 和 policy token）是同一 functional input；historical base export ID 的保留只在 preserved request 的 target exclusion 与 historical envelope input recomputation 条件同时通过时成立，新增 banner request 一律绑定 replacement export ID。
 
 fingerprint 明确排除：`work.sqlite3`/WAL/SHM 原始 bytes、mtime/ctime、worker heartbeat、job cursor/worker ID、日志、缓存文件、source absolute path/chooser token、临时目录名、质量报告、`release_id`/`release_build_id`、`built_at`、`current.json`、MCP 数据和任何后续 activation 输入。人工记录中的业务时间、原因、证据和 input signature 属于逻辑输入，不因其来自审核而排除。
 
@@ -340,7 +364,7 @@ item: needs_review → pending（WebUI 显式处理）
 item: failed → pending（WebUI 显式重试）
 ```
 
-启动时只检测 stale `running` 并在内存/展示层标示，不修改数据库状态。只有 WebUI `recover` 操作可以把 stale item 写回 `pending` 或 `needs_review`；成功 item 不重跑。auto-approved cursor 在重启后保持，不因 stale 检测被清除。自动 retry 只影响 item 的 `auto_attempt`，每个逻辑 provider request 最多一次总自动重试；D-040 的 retry child 是新的显式 generation，不是追加到 source 的第三次 attempt。状态变更必须在 SQLite transaction 中与产物引用、错误码、游标和 audit 记录一起提交。pause/cancel 只停止 future sends；SSE/browser disconnect 不改变 Worker。
+启动时只检测 stale `running` 并在内存/展示层标示，不修改数据库状态；存在 live future 或未完成 DB work 时不能把该 run 当作可 recover 的 stale 工作。只有 WebUI `recover` 操作可以把 stale item 写回 `pending` 或 `needs_review`；成功 item 不重跑。auto-approved cursor 在重启后保持，不因 stale 检测被清除。自动 retry 只影响 item 的 `auto_attempt`，每个逻辑 provider request 最多一次总自动重试；D-040 的 retry child 是新的显式 generation，不是追加到 source 的第三次 attempt。状态变更必须在 SQLite transaction 中与产物引用、错误码、游标和 audit 记录一起提交。pause/cancel 只停止尚未 started 的 sends；already-started calls 可完成，但不能 revive failed/cancelled run。SSE/browser disconnect 不改变 Worker。
 
 ### 6.2 最小任务字段
 
@@ -363,7 +387,7 @@ created_at, started_at, finished_at
 
 ### 6.4 遗留 `running` 检测与 WebUI recover
 
-应用启动或定时检查 heartbeat 超时的 `running` 任务，只生成内存诊断和 WebUI 展示标记 `stale=true`，并写 stderr/展示日志；不得自动修改 SQLite 的 run/stage/item 状态。用户调用 WebUI `recover` 后才执行：
+应用启动或定时检查 heartbeat 超时的 `running` 任务，只生成内存诊断和 WebUI 展示标记 `stale=true`，并写 stderr/展示日志；不得自动修改 SQLite 的 run/stage/item 状态。live futures、provider request 或 DB work 尚未收敛时，不能把任务判定为可 recover 的 stale。用户调用 WebUI `recover` 后才执行：
 
 1. 读取临时文件和外部请求记录；
 2. 若完整输出和 hash 已存在，校验后在事务中补写 item `succeeded`，不重复执行；
@@ -371,7 +395,7 @@ created_at, started_at, finished_at
 4. 若自动重试已用，置 item `needs_review` 或 `failed`，不再自动运行；
 5. 写入 `WORKER_RECOVERED_STALE_RUNNING` 审计事件。
 
-recover 不能删除成功产物，也不能把未知结果当作 AI 已返回或图片已成功；run/stage 只有在其 item 结果汇总后才由 WebUI/Worker 事务更新。
+recover 不能删除成功产物，也不能把未知结果当作 AI 已返回或图片已成功；send 后 commit 前的 hard crash 最多可留下 frozen concurrency 数量的 unknown outcomes，startup 不自动 resend。run/stage 只有在其 item 结果汇总、没有 DB work 且没有 live futures 后才由 WebUI/Worker 事务更新。
 
 ### 6.5 provider 配置冻结
 

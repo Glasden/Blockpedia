@@ -25,9 +25,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .banner_refresh import BANNER_TARGET_IDS
 from .directory_chooser import DirectoryChooserError, DirectoryPathUnsafe, DirectoryRefNotFound, DirectoryRefStale
 from .importer import ImportCheckInProgress, ImportCheckNotFound, ImportCheckProgressPersistFailed, ImportNotAllowed
 from .paths import (
+    EXPORT_ID_RE,
     ExportPathError,
     RELEASE_BUILD_ID_RE,
     RELEASE_CHECK_ID_RE,
@@ -35,7 +37,12 @@ from .paths import (
     UnsafeReference,
     validate_minecraft_version,
 )
-from .provider import ProviderProfile, sanitize_validation_diagnostic
+from .provider import (
+    ProviderProfile,
+    ProviderProfileError,
+    profile_differs_only_in_offline_concurrency,
+    sanitize_validation_diagnostic,
+)
 from .r3 import is_sensitive_review_text
 from .services import R3Error, StudioService
 from .stages import R2_STAGES, STUDIO_STAGES, RunStateConflict
@@ -126,6 +133,34 @@ class ImportRequest(StrictRequest):
     copy_mode: Literal["copy_to_workspace"]
 
 
+class BannerRefreshRequest(StrictRequest):
+    check_id: str = Field(min_length=1, max_length=160)
+    expected_base_export_id: str = Field(min_length=1, max_length=160)
+    target_ids: list[str] = Field(min_length=32, max_length=32)
+    confirm: bool
+
+    @field_validator("check_id")
+    @classmethod
+    def valid_check_id(cls, value: str) -> str:
+        if re.fullmatch(r"check_[0-9a-f]{32}", value) is None:
+            raise ValueError("invalid check_id")
+        return value
+
+    @field_validator("target_ids")
+    @classmethod
+    def sorted_target_ids(cls, value: list[str]) -> list[str]:
+        if value != sorted(value) or len(set(value)) != len(value) or tuple(value) != BANNER_TARGET_IDS:
+            raise ValueError("target_ids must be unique and sorted")
+        return value
+
+    @field_validator("confirm")
+    @classmethod
+    def require_confirmation(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("confirm must be true")
+        return value
+
+
 class ReleaseCheckRequest(StrictRequest):
     run_id: str = Field(min_length=1, max_length=160)
     minecraft_version: str = Field(min_length=3, max_length=32)
@@ -166,7 +201,7 @@ class EmptyRequest(StrictRequest):
 
 class ProviderStageRequest(StrictRequest):
     batch_size: int = Field(ge=1, le=16)
-    concurrency: int = Field(ge=1, le=4)
+    concurrency: int = Field(ge=1, le=5)
 
 
 class ProviderProfileRequest(StrictRequest):
@@ -303,9 +338,7 @@ def create_app(
             yield
         finally:
             if owns_service:
-                if app_started_worker:
-                    studio.worker.stop()
-                studio.close()
+                studio.close(timeout=None)
 
     app = FastAPI(
         title="Blockpedia Index Studio",
@@ -545,6 +578,18 @@ def create_app(
         )
         return _success_response(request, configured, status_code=202)
 
+    @app.post("/api/runs/{run_id}/banner-export-refresh")
+    def api_banner_export_refresh(run_id: str, payload: BannerRefreshRequest, request: Request):
+        _allow_query_keys(request, set())
+        refreshed = studio.refresh_banner_export(
+            run_id,
+            check_id=payload.check_id,
+            expected_base_export_id=payload.expected_base_export_id,
+            target_ids=payload.target_ids,
+            confirm=payload.confirm,
+        )
+        return _success_response(request, refreshed, status_code=202)
+
     @app.post("/api/releases/check")
     def api_check_release(payload: ReleaseCheckRequest, request: Request):
         _allow_query_keys(request, set())
@@ -597,7 +642,10 @@ def create_app(
     @app.put("/api/provider/profile")
     def api_save_provider_profile(payload: ProviderProfileRequest, request: Request):
         _allow_query_keys(request, set())
-        profile = _provider_profile_from_request(studio, payload)
+        try:
+            profile = _provider_profile_from_request(studio, payload)
+        except ProviderProfileError as exc:
+            raise R3Error("PROVIDER_CONFIG_INVALID") from exc
         saved = studio.save_provider_profile(profile)
         shaped = _provider_profile_view(
             studio,
@@ -627,7 +675,10 @@ def create_app(
     @app.get("/api/runs/{run_id}/ai-batches/plan")
     def api_ai_batch_plan(run_id: str, request: Request):
         _allow_query_keys(request, set())
-        return _success_response(request, _shape_ai_plan(studio.preview_ai_plan(run_id)))
+        return _success_response(
+            request,
+            _shape_ai_plan_with_frozen_concurrency(studio, run_id, studio.preview_ai_plan(run_id)),
+        )
 
     @app.get("/api/runs/{run_id}/ai-batches/plan/{logical_key}/preview")
     def api_ai_batch_plan_preview(run_id: str, logical_key: str, request: Request):
@@ -646,7 +697,11 @@ def create_app(
     def api_approve_ai_batch_plan(run_id: str, payload: AIPlanApproveRequest, request: Request):
         _allow_query_keys(request, set())
         approved = studio.approve_ai_plan(run_id, plan_hash=payload.plan_hash)
-        return _success_response(request, _shape_ai_plan(approved, include_result_meta=True), status_code=202)
+        return _success_response(
+            request,
+            _shape_ai_plan_with_frozen_concurrency(studio, run_id, approved, include_result_meta=True),
+            status_code=202,
+        )
 
     @app.get("/api/runs/{run_id}/ai-batches/retry-wave")
     def api_provider_retry_wave(run_id: str, request: Request):
@@ -773,7 +828,7 @@ def create_app(
         _allow_query_keys(request, set())
         # Resolve before constructing StreamingResponse so an unknown run is
         # an ordinary 404 envelope rather than a late generator failure.
-        initial = _shape_run(studio.get_run(run_id))
+        initial = _shape_run_for_ui(studio, run_id)
         return StreamingResponse(
             _run_event_stream(studio, run_id, request, templates, initial),
             media_type="text/event-stream",
@@ -883,7 +938,7 @@ def create_app(
     @app.get("/runs/{run_id}", response_class=HTMLResponse)
     def run_page(run_id: str, request: Request):
         try:
-            run = _shape_run(studio.get_run(run_id))
+            run = _shape_run_for_ui(studio, run_id)
         except Exception as exc:
             return _page_exception(templates, request, exc)
         return templates.TemplateResponse(
@@ -1019,6 +1074,49 @@ def create_app(
         except Exception as exc:
             return _partial_exception(templates, request, exc, "刷新状态，确认项目仍为 stale 后再恢复。")
 
+    @app.post("/ui/runs/{run_id}/banner-export-refresh", response_class=HTMLResponse)
+    async def ui_banner_export_refresh(run_id: str, request: Request):
+        try:
+            form = await _form_payload(request, {"check_id", "confirm"})
+            if form.get("confirm") != "true":
+                raise ValueError("explicit banner refresh confirmation is required")
+            expected_base_export_id = await run_in_threadpool(_banner_refresh_base_export_id, studio, run_id)
+            if expected_base_export_id is None:
+                raise R3Error("BANNER_REFRESH_BASE_MISMATCH")
+            payload = BannerRefreshRequest.model_validate(
+                {
+                    "check_id": form.get("check_id"),
+                    "expected_base_export_id": expected_base_export_id,
+                    "target_ids": list(BANNER_TARGET_IDS),
+                    "confirm": True,
+                }
+            )
+            result = await run_in_threadpool(
+                studio.refresh_banner_export,
+                run_id,
+                check_id=payload.check_id,
+                expected_base_export_id=payload.expected_base_export_id,
+                target_ids=list(BANNER_TARGET_IDS),
+                confirm=True,
+            )
+            shaped_run = _shape_run_for_ui(studio, run_id)
+            shaped_run["banner_refresh_success"] = _shape_banner_refresh_success(result)
+            return templates.TemplateResponse(
+                request=request,
+                name="partials/run_panel.html",
+                context={"request": request, "run": shaped_run},
+            )
+        except Exception as exc:
+            response = _partial_exception(
+                templates,
+                request,
+                exc,
+                "确认 Import Check 已通过，且 check_id 来自新的 banner-repair 完整导出后再试。",
+            )
+            response.headers["HX-Retarget"] = "#banner-refresh-feedback"
+            response.headers["HX-Reswap"] = "innerHTML"
+            return response
+
     @app.post("/ui/runs/{run_id}/{action}", response_class=HTMLResponse)
     async def ui_run_action(run_id: str, action: str, request: Request):
         try:
@@ -1038,9 +1136,23 @@ def create_app(
     @app.post("/ui/provider/profile", response_class=HTMLResponse)
     async def ui_provider_profile(request: Request):
         try:
+            stage_form_fields = {
+                f"{stage}_{field}"
+                for stage in ("offline_annotation", "query_spec", "visual_rerank")
+                for field in ("batch_size", "concurrency")
+            }
             form = await _form_payload(
                 request,
-                {"profile_id", "adapter", "model_id", "base_url", "secret_reference", "prompt_version", "request_timeout_ms"},
+                {
+                    "profile_id",
+                    "adapter",
+                    "model_id",
+                    "base_url",
+                    "secret_reference",
+                    "prompt_version",
+                    "request_timeout_ms",
+                    *stage_form_fields,
+                },
             )
             if not form.get("secret_reference"):
                 form.pop("secret_reference", None)
@@ -1051,6 +1163,17 @@ def create_app(
             typed_form: dict[str, Any] = dict(form)
             if "request_timeout_ms" in typed_form:
                 typed_form["request_timeout_ms"] = int(typed_form["request_timeout_ms"])
+            supplied_stage_fields = stage_form_fields.intersection(typed_form)
+            if supplied_stage_fields:
+                if supplied_stage_fields != stage_form_fields:
+                    raise ValueError("all provider stage fields are required")
+                typed_form["stages"] = {
+                    stage: {
+                        field: int(typed_form.pop(f"{stage}_{field}"))
+                        for field in ("batch_size", "concurrency")
+                    }
+                    for stage in ("offline_annotation", "query_spec", "visual_rerank")
+                }
             payload = ProviderProfileRequest.model_validate(typed_form)
             saved = await run_in_threadpool(studio.save_provider_profile, _provider_profile_from_request(studio, payload))
             shaped = _provider_profile_view(
@@ -1280,7 +1403,7 @@ async def _run_event_stream(
         if last is not None and await request.is_disconnected():
             return
         try:
-            snapshot = dict(initial) if last is None else _shape_run(studio.get_run(run_id))
+            snapshot = dict(initial) if last is None else _shape_run_for_ui(studio, run_id)
             encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             if encoded != last:
                 last = encoded
@@ -1549,7 +1672,8 @@ def _provider_profile_from_request(studio: StudioService, payload: ProviderProfi
             "base_url": payload.base_url,
             # ProviderProfile derives this stable identifier from base_url.
             "base_url_stable_id": None,
-            # Configuration writes always require a fresh capability probe.
+            # Most writes require a fresh probe. A validated offline
+            # concurrency-only edit is the explicit D-044 exception.
             "enabled": False,
             "capability_status": "unverified",
             "annotation_output_schema_id": payload.annotation_output_schema_id,
@@ -1568,7 +1692,10 @@ def _provider_profile_from_request(studio: StudioService, payload: ProviderProfi
         stages = dict(value.get("stages", {}))
         stages.update({name: config.model_dump() for name, config in payload.stages.items()})
         value["stages"] = stages
-    return ProviderProfile.from_dict(value)
+    candidate = ProviderProfile.from_dict(value)
+    if existing is not None and profile_differs_only_in_offline_concurrency(existing, candidate):
+        return candidate.with_capability(existing.capability_status, enabled=existing.enabled)
+    return candidate
 
 
 def _provider_profile_views(studio: StudioService) -> list[dict[str, Any]]:
@@ -1755,6 +1882,7 @@ def _shape_ai_plan(value: Any, *, include_result_meta: bool = False) -> dict[str
         "profile_id": _safe_identifier(raw.get("profile_id"), optional=True),
         "adapter": _provider_adapter(raw.get("adapter")),
         "model_id": _safe_identifier(raw.get("requested_model_id", raw.get("model_id")), optional=True),
+        "offline_annotation_concurrency": _safe_offline_concurrency(raw.get("offline_annotation_concurrency")),
         "jobs": jobs,
     }
     if include_result_meta:
@@ -1764,6 +1892,20 @@ def _shape_ai_plan(value: Any, *, include_result_meta: bool = False) -> dict[str
                 "idempotent": bool(raw.get("idempotent")),
             }
         )
+    return result
+
+
+def _shape_ai_plan_with_frozen_concurrency(
+    studio: StudioService,
+    run_id: str,
+    value: Any,
+    *,
+    include_result_meta: bool = False,
+) -> dict[str, Any]:
+    result = _shape_ai_plan(value, include_result_meta=include_result_meta)
+    if result.get("offline_annotation_concurrency") is None:
+        run = studio.get_run(run_id)
+        result["offline_annotation_concurrency"] = _frozen_offline_concurrency(run.get("config_snapshot"))
     return result
 
 
@@ -2226,6 +2368,7 @@ def _shape_run(value: Mapping[str, Any]) -> dict[str, Any]:
         "started_at": _safe_optional_text(value.get("started_at")),
         "finished_at": _safe_optional_text(value.get("finished_at")),
         "config_snapshot": _safe_config(value.get("config_snapshot", {})),
+        "offline_annotation_concurrency": _frozen_offline_concurrency(value.get("config_snapshot")),
         "stages": ordered_stages,
         "jobs": jobs,
         "item_counts": public_counts,
@@ -2242,6 +2385,42 @@ def _shape_run(value: Mapping[str, Any]) -> dict[str, Any]:
             "r2_total_stages": len(R2_STAGES),
             "r2_percent": round(r2_completed / len(R2_STAGES) * 100),
         },
+    }
+
+
+def _shape_run_for_ui(studio: StudioService, run_id: str) -> dict[str, Any]:
+    """Add the one read-only D-045 operation context to a run fragment."""
+
+    run = _shape_run(studio.get_run(run_id))
+    if run.get("current_stage") == "HUMAN_REVIEW" and run.get("status") == "needs_review":
+        base_export_id = _banner_refresh_base_export_id(studio, run_id)
+        if base_export_id is not None:
+            run["banner_refresh"] = {"base_export_id": base_export_id}
+    return run
+
+
+def _banner_refresh_base_export_id(studio: StudioService, run_id: str) -> str | None:
+    """Read the run's current source export identity without changing state."""
+
+    try:
+        with studio.worker.open_database(run_id) as database:
+            row = database.fetchone(
+                "SELECT imports.export_id FROM imports JOIN runs ON runs.import_id=imports.import_id WHERE runs.run_id=?",
+                (run_id,),
+            )
+    except Exception:
+        return None
+    export_id = row["export_id"] if row is not None else None
+    return export_id if isinstance(export_id, str) and EXPORT_ID_RE.fullmatch(export_id) else None
+
+
+def _shape_banner_refresh_success(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, Mapping) else {}
+    return {
+        "new_export_id": _safe_identifier(raw.get("new_export_id"), optional=True),
+        "variant_count": 32,
+        "feature_count": 32,
+        "ai_batch_count": 3,
     }
 
 
@@ -2262,6 +2441,32 @@ def _safe_config(value: Any) -> dict[str, Any]:
         for key, item in value.items()
         if str(key) in allowed
     }
+
+
+def _safe_offline_concurrency(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 5:
+        return None
+    return value
+
+
+def _frozen_offline_concurrency(value: Any) -> int | None:
+    """Read only the public concurrency value from a run-frozen profile."""
+
+    if not isinstance(value, Mapping):
+        return None
+    snapshot = value.get("provider_snapshot")
+    if not isinstance(snapshot, Mapping):
+        return None
+    profile = snapshot.get("profile")
+    if not isinstance(profile, Mapping):
+        return None
+    stages = profile.get("stages")
+    if not isinstance(stages, Mapping):
+        return None
+    offline = stages.get("offline_annotation")
+    if not isinstance(offline, Mapping):
+        return None
+    return _safe_offline_concurrency(offline.get("concurrency"))
 
 
 def _safe_value(value: Any) -> Any:
@@ -2746,6 +2951,7 @@ def _validation_fields(errors: Sequence[Mapping[str, Any]]) -> dict[str, str]:
         "confirm",
         "confirm_immutable_release",
         "copy_mode",
+        "expected_base_export_id",
         "job_id",
         "limit",
         "model_id",
@@ -2755,6 +2961,7 @@ def _validation_fields(errors: Sequence[Mapping[str, Any]]) -> dict[str, str]:
         "query",
         "run_id",
         "stage",
+        "target_ids",
         "wave_hash",
     }
     for error in errors:
@@ -2790,11 +2997,35 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
             "RELEASE_VERSION_MISMATCH",
             "AI_BATCH_PLAN_CONFLICT",
             "AI_RETRY_WAVE_CONFLICT",
+            "BANNER_REFRESH_BASE_MISMATCH",
+            "BANNER_REFRESH_RUN_STATE_INVALID",
+            "BANNER_REFRESH_LIVE_WORK",
+            "BANNER_REFRESH_ALREADY_APPLIED",
+            "BANNER_REFRESH_RECOVERY_REQUIRED",
         }
         invalid = {
             "INVALID_INPUT",
             "R3_THRESHOLD_FIXED",
             "AI_BATCH_INPUT_INVALID",
+            "BANNER_REFRESH_TARGET_SET_INVALID",
+            "BANNER_REFRESH_BASE_INVALID",
+            "BANNER_REFRESH_CHECK_CHANGED",
+            "BANNER_REFRESH_TARGET_DIFF",
+            "BANNER_REFRESH_RENDER_DIFF",
+            "BANNER_REFRESH_MANIFEST_DIFF",
+            "BANNER_REFRESH_MACHINE_DIFF",
+            "BANNER_REFRESH_TARGET_REVIEWS_INVALID",
+            "BANNER_REFRESH_TARGET_ALREADY_PROJECTED",
+            "BANNER_REFRESH_TARGET_STATE_INVALID",
+            "BANNER_REFRESH_LINEAGE_INVALID",
+            "BANNER_REFRESH_EXPORT_INVALID",
+            "BANNER_REFRESH_REPLACEMENT_INVALID",
+            "BANNER_REFRESH_VERSION_INVALID",
+            "BANNER_REFRESH_BATCH_CONFIG_INVALID",
+            "BANNER_REFRESH_INSTALL_VERIFY_FAILED",
+            "BANNER_REFRESH_PATH_UNSAFE",
+            "BANNER_REFRESH_FAILED",
+            "BANNER_REFRESH_SOURCE_ARTIFACT_INVALID",
         }
         unprocessable = {
             "PROVIDER_CONFIG_INVALID",
@@ -2812,7 +3043,7 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
             "RELEASE_CHECK_FAILED",
             "PROVIDER_RETRY_NOT_ELIGIBLE",
         }
-        if code == "RELEASE_BUILD_FAILED":
+        if code in {"RELEASE_BUILD_FAILED", "BANNER_REFRESH_FAILED"}:
             status = 500
         elif code == "WORKER_UNAVAILABLE":
             status = 503
@@ -2854,6 +3085,27 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
             "RUN_STATE_CONFLICT": "当前运行状态不允许此操作，请刷新后重试。",
             "AI_BATCH_PLAN_CONFLICT": "AI 批次计划已变化，请重新预览。",
             "AI_RETRY_WAVE_CONFLICT": "Provider 重试波次已变化，请重新预览。",
+            "BANNER_REFRESH_BASE_MISMATCH": "当前运行的基础导出已变化，不能执行此刷新。",
+            "BANNER_REFRESH_RUN_STATE_INVALID": "只有停在人工审核阶段的运行才能刷新 banner。",
+            "BANNER_REFRESH_LIVE_WORK": "当前运行仍有活动任务，不能刷新 banner。",
+            "BANNER_REFRESH_ALREADY_APPLIED": "该运行已经应用了不同的 banner 刷新。",
+            "BANNER_REFRESH_RECOVERY_REQUIRED": "上一次 banner 刷新需要先恢复。",
+            "BANNER_REFRESH_TARGET_SET_INVALID": "banner 刷新目标集合不合法。",
+            "BANNER_REFRESH_TARGET_DIFF": "替换导出中的 banner 目标差异不合法。",
+            "BANNER_REFRESH_RENDER_DIFF": "替换导出的渲染文件差异不合法。",
+            "BANNER_REFRESH_MANIFEST_DIFF": "替换导出的 manifest 差异不合法。",
+            "BANNER_REFRESH_MACHINE_DIFF": "替换导出的机器事实发生了非目标变化。",
+            "BANNER_REFRESH_TARGET_REVIEWS_INVALID": "当前 banner 机器审核集合不符合要求。",
+            "BANNER_REFRESH_TARGET_ALREADY_PROJECTED": "banner 目标已经存在工作区投影。",
+            "BANNER_REFRESH_TARGET_STATE_INVALID": "当前 banner 状态映射不符合要求。",
+            "BANNER_REFRESH_LINEAGE_INVALID": "替换导出 lineage 不符合要求。",
+            "BANNER_REFRESH_EXPORT_INVALID": "替换导出记录不完整。",
+            "BANNER_REFRESH_REPLACEMENT_INVALID": "替换导出不符合要求。",
+            "BANNER_REFRESH_CHECK_CHANGED": "已检查的替换导出发生变化。",
+            "BANNER_REFRESH_PATH_UNSAFE": "工作区文件路径不安全。",
+            "BANNER_REFRESH_INSTALL_VERIFY_FAILED": "banner 刷新安装后校验失败。",
+            "BANNER_REFRESH_FAILED": "banner 刷新未完成，工作区已恢复。",
+            "BANNER_REFRESH_SOURCE_ARTIFACT_INVALID": "工作区 source export 证据不唯一或缺失。",
             "PROVIDER_RETRY_NOT_ELIGIBLE": "该 Provider 批次当前不可重试。",
         }
         return status, code, messages.get(code, "R3 操作未完成，请检查当前状态。"), code == "WORKER_UNAVAILABLE", {}

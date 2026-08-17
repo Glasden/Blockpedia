@@ -32,7 +32,7 @@ R1 状态策略必须同时满足以下不变量：
 
 ## 3. 最小状态选择
 
-R1 不读取外置 `state_policy.yaml`，不实现 override DSL、显著属性展开、方向折叠、邻接矩阵、pHash/IoU/alpha dedupe 或通用规则引擎。对每个按规范顺序处理的 `block_id`，exporter 读取运行时唯一 default `BlockState`，建立唯一普通 block-level representative，并把全部合法状态链接到该 representative；不修改或删除任何合法状态。代表状态不稳定可渲染时，保留 Block/State 并写机器 failure/skip，状态为 pending review。
+R1 不读取外置 `state_policy.yaml`，不实现 override DSL、显著属性展开、方向折叠、邻接矩阵、pHash/IoU/alpha dedupe 或通用规则引擎。对每个按规范顺序处理的 `block_id`，exporter 读取运行时唯一 default `BlockState`，建立唯一普通 block-level representative，并把全部合法状态链接到该 representative；不修改或删除任何合法状态。代表状态不稳定可渲染时，保留 Block/State 并写机器 failure/skip，状态为 pending review。D-045 只为已选的 32 个 banner IDs 增加既有 vanilla special renderer 的 targeted repair path，不改变普通状态选择算法。
 
 Schema 中 required 的 policy/fixture version 只标识这套固定 R1 实现，不指向外置策略文件；R1 不提供用户可配置 override，也不因 `dedupe_policy_version` 执行图像去重。
 
@@ -97,7 +97,7 @@ biome: minecraft:plains
 entities/particles/UI: disabled
 ```
 
-未修改的历史 `render.v1` records、workspace/release data 在当前 v1 Schema ID 下保持 valid，并只在其 record/run context replay；现有 record Schemas 接受 `render.v1` 与 `render.v2` 两个 policy token，但新导出和 current fixture 默认使用 `render.v2`。preserved old export package 在 repository Schema bytes 变化后不由 current external validator 重新验证；其 embedded `schemas.sha256`/`schema_inventory` 是 binding evidence，current validation 必须报告 `SCHEMA_INVENTORY_HASH_MISMATCH`。不得 bypass hash、自动迁移、增加 historical Schema snapshot layer 或使用 version-aware validator fallback；旧 package bytes/reports 只作为历史证据保留。实际 renderer options/environment identity 必须记录影响确定性的控制，包括 resolver 固定 seed `42L` 以及动画 atlas 控制。
+未修改的历史 `render.v1` records、workspace/release data 在当前 v1 Schema ID 下保持 valid，并只在其 record/run context replay；现有 record Schemas 接受 `render.v1` 与 `render.v2` 两个 policy token，但新导出和 current fixture 默认使用 `render.v2`。preserved old export package 在 repository Schema bytes 变化后不由 current external validator 重新验证；其 embedded `schemas.sha256`/`schema_inventory` 是 binding evidence，current validation 必须报告 `SCHEMA_INVENTORY_HASH_MISMATCH`。不得 bypass hash、自动迁移、增加 historical Schema snapshot layer 或使用 version-aware validator fallback；旧 package bytes/reports 只作为历史证据保留。实际 renderer options/environment identity 必须记录影响确定性的控制，包括 resolver 固定 seed `42L`、动画 atlas 控制和 D-045 的 banner camera correction。
 
 摄影棚坐标、观察对象中心、背景平面、背板材质、支撑块、光源方向/强度、阴影和曝光固定为 isolated context 的最小实现。实现不得读取用户当前世界的天气、时间、资源包或随机邻接来改变结果。资源 snapshot、相机、光照、背景/背板和支撑规则的哈希只写入 manifest；`render.json` 只写最小图片、视角、policy、fixture、tint 和 mask 语义，不重复环境或内容哈希。manifest/input signature 必须记录 OS、GPU、驱动、渲染后端和分辨率等完整环境，并把实际 renderer options/environment identity 纳入其中；同一完整环境重复运行必须得到相同 PNG byte hash。Windows 对应阶段验证 canonical 机器字段、Schema、逻辑排序和构图规则；Linux 这些实际运行时/平台验证统一 deferred 到 R5，不声称 Linux 已通过；不同 GPU/驱动之间只要求 canonical 机器字段一致，不承诺 PNG byte hash 一致。
 
@@ -114,7 +114,7 @@ side:      orthographic, yaw=90°, pitch=0°
 top:       orthographic, yaw=0°,  pitch=-90°
 ```
 
-角度、正交缩放、象限边界和边距均属于 `camera.v1`；不得根据方块类别动态改变相机。对象必须在四视图中完整可见，并使用同一中心和尺度规则。对象过小、出框或只剩背景都算失败。
+普通对象的角度、正交缩放、象限边界和边距继续属于 `camera.v1`；历史记录和非目标内容不得因 D-045 改变。新 replacement manifest 的 effective camera policy identity 为 `camera.v2`，但复用的非目标 artifacts 保持 byte-identical 的历史 camera semantics。仅对 D-045 精确目标集合启用 `camera.v2` 的 banner-camera logical policy，不建立通用按类别动态相机规则。对运行时类型 `BannerBlock` 和 `WallBannerBlock`，在 vanilla special renderer transform 外冻结共同的 parent center-pivot correction：`translate(0.5,0.5,0.5)` → `scale(0.72,0.72,0.72)` → `translate(-0.5,-0.5,-0.5)`，然后保持既有 special renderer submit path；该 correction 同时进入 camera hash 和 renderer options/environment identity。对象必须在四视图中完整可见，并使用同一中心和尺度规则。对象过小、出框或只剩背景都算失败。
 
 ### 7.3 透明、附着和连接对象
 
@@ -122,7 +122,7 @@ isolated context 使用固定中性背板和必要的中性支撑；支撑不进
 
 ## 8. 动态、流体和方块实体边界
 
-R1 不预建 block entity/NBT、任意流体、动画帧、组合邻接或通用 fixture 框架。`minecraft:end_portal` 与 `minecraft:end_gateway` 是 non-building 的 explicit machine pending skips：两个精确 block ID 及其全部合法 states 仍登记，exporter 在进入渲染前使用既有 `BLOCK_ENTITY_FIXTURE_UNSUPPORTED` 写入 ordinary auditable pending skip，不生成 preview、mask 或 render directory；所有 states 仍在 `states.jsonl` 中以现有 skipped mapping（空 `variant_ids`）保留，variant/failure 记录沿用 ordinary auditable pending skip 并要求后续 human review，绝不静默过滤。此类对象如果不能在普通 block model 的 isolated context 中稳定渲染，写机器可读 skip/failure 并保持 pending review；不得退化为随手截图或占位图片。当前范围预期保留 `43` 个 block-entity fixture skips 和 `10` 个 invisible/technical skips；`melon_stem`、`pumpkin_stem`、`tripwire` 的 `OBJECT_TOO_SMALL` 仍 reviewable，不由本 amendment 重新分类；现有 `152` 个 rerender events 属于历史审计证据，不得作为本次修复执行。
+R1 不预建 block entity/NBT、任意流体、动画帧、组合邻接或通用 fixture 框架。`minecraft:end_portal` 与 `minecraft:end_gateway` 是 non-building 的 explicit machine pending skips：两个精确 block ID 及其全部合法 states 仍登记，exporter 在进入渲染前使用既有 `BLOCK_ENTITY_FIXTURE_UNSUPPORTED` 写入 ordinary auditable pending skip，不生成 preview、mask 或 render directory；所有 states 仍在 `states.jsonl` 中以现有 skipped mapping（空 `variant_ids`）保留，variant/failure 记录沿用 ordinary auditable pending skip 并要求后续 human review，绝不静默过滤。此类对象如果不能在普通 block model 的 isolated context 中稳定渲染，写机器可读 skip/failure 并保持 pending review；不得退化为随手截图或占位图片。当前范围预期保留 `43` 个 block-entity fixture skips 和 `10` 个 invisible/technical skips；`melon_stem`、`pumpkin_stem`、`tripwire` 的 `OBJECT_TOO_SMALL` 仍 reviewable，不由本 amendment 重新分类；现有 `152` 个 rerender events 属于历史审计证据，不得作为本次修复执行；D-045 只能通过其精确 banner-repair operation refresh 目标 workspace，不执行这些历史 events。
 
 ## 9. 渲染流水线和自动重试
 

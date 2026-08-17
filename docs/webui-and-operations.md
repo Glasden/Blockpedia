@@ -80,7 +80,7 @@ CLI startup arguments > environment variables > profile/project configuration > 
 
 来源冲突或类型不兼容必须返回 `CONFIG_PRECEDENCE_CONFLICT`，不得静默合并。CLI 只能覆盖 `data-root` 等非冻结启动项；host/port 不属于配置，永远固定为 `127.0.0.1:8765`。环境变量包括 `BLOCKPEDIA_DATA_ROOT` 和 `OPENAI_API_KEY`（后者只作为秘密回退）；profile/project 配置包含 `model_id`、非秘密 `base_url`、版本、超时、并发、Schema/prompt 和搜索版本；精确字段形状由真实 Schema 文件拥有，内置默认只提供冻结值。
 
-最终生效配置必须计算 `effective_config_hash` 并写入 run/job snapshot。snapshot 可以包含 configured/requested `model_id`、`adapter`、`profile_id`、`base_url_stable_id`、`minecraft_version`、`resolved_release_id`、`manifest_sha256`、并发、超时、Schema/prompt/search 版本、重试策略和非秘密路径稳定标识；**MUST NOT** 包含 API key、Authorization、图片 bytes、完整 provider response、response model echo、Token usage、成本或预算。
+最终生效配置必须计算 `effective_config_hash` 并写入 run/job snapshot。snapshot 可以包含 configured/requested `model_id`、`adapter`、`profile_id`、`base_url_stable_id`、`minecraft_version`、`resolved_release_id`、`manifest_sha256`、`offline_annotation` 的冻结调度并发、超时、Schema/prompt/search 版本、重试策略和非秘密路径稳定标识；该调度并发只属于 run/runtime scheduling，**MUST NOT** 进入 release snapshot、`release-manifest.v1` 或 provider wire/record Schema。**MUST NOT** 包含 API key、Authorization、图片 bytes、完整 provider response、response model echo、Token usage、成本或预算。
 
 全局非秘密 profiles 的唯一持久来源是 `<data-root>/cache/provider-profiles.json`。WebUI 必须以临时文件、flush/fsync 和原子替换保存该文件；文件不得包含 API key 或其它秘密。workspace 的 `provider_profiles` 仅作为 run snapshot，不能作为全局配置库；该收敛不新增服务、migration 或 Schema ID。
 
@@ -116,7 +116,7 @@ MVP **MUST NOT** 使用通用 SQLite migration framework。schema 在 R0 冻结�
 |---|---|---|
 | `Provider` | 多个非活动 profile、唯一 active profile、显式 `openai_responses`/`openai_chat_completions` selector、Keyring/env 状态、协议感知能力探测、enable/disable、待发送预览、requested model warning | 协议自动切换、Anthropic、第二 model、usage/成本、retention/远端模型身份验证或绕过字段 |
 | `Import` | 版本选择、导出包 check、导入到 workspace、逐项错误 | 直接覆盖 release、CLI 导入 |
-| `Pipeline` | run/pause/resume/status、heartbeat、失败恢复、手动逐批默认、计划确认后的顺序提交、单项/批量 Provider retry | 无限自动重试、无审计后台写入、并发发送 |
+| `Pipeline` | run/pause/resume/status、heartbeat、失败恢复、手动逐批默认、计划确认后的有界顺序提交、单项/批量 Provider retry | 无限自动重试、无审计后台写入、越过 approved barrier 或超过冻结/全局上限的并发发送 |
 | `Review` | normal/high 队列、机器事实只读、语义编辑、声明式 override、skip | 修改机器事实、无原因 skip、静默发布 |
 | `Release` | check/build/activation-check/apply/rollback/cleanup、hash、审计 | 原地改 release、删除回滚证据 |
 | `Search test` | QuerySpec、hard filter、Top-24、family 去重、联系表、降级结果 | 持久化测试 query、隐藏 warning、放宽 hard |
@@ -158,7 +158,7 @@ Provider 页面可以保存多个非活动 profile，但全局最多一个 activ
 
 `GET /api/provider/profile` 返回无秘密 `ProviderProfile`。
 
-`PUT /api/provider/profile` 的精确字段由真实 Schema 文件拥有；请求必须显式提供合法 `adapter`，且不包含任何存储确认、协议 fallback 或绕过字段。出现 `api_key`、未知 adapter、第二 model 或未知字段必须返回 `PROVIDER_CONFIG_INVALID`。保存状态为非活动 `unverified`，并原子更新 `<data-root>/cache/provider-profiles.json`；改变 adapter、base URL、model、secret ref、Schema、prompt 或排序版本必须使能力变为 `unverified` 并禁用该 profile 的新 AI job。`draft` 只能作为配置编辑命令/事件，不得作为持久化 run、stage 或 item 状态。
+`PUT /api/provider/profile` 的精确字段由真实 Schema 文件拥有；请求必须显式提供合法 `adapter`，且不包含任何存储确认、协议 fallback 或绕过字段。出现 `api_key`、未知 adapter、第二 model 或未知字段必须返回 `PROVIDER_CONFIG_INVALID`。保存状态为非活动 `unverified`，并原子更新 `<data-root>/cache/provider-profiles.json`；改变 adapter、base URL、model、secret ref、Schema、prompt 或排序版本必须使能力变为 `unverified` 并禁用该 profile 的新 AI job。只改变合法 `offline_annotation.concurrency`（`1..5`）时保留 `verified`/`enabled` 且不需要 reprobe；`query_spec`/`visual_rerank` concurrency 固定为 `1`。`draft` 只能作为配置编辑命令/事件，不得作为持久化 run、stage 或 item 状态。
 
 `POST /api/provider/probe` 请求只接受 profile 标识，不提供任何存储确认或绕过字段：
 
@@ -221,6 +221,23 @@ item 状态固定为 `pending|running|succeeded|needs_review|failed|skipped`；r
 
 `GET /api/runs/{run_id}` 至少返回：`run_id`、精确版本、run status、stage、progress、heartbeat、非秘密 config snapshot 和 warnings。启动时 stale 只读展示，不改变这些状态；不得返回 Token usage、费用、图片 base64 或完整 provider response。
 
+#### D-045 targeted banner export refresh
+
+WebUI 只增加严格 `POST /api/runs/{run_id}/banner-export-refresh` 及对应 run page 的 HTMX action。HTMX action 必须提交同一严格 JSON body，不建立第二个业务 endpoint、队列或后台 refresh job：
+
+```json
+{
+  "check_id": "check_<32 lowercase hex>",
+  "expected_base_export_id": "export_YYYYMMDDTHHMMSSZ",
+  "target_ids": ["<exact sorted 32 minecraft banner IDs>"],
+  "confirm": true
+}
+```
+
+`target_ids` 的值必须是精确 UTF-8 稳定排序结果：16 个颜色 `black, blue, brown, cyan, gray, green, light_blue, light_gray, lime, magenta, orange, pink, purple, red, white, yellow` 各生成 `minecraft:<color>_banner` 与 `minecraft:<color>_wall_banner`，不接受别的排序或集合。未知字段、缺字段、错误类型、重复/未排序/非精确 32 个 target ID 或 `confirm` 非 JSON `true` 必须拒绝。服务只消费 passed immutable full export check，并且只允许当前 run/stage 为 `HUMAN_REVIEW/needs_review`、没有 live AI future 或其它 live work、check source export 精确等于 `expected_base_export_id`、当前恰有 32 个 open `OBJECT_OFF_CANVAS` skipped targets。checked replacement package 的 normalized semantic diff 必须严格为 32 个 skipped→selected transitions 和 96 个 render files；其它 diff、版本、policy、manifest/checksum 或 source lineage mismatch 都 fail closed。
+
+操作必须在既有 run lock 内调用 refresh service，使用 pipeline 契约定义的 workspace-local staging/journal/backup，并以原子 recover/commit 同步 complete source export、目标 render/feature files 和 SQLite projection。成功后只保留早期 succeeded stages，把 `AI_ANNOTATE`、`VALIDATE`、`HUMAN_REVIEW` reset 为 `pending`，并从 `AI_ANNOTATE` 继续；既有 1140 annotations、provider requests、jobs 和 reviews 不得被更新、删除或重排。只创建三个 unapproved target AI jobs，批次固定为 `12 + 12 + 8`，使用 `banner_refresh_*` keys。该 operation 不新增 table/column/status/migration/service/queue/CLI；已有 `request_reexport`/`request_exporter_rerender` 仍只是外部 exporter 请求，不得被当作成功 refresh。
+
 #### 5.3.1 SSE live snapshots
 
 run 和 import check 的事件接口分别为 `GET /api/runs/{run_id}/events` 与 `GET /api/imports/checks/{check_id}/events`。实现必须使用 FastAPI 原生 `StreamingResponse` 和浏览器原生 `EventSource`，不引入依赖、服务、消息总线或 SQLite/Schema migration；这是现有 FastAPI/Jinja2/HTMX/SQLite/进程内 Worker 栈上的增量能力。
@@ -241,7 +258,7 @@ POST /api/runs/{run_id}/retry-failed
 POST /api/runs/{run_id}/recover
 ```
 
-Worker job 字段至少包括：`job_id`、`run_id`、`stage`、`logical_key`、`status`、`auto_attempt`、`priority`、`heartbeat_at`、`cursor_json`、`output_hash`、`error_code`、脱敏 `error_message`、创建/开始/完成时间。现有 `cursor_json` 可保存 per-job `approved` 和 retry lineage；这不是新的 state、column 或 schema field。每个 provider 逻辑请求总尝试最多两次（包含 SDK），显式 retry wave 创建新的 child generation，不增加单个逻辑请求的自动 retry budget；最终离线失败进入审核，详细分类见 [`openai-provider.md`](openai-provider.md)。
+Worker job 字段至少包括：`job_id`、`run_id`、`stage`、`logical_key`、`status`、`auto_attempt`、`priority`、`heartbeat_at`、`cursor_json`、`output_hash`、`error_code`、脱敏 `error_message`、创建/开始/完成时间。现有 `cursor_json` 可保存 per-job `approved` 和 retry lineage；这不是新的 state、column 或 schema field。每个 provider 逻辑请求总尝试最多两次（包含 SDK），显式 retry wave 创建新的 child generation，不增加单个逻辑请求的自动 retry budget；最终离线失败进入审核，详细分类见 [`openai-provider.md`](openai-provider.md)。发送并发由 D-044 约束为 `offline_annotation` 每 run 冻结 `1..5`（默认 `1`）、在线阶段固定 `1`，一个 process-lifetime shared in-process executor 最多 `5` slots 且所有 run 共用；global active sends `<=5`、per-run `<=` frozen offline bound。
 
 #### 5.3.1 `AI_ANNOTATE` 批次授权、顺序 drain 和 Provider retry
 
@@ -249,13 +266,17 @@ Worker job 字段至少包括：`job_id`、`run_id`、`stage`、`logical_key`、
 
 计划 hash 必须只对 `run_id`、`effective_config_hash` 和按冻结顺序排列的 `job_id`、`logical_key`、recomputed payload signature 计算；canonical 形状和 TOCTOU all-or-none 语义以 [`decisions.md`](decisions.md) 的 D-040/D-041 为准。D-041 下 aggregate preview/confirmation 使用已持久化且已验证的 `jobs.input_signature`、cursor `payload_signature`/`input_hash`、`tile_ids`/`variant_ids`、run effective config 和 frozen provider snapshot；`recomputed_payload_signature` 名称保留，其 plan-time value 是 validated persisted payload signature。aggregate operation 不为所有 pending jobs 重建图片、contact sheet、prompt 或 machine metadata。确认 transaction 只验证 persisted identity；任一计划、pending 集合、持久化 hash、config/provider/requested model 或 hash 不一致时 approve none，否则只把所有 included pending jobs 的现有 cursor `approved` 置为可发送，并写一个 plan audit 和每个 job 的 approval audit。不存在 auto-mode field、stage cursor 或 config snapshot。
 
-每个 planned batch 在 aggregate confirmation 前仍必须通过既有 safe preview lazy inspect；该 one-batch preview 可以重建其 bounded payload。Immediately before **every** actual external send，Worker 必须使用 frozen run profile 重建该 batch 的完整 payload/contact sheet/prompt/machine metadata，重新计算 full signature 并与 approved job signature 比较。任一 mismatch 必须 revoke that job approval、在任何 HTTP request 前 pause，且不得发送；该 final TOCTOU gate 不得被 aggregate persisted identity shortcut 绕过。D-041 不改变 manual mode/default、concurrency `1`、item-local continue、fatal stop、retry 或 audit。
+每个 planned batch 在 aggregate confirmation 前仍必须通过既有 safe preview lazy inspect；该 one-batch preview 可以重建其 bounded payload。Immediately before **every** actual external send，Worker 必须使用 frozen run profile 重建该 batch 的完整 payload/contact sheet/prompt/machine metadata，重新计算 full signature 并与 approved job signature 比较。任一 mismatch 必须 revoke that job approval、在任何 HTTP request 前 pause，且不得发送；该 final TOCTOU gate 不得被 aggregate persisted identity shortcut 绕过。D-041 不改变 manual mode/default、D-044 当前 send concurrency、item-local continue、fatal stop、retry 或 audit。
 
-自动计划的 send concurrency 固定为 `1`，并且只能使用 run-frozen profile；global active profile 的变化只影响新的 Studio work/profile management，不能替换已有 run 的 adapter、model 或 base URL。item-local Provider failure 会记录 high `needs_review`，但继续下一个 approved batch；fatal Provider/config/auth/capability failure 必须在后续 send 前停止。`needs_review` item 不阻塞 AI_ANNOTATE drain：valid low-confidence item 和 item-local failure 继续到 `VALIDATE`、再到 `HUMAN_REVIEW`；只有 fatal 才终止 stage/run。
+自动计划必须按 frozen order 使用 ordered contiguous approved claim barrier；`offline_annotation` 的 send concurrency 是每 run 冻结的整数 `1..5`（默认 `1`），`query_spec`/`visual_rerank` 固定为 `1`，并计数 logical batch 而不是 HTTP attempt。一个 process-lifetime shared in-process executor 最多 `5` slots，global active sends `<=5`，每 run `<=` 自己的 frozen offline bound；只能使用 run-frozen profile。global active profile 的变化只影响新的 Studio work/profile management，不能替换已有 run 的 adapter、model 或 base URL。item-local Provider failure 会记录 high `needs_review`，但继续下一个 approved batch；fatal Provider/config/auth/capability failure 必须在后续 send 前停止。`needs_review` item 不阻塞 AI_ANNOTATE drain：valid low-confidence item 和 item-local failure 继续到 `VALIDATE`、再到 `HUMAN_REVIEW`；只有 fatal 才终止 stage/run。
 
 Provider retry 必须从 terminal `needs_review|failed` 的 AI job 行发起，且该 job 有 eligible item-local Provider error；fatal、`PROVIDER_CANCELLED` 和无 Provider error 的 job 不 eligible，variant review 不是 retry source。source 必须为 leaf；child cursor 包含 `retry_of_job_id`，nonce 由 source `job_id` 与 `input_signature` 确定性生成，每个 source 只有一个 child，failed child 可作为下一次显式 generation。row retry 与 bulk action 都必须在同一 transaction 内保持 source/evidence/provider request 可见并 resolve source 的 open provider-review siblings；重复 POST 返回同一结果，不产生第二个 child。bulk action 只覆盖 eligible failed leaf batches，且自动 approve 该 retry wave；succeeded 和无 Provider error 的 low-confidence review 不进入 wave。generic `retry-failed` 不得重跑 fatal/provider AI jobs。
 
-页面必须在同一可滚动 work area 内展示全部 actionable `running`、`failed`、`needs_review` rows；pending/recent summary 可以 bounded。Provider error row 必须有 row retry，bulk action 必须明确确认；原始 request evidence、review 和错误分类继续可见。startup 只读检测 stale；auto-approved cursor 持久保留，只有显式 `recover` 改变 stale state。pause/cancel 停止 future sends，SSE/browser disconnect 不改变后台工作。
+页面必须在同一可滚动 work area 内展示全部 actionable `running`、`failed`、`needs_review` rows；pending/recent summary 可以 bounded。Provider error row 必须有 row retry，bulk action 必须明确确认；原始 request evidence、review 和错误分类继续可见。startup 只读检测 stale；auto-approved cursor 持久保留，只有显式 `recover` 改变 stale state。pause/cancel/fatal 只停止 claimed-unsent/later sends；already-started calls 可以完成并持久化 evidence/item terminal state，但不能 revive failed/cancelled run；fatal supersedes paused，不 supersede cancelled。SSE/browser disconnect 不改变后台工作。
+
+每次 HTTP 前都必须通过 final full payload/signature/approval/run-stage gate，并先占用全局及 per-run active-send slot；HTTP 不得包在 SQLite transaction 中。发送线程不得共享 DB connection/transaction、provider client 或 provider mutable state。通过 final gate、占用 slot 并进入 HTTP call 的瞬间定义 send-started linearization；没有 durable pending provider request reservation，也没有 remote exactly-once claim。hard crash after send before commit 最多留下 frozen concurrency 数量的 unknown outcomes，startup 不自动 resend，显式 `recover` 仍是必要入口。唯一 shared executor 贯穿进程生命周期，stop waits；live futures 或 DB work 阻止 stale recovery，completion 必须同时满足 no DB work + no futures，不得 fake in-flight cancellation。
+
+WebUI 可以提供 strict pristine same-run reconfiguration，但只在 run/stage paused at `AI_ANNOTATE` 时允许：不得有 live future/provider request、provider-request evidence、annotation/AI artifact/provider review/AI review、send/result/retry/cancel evidence；每个 AI job 必须 pending、unapproved、ownerless、clean。任一条件无法证明即 fail closed。成功后在原子本地操作中替换 frozen config/pending jobs，保留 R2/machine evidence，写 `R3_RUN_RECONFIGURED`，invalidate old plan，且不重用 approval。该操作不创建新 run，不引入新 status、SQL/Schema/migration、dependency 或 CLI；不得引入服务、队列、per-run executor、adaptive concurrency、fallback 或 retry 变化。
 
 ### 5.4 Review routes 和声明式 override
 

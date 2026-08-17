@@ -566,8 +566,16 @@ class ImportService:
         # progress truth.  Polling here is only a compatibility convenience.
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            result = self.get_check(check_id)
-            if result.status in {"passed", "failed"}:
+            try:
+                result = self._load_check_cache(check_id)
+                persisted = True
+            except ImportCheckNotFound:
+                with self._checks_lock:
+                    result = self._checks.get(check_id)
+                if result is None:
+                    raise
+                persisted = False
+            if persisted and result.status in {"passed", "failed"}:
                 return result
             if deadline is not None and time.monotonic() >= deadline:
                 return result
@@ -584,6 +592,29 @@ class ImportService:
             if result is None:
                 raise
         return result
+
+    def resolve_checked_snapshot(self, check_id: str) -> tuple[ImportCheck, Path]:
+        """Resolve a passed immutable check snapshot without rerunning validation."""
+
+        result = self.get_check(check_id)
+        if result.status in {"pending", "running"}:
+            raise ImportCheckInProgress(check_id)
+        if not result.can_import or result.status != "passed":
+            raise ImportNotAllowed("import check did not pass")
+        snapshot = self.data_root.resolve_ref(result.snapshot_ref)
+        if snapshot.name != result.export_id or not snapshot.is_dir() or _unsafe_directory_entry(snapshot):
+            raise ImportNotAllowed("checked snapshot is missing or invalid")
+        metadata_path = snapshot.parent.parent / "metadata.json"
+        if result.metadata_sha256 is None or not metadata_path.is_file() or _sha256(metadata_path) != result.metadata_sha256:
+            raise ImportNotAllowed("checked snapshot metadata changed")
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            raise ImportNotAllowed("checked snapshot metadata is invalid") from exc
+        expected_root = _snapshot_root_sha256(result.export_id, result.expected_files, result.checksum_sha256 or "")
+        if metadata.get("snapshot_root_sha256") != result.snapshot_root_sha256 or result.snapshot_root_sha256 != expected_root:
+            raise ImportNotAllowed("checked snapshot metadata is inconsistent")
+        return result, snapshot
 
     def list_checks(self, minecraft_version: str | None = None, *, limit: int = 20) -> list[dict[str, Any]]:
         """Scan the authoritative state files; never create a catalog index."""

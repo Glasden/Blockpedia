@@ -207,7 +207,7 @@ Provider 测试必须使用本地 fake endpoint 或脱敏协议 fixture，不发
 D-040 只要求以下 focused evidence；不新增测试矩阵、报告层或平台矩阵：
 
 1. **Plan TOCTOU all-or-none**：确认前所有 planned batches 可 inspect；对 payload signature、pending 集合、`effective_config_hash`、run-frozen provider/requested model 或 plan hash 的单项修改会 approve none；未修改计划一次 transaction 产生 one plan audit 和 per-job approval audits。
-2. **Sequential continue vs fatal stop**：concurrency 为 `1`；item-local Provider error 后下一个 approved batch 仍发送；fatal code atomically 写 request evidence/review/job/stage/run failure/audit，后续 batch 不发送。
+2. **Sequential continue vs fatal stop**：D-044 的 frozen bound 生效（offline default=`1`；上限为 `5`；online stages 固定=`1`）；item-local Provider error 后下一个 approved batch 仍发送；fatal code atomically 写 request evidence/review/job/stage/run failure/audit，后续 batch 不发送。
 3. **Stage semantics**：valid low-confidence 与 item-local failure 不阻塞 `AI_ANNOTATE` drain，并进入 `VALIDATE`/`HUMAN_REVIEW`；fatal 立即停止 stage/run；最终 high review 仍阻断 candidate build。
 4. **Retry idempotency/generation/siblings**：row/bulk POST 重复只产生一个 child；source 必须是 terminal AI job leaf，child 有 `retry_of_job_id` 和 deterministic nonce，failed child 可下一次 generation；同一 transaction resolve open provider-review siblings 且保留 source evidence/request rows。
 5. **Frozen lineage**：切换 mutable active profile、adapter、requested model、base URL 或 payload/config lineage 后，既有 run 不替换 provider，pre-send recheck 拒绝旧 approval；auto-approved cursor 在 startup stale detection 中保持，只有显式 `recover` 改变 stale state。
@@ -233,6 +233,29 @@ D-042 只要求以下 focused evidence；不新增 Schema、报告层或质量�
 3. **Final diagnostic allowlist**：malformed JSON、missing required、wrong type、additional property 和 duplicate-array 的 final failures 只持久化六个 safe diagnostic fields；successful repair 不持久化 diagnostic。验证 `phase/path/keyword/observed_type/observed_length` bounds 和 `$` parse/shape path。
 4. **No unsafe disclosure**：DB/API/UI 不出现 raw output、value、prefix、provider message、exception、repair context、secret、prompt/image 或 path-like value；UI 只显示六字段 ordinary labels，不能由 `path` 渲染 raw value。
 5. **Validation preservation**：Provider/Worker full wire/local validation、ID/hash/cache、`annotation-record`/variant/`VALIDATE`/release gates、local `uniqueItems`、max-one-retry 和现有 Provider/Worker/release validation 仍通过；只删除 `_hash_json` freshly produced hash 的 tautological regex check，分类保持 externally observable 等价。
+
+### 8.7 D-044 Phase 1 focused acceptance requirements
+
+D-044 当前只记录 owner-approved contract 和后续 focused acceptance requirements；以下不是 implementation、test、runtime 或 provider completion evidence。验收不得新增报告层、平台矩阵或 Schema/SQL 契约。
+
+1. **Bounds and accounting**：profile validation 接受 `offline_annotation.concurrency` 的整数 `1..5`，默认 `1`；`query_spec`/`visual_rerank` 始终为 `1`。测试确认 concurrency 计数 logical batches 而不是 HTTP attempts；每个 logical batch 仍最多两次总尝试，且没有 protocol/model/provider fallback。
+2. **Shared executor and global bounds**：在同一进程内所有 run 只使用一个 process-lifetime in-process executor，容量最多 `5`；不存在 per-run executor。并发注入必须证明 global active sends `<=5`，每个 run `<=` 其 frozen offline bound，且 executor 不因 run 结束而重建。
+3. **Ordered contiguous claim barrier**：对交错 approval、不同 run 和 slot 竞争进行 focused scheduling test；只能 claim frozen order 中从当前未完成位置开始的 contiguous approved prefix，不能越过第一个未 approved/失效/停止项，也不能以 claim 伪造 durable pending provider reservation 或 remote exactly-once claim。
+4. **Final pre-HTTP gate and thread isolation**：每次 send 前都调用 full payload/contact sheet/prompt/machine metadata rebuild、full signature、approval/lineage、run/stage 和 stop/slot gate；注入任一 mismatch 时 HTTP call count 为零。测试确认 HTTP 不在 SQLite transaction 中，且不同线程不共享 DB connection/transaction、provider client 或 provider mutable state。
+5. **Send-started race semantics**：在 send-started linearization 前后分别注入 pause、cancel 和 fatal；claimed-unsent/later sends 必须停止，already-started call 可以完成并写 evidence/item terminal state，但不得 revive failed/cancelled run/stage。fatal 覆盖 paused，不覆盖 durable cancelled；测试不得以 fake in-flight cancellation 作为通过条件。
+6. **Stop, crash and recovery**：stop waits for started futures；live futures 或 DB work 存在时 stale recovery 被阻断；completion 只在 no DB work + no futures 时成立。模拟 send-after-before-commit hard crash，确认 unknown outcomes 上限为当时 frozen concurrency，startup 不自动 resend，显式 `recover` 保持必要且未知结果不被当作成功。
+7. **Profile invalidation**：只改变合法 offline concurrency 时保留 `verified`/`enabled` 且不调用 probe；改变 adapter、model、base URL、secret reference、Schema、prompt、search/ranking 或其它配置时，既有 invalidation/disable/fresh snapshot/rerun 规则仍生效。`query_spec`/`visual_rerank` 不可调度为其它值。
+8. **Strict pristine same-run reconfiguration**：仅在 paused `AI_ANNOTATE` 且无 live future/provider request、provider-request evidence、annotation/AI artifact/provider review/AI review、send/result/retry/cancel evidence，同时每个 AI job pending、unapproved、ownerless、clean 时允许操作；任一 dirty/in-flight 条件都 fail closed。成功路径必须原子替换 frozen config/pending jobs，保留 R2/machine evidence，写 `R3_RUN_RECONFIGURED`，invalidate old plan，且不重用 approval/创建新 run。
+9. **Release and forbidden-surface checks**：确认 scheduling concurrency 不出现在 release snapshot、`release-manifest.v1` 或 provider wire/record Schema；静态/fixture 检查拒绝 services、queues、per-run executors、adaptive concurrency、新 SQL/Schema/migration/status/dependency/CLI、fallback、retry budget change 和 fake cancellation。D-040/D-041 的既有 approval、lineage、audit、recover、sibling/generation 和 max-two-attempt acceptance 必须继续通过。
+
+### 8.8 D-045 targeted banner refresh focused evidence
+
+D-045 的本节只冻结最小验收预算，不代表 implementation、runtime export、WebUI refresh、AI annotation、candidate 或 R3 退出完成。只要求：
+
+1. 使用 Java 25 完成 focused exporter build，并执行一次 exact `banner-repair` targeted complete export；existing exporter validator/check flow 必须通过，且验证 target set 恰为 32、normalized diff 恰为 32 个 skipped→selected 和 96 个 render files。
+2. 使用 generated/artifact fixture 做 focused service、HTTP、rollback/recovery journal 和 mixed-lineage tests：passed immutable full check、exact base/targets、no-live-work gate、atomic source/file/SQLite replacement、failure recovery、`banner-refresh.v1` provenance 和 historical-envelope exclusion 均 fail closed/可回放。
+3. 验证现有 1140 annotations、provider requests、jobs/reviews 不变，只增加 3 个 unapproved `banner_refresh_*` jobs（`12 + 12 + 8`），并且只 reset `AI_ANNOTATE`、`VALIDATE`、`HUMAN_REVIEW` 后从 `AI_ANNOTATE` 继续。
+4. 在当前目标 run 上完成一次真实 WebUI refresh。不得要求新 full test matrix、第二次重复 targeted export 或重复 D-044 verification；D-043 已有 corrected pair evidence 不因本项重做。
 
 ## 9. R3 Phase C Gate C 质量报告（quality owner）
 

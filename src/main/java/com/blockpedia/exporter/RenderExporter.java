@@ -31,6 +31,8 @@ import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.BannerBlock;
+import net.minecraft.world.level.block.WallBannerBlock;
 import net.minecraft.world.level.material.Fluids;
 
 import java.io.IOException;
@@ -203,7 +205,23 @@ final class RenderExporter {
         TextureAtlas blockAtlas = minecraft.getAtlasManager().getAtlasOrThrow(AtlasIds.BLOCKS);
         MissingMaterialTracker.begin(blockAtlas);
         try {
-            modelState.submit(poses, storage, ExporterConstants.FULL_BRIGHT, OverlayTexture.NO_OVERLAY, 0);
+            if (state.getBlock() instanceof BannerBlock || state.getBlock() instanceof WallBannerBlock) {
+                poses.pushPose();
+                try {
+                    poses.translate(0.5, 0.5, 0.5);
+                    poses.scale(
+                        ExporterConstants.BANNER_PARENT_SCALE,
+                        ExporterConstants.BANNER_PARENT_SCALE,
+                        ExporterConstants.BANNER_PARENT_SCALE
+                    );
+                    poses.translate(-0.5, -0.5, -0.5);
+                    modelState.submit(poses, storage, ExporterConstants.FULL_BRIGHT, OverlayTexture.NO_OVERLAY, 0);
+                } finally {
+                    poses.popPose();
+                }
+            } else {
+                modelState.submit(poses, storage, ExporterConstants.FULL_BRIGHT, OverlayTexture.NO_OVERLAY, 0);
+            }
         } finally {
             MissingMaterialTracker.end();
         }

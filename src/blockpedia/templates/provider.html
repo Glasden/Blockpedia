@@ -6,7 +6,7 @@
     <p class="eyebrow"><span>R3</span> OPENAI PROVIDER</p>
     <h1>配置模型边界，<br><em>再允许发送。</em></h1>
   </div>
-  <p class="page-intro__copy reveal reveal--2">可以保存多个非活动 profile，但任一时刻只能启用一个。每个 profile 明确选择一种协议；配置写入后必须重新探测，Studio 不会自动切换协议。</p>
+  <p class="page-intro__copy reveal reveal--2">可以保存多个非活动 profile，但任一时刻只能启用一个。每个 profile 明确选择一种协议；只有离线标注并发度可在不重新探测的情况下调整，Studio 不会自动切换协议。</p>
 </section>
 
 <div class="page-shell provider-layout reveal reveal--3">
@@ -93,6 +93,27 @@
           <label for="new-timeout">request_timeout_ms</label>
           <input id="new-timeout" name="request_timeout_ms" type="number" value="60000" required min="1000" max="600000" step="1000" inputmode="numeric">
         </div>
+        <section class="provider-stage-control field-group--wide" aria-labelledby="new-stage-control-heading">
+          <div class="provider-stage-control__intro">
+            <p class="section-index">OFFLINE THROUGHPUT</p>
+            <h3 id="new-stage-control-heading">并发 AI 批次</h3>
+            <p>仅控制离线标注同时处理的批次数；每个逻辑请求仍各自遵守原有的自动重试预算。</p>
+          </div>
+          <div class="provider-stage-control__input field-group">
+            <label for="new-offline-concurrency">offline_annotation</label>
+            <input id="new-offline-concurrency" name="offline_annotation_concurrency" type="number" value="1" required min="1" max="5" step="1" inputmode="numeric">
+            <small>范围 1–5；默认 1。新运行会冻结保存时的值。</small>
+          </div>
+          <div class="provider-stage-control__fixed" aria-label="在线阶段固定并发度">
+            <span><b>query_spec</b><code>1 · 固定</code></span>
+            <span><b>visual_rerank</b><code>1 · 固定</code></span>
+          </div>
+          <input type="hidden" name="offline_annotation_batch_size" value="12">
+          <input type="hidden" name="query_spec_batch_size" value="1">
+          <input type="hidden" name="query_spec_concurrency" value="1">
+          <input type="hidden" name="visual_rerank_batch_size" value="1">
+          <input type="hidden" name="visual_rerank_concurrency" value="1">
+        </section>
         <div class="provider-form-action">
           <button class="button button--primary" type="submit">保存为非活动配置 <span aria-hidden="true">→</span></button>
           <span class="activity-label htmx-indicator" role="status">正在保存本地配置…</span>

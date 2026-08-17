@@ -9,6 +9,11 @@
 {% set adapter = profile_view.get('adapter', 'openai_responses') if profile_view.get('adapter', 'openai_responses') in ['openai_responses', 'openai_chat_completions'] else 'openai_responses' %}
 {% set adapter_label = 'OpenAI Chat Completions' if adapter == 'openai_chat_completions' else 'OpenAI Responses' %}
 {% set adapter_endpoint = 'POST /chat/completions' if adapter == 'openai_chat_completions' else 'POST /responses' %}
+{% set stage_configs = profile_view.get('stages', {}) or {} %}
+{% set offline_stage = stage_configs.get('offline_annotation', {}) or {} %}
+{% set query_stage = stage_configs.get('query_spec', {}) or {} %}
+{% set rerank_stage = stage_configs.get('visual_rerank', {}) or {} %}
+{% set offline_concurrency = offline_stage.get('concurrency', 1) %}
 <article
   id="provider-profile-{{ profile_id }}"
   class="provider-profile {% if profile_view.get('enabled') %}provider-profile--active{% endif %}"
@@ -27,7 +32,7 @@
       <span class="status-badge status-badge--{% if profile_view.get('enabled') %}running{% elif overall_status == 'verified' %}succeeded{% elif overall_status == 'failed' %}failed{% else %}paused{% endif %}" data-provider-overall-status>
         {% if profile_view.get('enabled') %}唯一 active{% elif overall_status == 'verified' %}已验证，未启用{% elif overall_status == 'failed' %}探测失败{% else %}等待探测{% endif %}
       </span>
-      <small>{{ adapter }}</small>
+      <small>{{ adapter }} · offline × {{ offline_concurrency }}</small>
     </div>
   </header>
 
@@ -122,9 +127,30 @@
         <label for="timeout-{{ profile_id }}">request_timeout_ms</label>
         <input id="timeout-{{ profile_id }}" name="request_timeout_ms" type="number" value="{{ profile_view.get('request_timeout_ms', 60000) }}" required min="1000" max="600000" step="1000" inputmode="numeric">
       </div>
+      <section class="provider-stage-control field-group--wide" aria-labelledby="stage-control-{{ profile_id }}">
+        <div class="provider-stage-control__intro">
+          <p class="section-index">OFFLINE THROUGHPUT</p>
+          <h3 id="stage-control-{{ profile_id }}">并发 AI 批次</h3>
+          <p>仅控制离线标注同时处理的批次数；每个逻辑请求仍各自遵守原有的自动重试预算。</p>
+        </div>
+        <div class="provider-stage-control__input field-group">
+          <label for="offline-concurrency-{{ profile_id }}">offline_annotation</label>
+          <input id="offline-concurrency-{{ profile_id }}" name="offline_annotation_concurrency" type="number" value="{{ offline_concurrency }}" required min="1" max="5" step="1" inputmode="numeric">
+          <small>范围 1–5；当前值 {{ offline_concurrency }}。新运行会冻结保存时的值。</small>
+        </div>
+        <div class="provider-stage-control__fixed" aria-label="在线阶段固定并发度">
+          <span><b>query_spec</b><code>{{ query_stage.get('concurrency', 1) }} · 固定</code></span>
+          <span><b>visual_rerank</b><code>{{ rerank_stage.get('concurrency', 1) }} · 固定</code></span>
+        </div>
+        <input type="hidden" name="offline_annotation_batch_size" value="{{ offline_stage.get('batch_size', 12) }}">
+        <input type="hidden" name="query_spec_batch_size" value="{{ query_stage.get('batch_size', 1) }}">
+        <input type="hidden" name="query_spec_concurrency" value="{{ query_stage.get('concurrency', 1) }}">
+        <input type="hidden" name="visual_rerank_batch_size" value="{{ rerank_stage.get('batch_size', 1) }}">
+        <input type="hidden" name="visual_rerank_concurrency" value="{{ rerank_stage.get('concurrency', 1) }}">
+      </section>
       <div class="provider-form-action">
-        <button class="button button--quiet" type="submit">保存并重新探测</button>
-        <small>任何配置写入都会禁用该 profile，直到所选协议重新验证通过。</small>
+        <button class="button button--quiet" type="submit">保存配置</button>
+        <small>仅调整 offline 并发度会保留验证与启用状态；其他配置变化会禁用该 profile，直到重新探测通过。</small>
       </div>
     </form>
   </details>

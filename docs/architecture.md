@@ -67,7 +67,7 @@ EXPORT_REGISTRY → SELECT_VARIANTS → RENDER_VARIANTS
 3. 为每个 block 选择唯一 runtime default BlockState 作为代表，使用固定 isolated context，不做组合邻接或图像去重；完整合法状态仍全部导出；`variant_id` 等于 `block_id`，render 路径由 block ID 直接推导；
 4. 在 Minecraft 内渲染并写出 JSONL、PNG、蒙版、失败记录和环境清单；无法普通 model 渲染时保留 Block/State，写机器 skip 并保持 pending review。旧导出身份和路径不迁移，按当前契约重导。
 
-它不能调用 LLM、写 SQLite、提供 WebUI 或 MCP。游戏内导出命令仍为 `/blockindex export`；这不是 Python CLI。
+它不能调用 LLM、写 SQLite、提供 WebUI 或 MCP。游戏内导出命令仍为 `/blockindex export`；D-045 另增加精确的 `/blockindex export banner-repair <base_export_id>`，这同样是 Minecraft 内命令，不是 Python CLI。
 
 ### 3.2 Python Index Studio：只导入验证和构建
 
@@ -88,6 +88,14 @@ PREPARE
 ```
 
 `PREPARE`/import 只接受 exporter 的非 staging 导出产物；`VALIDATE_VARIANTS` 和 `VALIDATE_RENDERS` 只检查选择与渲染结果，不重新执行选择/渲染；`EXTRACT_FEATURES` 是确定性离线提取；后续阶段负责语义、审核、candidate-build 和 activation。
+
+### 3.2.1 D-045 targeted banner boundary
+
+`banner-repair` 只接受一个 complete base export，稳定派生 16 个 vanilla dye colors 的 `*_banner`/`*_wall_banner`，因此恰好处理 32 个 `minecraft:` IDs；不得接受任意 filter。Fabric 复用非目标 records/render artifacts，只重渲染 32 个目标并产生新的完整普通 export、lineage、counts、manifest 和 checksums；partial package、Python rerender、overlay 或 generic patch path 均不属于架构。
+
+新的 banner package 使用 `camera.v2` 的 exact banner-camera policy，保留历史 `camera.v1` 和 `render.v2`。`BannerBlock`/`WallBannerBlock` 的 parent center-pivot correction 由 [状态策略与渲染](state-policy-and-rendering.md) 冻结；其 policy token 位于 logical input signature 的 PRE_RENDER_SKIP token 之后、resource/registry hashes 之前，并改变 camera hash/renderer identity。非目标内容不得因该操作重新渲染。
+
+Studio 只在 WebUI 的 targeted refresh use case 中消费 passed immutable full check；它在既有 run lock 下以本地 staging/journal/backup 原子替换 complete source export、精确 render/feature files 和 SQLite projection。既有 1140 条 AI/provider/review 工作不变，只增量创建 3 个 `12+12+8` 未批准 AI jobs，重置 `AI_ANNOTATE`、`VALIDATE`、`HUMAN_REVIEW`，并从 `AI_ANNOTATE` 继续。具体 route、provenance 与 mixed-lineage gate 由对应契约定义；不新增 SQL、migration、service、queue、status 或 CLI。
 
 ### 3.3 Python CLI
 

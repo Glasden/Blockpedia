@@ -7,6 +7,7 @@ import json
 import struct
 import zlib
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from blockpedia.provider import (
     ProviderProfileError,
     ProviderProfileStore,
     SecretResolver,
+    StageConfig,
     _probe_query_output,
     build_provider_batch_envelope,
     build_cache_key,
@@ -190,6 +192,58 @@ def test_profile_store_strict_active_and_reload(tmp_path: Path) -> None:
     assert ProviderProfileStore(path=tmp_path / "provider-profiles.json").load()["default"].enabled
     raw = (tmp_path / "provider-profiles.json").read_text(encoding="utf-8")
     assert "api-key" not in raw
+
+
+def test_profile_concurrency_bounds_and_online_stage_constraints() -> None:
+    assert isinstance(profile().stages["offline_annotation"], StageConfig)
+    assert profile().stages["offline_annotation"].concurrency == 1  # type: ignore[union-attr]
+    for concurrency in (1, 5):
+        stages = dict(profile().stages)
+        stages["offline_annotation"] = StageConfig(batch_size=12, concurrency=concurrency)
+        assert profile(stages=stages).stages["offline_annotation"].concurrency == concurrency  # type: ignore[union-attr]
+    for concurrency in (0, 6):
+        stages = dict(profile().stages)
+        stages["offline_annotation"] = {"batch_size": 12, "concurrency": concurrency}
+        with pytest.raises(ProviderProfileError):
+            profile(stages=stages)
+    for stage in ("query_spec", "visual_rerank"):
+        stages = dict(profile().stages)
+        stages[stage] = StageConfig(batch_size=1, concurrency=2)
+        with pytest.raises(ProviderProfileError):
+            profile(stages=stages)
+
+
+def test_concurrency_only_profile_save_preserves_capability_and_other_edit_invalidates(tmp_path: Path) -> None:
+    store = ProviderProfileStore(tmp_path)
+    original = profile()
+    store.save(original)
+    store.record_probe(
+        {
+            "profile_id": "default",
+            "adapter": original.adapter,
+            "capability_status": "verified",
+            "image_input_supported": True,
+            "structured_outputs_supported": True,
+            "error_classification_supported": True,
+            "request_id_redacted": "req_…fixture",
+        }
+    )
+    store.enable("default")
+    capabilities = store.capabilities("default")
+    assert capabilities is not None
+
+    stages = dict(original.stages)
+    stages["offline_annotation"] = StageConfig(batch_size=12, concurrency=5)
+    store.save(replace(original, stages=stages))
+    preserved = store.load()["default"]
+    assert preserved.enabled and preserved.capability_status == "verified"
+    assert store.capabilities("default") == capabilities
+
+    store.save(replace(preserved, model_id="model-v2"))
+    invalidated, invalidated_capabilities = store.authoritative("default")
+    assert invalidated is not None
+    assert not invalidated.enabled and invalidated.capability_status == "unverified"
+    assert invalidated_capabilities == {}
 
 
 def test_adapter_change_resets_capability_and_legacy_capability_is_not_trusted(tmp_path: Path) -> None:

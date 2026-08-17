@@ -209,8 +209,8 @@ class StageConfig:
             raise ProviderProfileError("batch_size must be an integer")
         if not isinstance(self.concurrency, int) or isinstance(self.concurrency, bool):
             raise ProviderProfileError("concurrency must be an integer")
-        if not 1 <= self.concurrency <= 4:
-            raise ProviderProfileError("concurrency must be between 1 and 4")
+        if not 1 <= self.concurrency <= 5:
+            raise ProviderProfileError("concurrency must be between 1 and 5")
 
     @classmethod
     def from_value(cls, value: Mapping[str, Any]) -> "StageConfig":
@@ -297,6 +297,8 @@ class ProviderProfile:
                 raise ProviderProfileError("offline_annotation batch_size must be 8-16")
             if stage != "offline_annotation" and normalized[stage].batch_size != 1:
                 raise ProviderProfileError(f"{stage} batch_size must be 1")
+            if stage != "offline_annotation" and normalized[stage].concurrency != 1:
+                raise ProviderProfileError(f"{stage} concurrency must be 1")
         object.__setattr__(self, "stages", MappingProxyType(normalized))
 
     @classmethod
@@ -329,6 +331,29 @@ class ProviderProfile:
 
     def with_capability(self, status: str, *, enabled: bool | None = None) -> "ProviderProfile":
         return replace(self, capability_status=status, enabled=self.enabled if enabled is None else enabled)
+
+
+def profile_differs_only_in_offline_concurrency(
+    previous: ProviderProfile,
+    current: ProviderProfile,
+) -> bool:
+    """Return whether the effective profile edit only changes offline bound."""
+
+    if previous.profile_id != current.profile_id:
+        return False
+    old = previous.to_dict()
+    new = current.to_dict()
+    for value in (old, new):
+        value.pop("enabled", None)
+        value.pop("capability_status", None)
+        stages = value.get("stages")
+        if isinstance(stages, dict):
+            offline = stages.get("offline_annotation")
+            if isinstance(offline, dict):
+                offline.pop("concurrency", None)
+    previous_concurrency = getattr(previous.stages["offline_annotation"], "concurrency", None)
+    current_concurrency = getattr(current.stages["offline_annotation"], "concurrency", None)
+    return old == new and previous_concurrency != current_concurrency
 
 
 class ProviderProfileStore:
@@ -449,7 +474,10 @@ class ProviderProfileStore:
             capabilities = dict(current["capabilities"])
             for profile in sorted(values, key=lambda item: item.profile_id):
                 previous = old.get(profile.profile_id)
-                if previous is not None and self._config_fingerprint(previous) != self._config_fingerprint(profile):
+                concurrency_only = previous is not None and profile_differs_only_in_offline_concurrency(previous, profile)
+                if previous is not None and concurrency_only:
+                    profile = profile.with_capability(previous.capability_status, enabled=previous.enabled)
+                elif previous is not None and self._config_fingerprint(previous) != self._config_fingerprint(profile):
                     profile = profile.with_capability("unverified", enabled=False)
                     capabilities.pop(profile.profile_id, None)
                 normalized.append(profile)

@@ -135,6 +135,58 @@ _UNPREFIXED_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _REPARSE_POINT = 0x400
 _OPENAI_ADAPTERS = frozenset({"openai_responses", "openai_chat_completions"})
+_BANNER_REFRESH_FORMAT = "banner-refresh.v1"
+_BANNER_REFRESH_POLICY_TOKEN = (
+    "banner-camera.v2;namespace=minecraft;types=BannerBlock,WallBannerBlock;"
+    "colors=black,blue,brown,cyan,gray,green,light_blue,light_gray,lime,"
+    "magenta,orange,pink,purple,red,white,yellow;forms=banner,wall_banner"
+)
+_BANNER_REFRESH_TARGETS = tuple(
+    sorted(
+        {
+            f"minecraft:{color}_{form}"
+            for color in (
+                "black",
+                "blue",
+                "brown",
+                "cyan",
+                "gray",
+                "green",
+                "light_blue",
+                "light_gray",
+                "lime",
+                "magenta",
+                "orange",
+                "pink",
+                "purple",
+                "red",
+                "white",
+                "yellow",
+            )
+            for form in ("banner", "wall_banner")
+        },
+        key=lambda value: value.encode("utf-8"),
+    )
+)
+_BANNER_REFRESH_PROVENANCE_FIELDS = {
+    "format",
+    "base",
+    "new",
+    "check_id",
+    "target_ids",
+    "policy_token",
+}
+_BANNER_REFRESH_MARKER_KEYS = _BANNER_REFRESH_PROVENANCE_FIELDS | {
+    "version",
+    "format_version",
+    "provenance",
+}
+_BANNER_REFRESH_LINEAGE_FIELDS = {
+    "import_id",
+    "export_id",
+    "manifest_sha256",
+    "checksum_sha256",
+}
 
 
 class ReleaseBuildFailure(RuntimeError):
@@ -162,6 +214,8 @@ class CheckState:
 class Snapshot:
     run: dict[str, Any]
     import_row: dict[str, Any]
+    banner_refresh_provenance: dict[str, Any] | None
+    banner_refresh_error: str | None
     config: dict[str, Any]
     manifest: dict[str, Any]
     blocks: list[dict[str, Any]]
@@ -551,6 +605,88 @@ def _workspace_path(data_root: DataRoot, minecraft_version: str, run_id: str) ->
     return path
 
 
+def _banner_refresh_provenance(
+    report_json: Any,
+    current_import: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Read the one supported D-045 refresh lineage, or leave legacy reports alone."""
+
+    if not isinstance(report_json, dict):
+        return None, None
+
+    if not set(report_json).intersection(_BANNER_REFRESH_MARKER_KEYS):
+        # This is the pre-D-045 legacy import report.  Preserve its historical
+        # release behavior and do not validate unrelated fields.
+        return None, None
+
+    # D-045 deliberately has one direct, closed object.  A wrapper, alias,
+    # legacy report field, or any unknown field is not a refresh report.
+    if set(report_json) != _BANNER_REFRESH_PROVENANCE_FIELDS:
+        return None, "AI_LINEAGE_INVALID"
+    if report_json.get("format") != _BANNER_REFRESH_FORMAT:
+        return None, "AI_LINEAGE_INVALID"
+    base = report_json.get("base")
+    new = report_json.get("new")
+    if not isinstance(base, dict) or not isinstance(new, dict):
+        return None, "AI_LINEAGE_INVALID"
+    if set(base) != _BANNER_REFRESH_LINEAGE_FIELDS or set(new) != _BANNER_REFRESH_LINEAGE_FIELDS:
+        return None, "AI_LINEAGE_INVALID"
+
+    def valid_import_id(value: Any) -> bool:
+        return isinstance(value, str) and re.fullmatch(r"import_[0-9a-f]{32}", value) is not None
+
+    def valid_export_id(value: Any) -> bool:
+        return isinstance(value, str) and re.fullmatch(
+            r"export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?", value
+        ) is not None
+
+    def valid_lineage(value: Mapping[str, Any]) -> bool:
+        return (
+            valid_import_id(value.get("import_id"))
+            and valid_export_id(value.get("export_id"))
+            and _HASH_RE.fullmatch(str(value.get("manifest_sha256"))) is not None
+            and _HASH_RE.fullmatch(str(value.get("checksum_sha256"))) is not None
+        )
+
+    targets = report_json.get("target_ids")
+    if (
+        not valid_lineage(base)
+        or not valid_lineage(new)
+        or base == new
+        or base.get("import_id") == new.get("import_id")
+        or base.get("export_id") == new.get("export_id")
+        or base.get("manifest_sha256") == new.get("manifest_sha256")
+        or base.get("checksum_sha256") == new.get("checksum_sha256")
+        or not isinstance(report_json.get("check_id"), str)
+        or RELEASE_CHECK_ID_RE.fullmatch(report_json["check_id"]) is None
+        or not isinstance(targets, list)
+        or len(targets) != len(_BANNER_REFRESH_TARGETS)
+        or targets != list(_BANNER_REFRESH_TARGETS)
+        or not isinstance(report_json.get("policy_token"), str)
+        or report_json["policy_token"] != _BANNER_REFRESH_POLICY_TOKEN
+    ):
+        return None, "AI_LINEAGE_INVALID"
+
+    if (
+        new.get("import_id") != current_import.get("import_id")
+        or new.get("export_id") != current_import.get("export_id")
+        or new.get("manifest_sha256") != current_import.get("manifest_sha256")
+        or new.get("checksum_sha256") != current_import.get("checksum_sha256")
+    ):
+        return None, "AI_LINEAGE_INVALID"
+
+    # Keep the exact canonical direct object (with fresh nested containers) in
+    # both the snapshot fingerprint and release functional inputs.
+    return {
+        "format": report_json["format"],
+        "base": dict(base),
+        "new": dict(new),
+        "check_id": report_json["check_id"],
+        "target_ids": list(targets),
+        "policy_token": report_json["policy_token"],
+    }, None
+
+
 class ReleaseBuilder:
     """Build one candidate from a checked run without touching current.json."""
 
@@ -886,10 +1022,18 @@ class ReleaseBuilder:
         if run_row is None:
             raise ReleaseBuildFailure("RUN_NOT_FOUND")
         run = {key: run_row[key] for key in ("run_id", "import_id", "minecraft_version", "status", "current_stage", "boundary_event")}
-        import_row_raw = connection.execute("SELECT import_id,minecraft_version,export_id,manifest_sha256,checksum_sha256 FROM imports WHERE import_id=?", (run["import_id"],)).fetchone()
+        import_row_raw = connection.execute("SELECT import_id,minecraft_version,export_id,manifest_sha256,checksum_sha256,report_json FROM imports WHERE import_id=?", (run["import_id"],)).fetchone()
         if import_row_raw is None:
             raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED")
         import_row = {key: import_row_raw[key] for key in ("import_id", "minecraft_version", "export_id", "manifest_sha256", "checksum_sha256")}
+        try:
+            report_json = json.loads(import_row_raw["report_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            # Existing releases never consumed this field.  Keep malformed
+            # legacy reports opaque; a D-045 marker can only be recognized in
+            # a successfully decoded object.
+            report_json = {}
+        banner_refresh_provenance, banner_refresh_error = _banner_refresh_provenance(report_json, import_row)
         try:
             config = json.loads(connection.execute("SELECT config_snapshot_json FROM runs WHERE run_id=?", (run["run_id"],)).fetchone()["config_snapshot_json"] or "{}")
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -1033,7 +1177,7 @@ class ReleaseBuilder:
             })
         ai_jobs: list[dict[str, Any]] = []
         for row in connection.execute(
-            "SELECT job_id,input_signature,status,output_hash,cursor_json FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' ORDER BY job_id",
+            "SELECT job_id,logical_key,input_signature,status,output_hash,cursor_json FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' ORDER BY job_id",
             (run["run_id"],),
         ).fetchall():
             try:
@@ -1042,6 +1186,7 @@ class ReleaseBuilder:
                 cursor = {"__invalid_record__": "INVALID_JSON"}
             ai_jobs.append({
                 "job_id": row["job_id"],
+                "logical_key": row["logical_key"],
                 "input_signature": row["input_signature"],
                 "status": row["status"],
                 "output_hash": row["output_hash"],
@@ -1074,6 +1219,14 @@ class ReleaseBuilder:
             if key in {"image_input_supported", "structured_outputs_supported", "error_classification_supported"}
         }
         provider_capabilities["adapter"] = persisted_capability_adapter
+        fingerprint_ai_jobs = ai_jobs
+        if banner_refresh_provenance is None and banner_refresh_error is None:
+            # Keep legacy normal-import fingerprints byte-equivalent.  The
+            # logical key is only needed to prove D-045 preserved rows.
+            fingerprint_ai_jobs = [
+                {key: value for key, value in job.items() if key != "logical_key"}
+                for job in ai_jobs
+            ]
         manifest_hash = sha256_bytes(manifest_bytes)
         snapshot_logic = {
             "run_id": run["run_id"],
@@ -1099,7 +1252,7 @@ class ReleaseBuilder:
             "reviews": _stable_rows(reviews, "review_id"),
             "artifacts": artifacts,
             "provider_requests": provider_requests,
-            "ai_jobs": ai_jobs,
+            "ai_jobs": fingerprint_ai_jobs,
             "provider_snapshot": provider_snapshot,
             "provider_capabilities": provider_capabilities,
             "toolchain_lock_sha256": _toolchain_lock_hash(self.repo_root),
@@ -1110,10 +1263,16 @@ class ReleaseBuilder:
             "export_checksum_errors": list(export_checksum_errors),
             "artifact_errors": sorted(set(artifact_errors)),
         }
+        if banner_refresh_provenance is not None:
+            snapshot_logic["banner_refresh_provenance"] = banner_refresh_provenance
+        elif banner_refresh_error is not None:
+            snapshot_logic["banner_refresh_error"] = banner_refresh_error
         fingerprint = sha256_json(snapshot_logic)
         return Snapshot(
             run=run,
             import_row=import_row,
+            banner_refresh_provenance=banner_refresh_provenance,
+            banner_refresh_error=banner_refresh_error,
             config=config,
             manifest=manifest,
             blocks=blocks,
@@ -1428,6 +1587,8 @@ class ReleaseBuilder:
 
     def _gate_ai(self, snapshot: Snapshot, database: WorkspaceDatabase) -> tuple[str, int, str | None]:
         count = 0
+        if snapshot.banner_refresh_error is not None:
+            return "failed", count, "AI_LINEAGE_INVALID"
         by_variant = {str(row.get("variant_id")): row for row in snapshot.variants}
         eligible = [variant for variant in snapshot.variants if variant.get("candidate_qualification") in {"eligible", "conditional"}]
         verified_by_variant: dict[str, list[dict[str, Any]]] = {}
@@ -1468,7 +1629,12 @@ class ReleaseBuilder:
             )
         ):
             return "failed", count, "AI_LINEAGE_INVALID"
-        if not needs_provider:
+        successful_requests = [
+            request
+            for request in snapshot.provider_requests
+            if request.get("status") == "succeeded" and request.get("stage") == "offline_annotation"
+        ]
+        if not needs_provider and not successful_requests:
             return "passed", count, None
         artifacts_by_variant: dict[str, list[dict[str, Any]]] = {}
         for artifact in snapshot.artifacts:
@@ -1480,8 +1646,20 @@ class ReleaseBuilder:
             for variant_id in metadata["variant_ids"]:
                 artifacts_by_variant.setdefault(str(variant_id), []).append(artifact)
 
-        successful_requests = [request for request in snapshot.provider_requests if request.get("status") == "succeeded" and request.get("stage") == "offline_annotation"]
         request_by_variant: dict[str, list[dict[str, Any]]] = {}
+        refresh_targets = set(snapshot.banner_refresh_provenance["target_ids"]) if snapshot.banner_refresh_provenance else set()
+        current_export_id = str(snapshot.import_row["export_id"])
+        base_export_id = (
+            str(snapshot.banner_refresh_provenance["base"]["export_id"])
+            if snapshot.banner_refresh_provenance
+            else None
+        )
+        for request in snapshot.provider_requests:
+            if request.get("status") != "succeeded" or request.get("stage") == "offline_annotation":
+                continue
+            envelope = request.get("envelope")
+            if not isinstance(envelope, dict) or envelope.get("export_id") != current_export_id:
+                return "failed", count, "AI_LINEAGE_INVALID"
         for request in successful_requests:
             envelope = request.get("envelope")
             if not isinstance(envelope, dict) or not _record_ok("provider-batch-envelope.v1", envelope, self.repo_root):
@@ -1513,7 +1691,6 @@ class ReleaseBuilder:
                 or envelope.get("wire_schema_id") != provider_wire.get("offline_annotation")
                 or envelope.get("wire_format_name") != "annotation_batch_output_v1"
                 or envelope.get("minecraft_version") != snapshot.run.get("minecraft_version")
-                or envelope.get("export_id") != snapshot.import_row["export_id"]
                 or envelope.get("release_id") is not None
                 or envelope.get("resolved_release_manifest_sha256") is not None
             ):
@@ -1527,7 +1704,29 @@ class ReleaseBuilder:
                 if not isinstance(item, dict) or not isinstance(item.get("variant_id"), str):
                     return "failed", count, "AI_LINEAGE_INVALID"
                 request_by_variant.setdefault(item["variant_id"], []).append(request)
-            if not self._provider_request_matches_current_input(snapshot, request, tile_map, provider):
+            tile_variants = {str(item["variant_id"]) for item in tile_map}
+            envelope_export_id = envelope.get("export_id")
+            if not isinstance(envelope_export_id, str):
+                return "failed", count, "AI_LINEAGE_INVALID"
+            if envelope_export_id == current_export_id:
+                # New refresh batches are target-only.  A mixed target/non-
+                # target batch would have no single D-045 lineage proof.
+                if tile_variants.intersection(refresh_targets) and not tile_variants.issubset(refresh_targets):
+                    return "failed", count, "AI_LINEAGE_INVALID"
+            elif (
+                snapshot.banner_refresh_provenance is None
+                or envelope_export_id != base_export_id
+                or tile_variants.intersection(refresh_targets)
+                or not self._historical_provider_rows_preserved(snapshot, request, tile_variants)
+            ):
+                return "failed", count, "AI_LINEAGE_INVALID"
+            if not self._provider_request_matches_current_input(
+                snapshot,
+                request,
+                tile_map,
+                provider,
+                export_id=envelope_export_id,
+            ):
                 return "failed", count, "AI_LINEAGE_INVALID"
             if not _provider_artifact_matches_request(snapshot, request, tile_map, artifacts_by_variant):
                 return "failed", count, "AI_LINEAGE_INVALID"
@@ -1548,8 +1747,37 @@ class ReleaseBuilder:
                     return "failed", count, "AI_LINEAGE_INVALID"
         return "passed", count, None
 
-    def _provider_request_matches_current_input(self, snapshot: Snapshot, request: Mapping[str, Any], tile_map: list[dict[str, Any]], provider: Mapping[str, Any]) -> bool:
+    def _historical_provider_rows_preserved(
+        self,
+        snapshot: Snapshot,
+        request: Mapping[str, Any],
+        tile_variants: set[str],
+    ) -> bool:
+        """Allow only the pre-refresh job row for a historical request."""
+
+        input_sha256 = request.get("input_sha256")
+        matches = [
+            job
+            for job in snapshot.ai_jobs
+            if job.get("input_signature") == input_sha256
+            and set(job.get("variant_ids", [])) == tile_variants
+        ]
+        if len(matches) != 1:
+            return False
+        logical_key = matches[0].get("logical_key")
+        return isinstance(logical_key, str) and not logical_key.startswith("banner_refresh_")
+
+    def _provider_request_matches_current_input(
+        self,
+        snapshot: Snapshot,
+        request: Mapping[str, Any],
+        tile_map: list[dict[str, Any]],
+        provider: Mapping[str, Any],
+        *,
+        export_id: str | None = None,
+    ) -> bool:
         workspace = self.data_root.workspace_dir(str(snapshot.run["minecraft_version"]), str(snapshot.run["run_id"]))
+        input_export_id = export_id or str(snapshot.import_row["export_id"])
         variants = {str(row.get("variant_id")): row for row in snapshot.variants}
         features = {str(row.get("variant_id")): row.get("feature", {}) for row in snapshot.features}
         images: list[tuple[str, bytes]] = []
@@ -1632,7 +1860,7 @@ class ReleaseBuilder:
             "prompt_sha256": sha256_bytes(prompt.encode("utf-8")),
             "source_image_hashes": source_hashes,
             "feature_hash": feature_hash,
-            "export_id": snapshot.import_row["export_id"],
+            "export_id": input_export_id,
             "profile_id": provider.get("profile_id"),
             "adapter": provider.get("adapter"),
             "model_id": provider.get("model_id"),
@@ -1788,6 +2016,8 @@ class ReleaseBuilder:
             "schema_inventory": sha256_bytes(schemas_bytes),
             "release_index/sql": snapshot.release_index_sql_sha256,
         }
+        if snapshot.banner_refresh_provenance is not None:
+            functional_inputs["source_import/banner_refresh_provenance"] = _hash_json(snapshot.banner_refresh_provenance)
         for key, value in snapshot.source_file_hashes.items():
             relative = key.removeprefix("export/")
             if relative == "manifest.json" or relative == "checksums.sha256":

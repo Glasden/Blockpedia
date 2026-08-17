@@ -11,6 +11,9 @@
 {% set warnings = run_view.get('warnings', []) or [] %}
 {% set stale_items = run_view.get('stale', []) or [] %}
 {% set run_identifier = run_view.get('run_id', run_id|default('unavailable')) %}
+{% set frozen_offline_concurrency = run_view.get('offline_annotation_concurrency') %}
+{% set banner_refresh = run_view.get('banner_refresh', {}) or {} %}
+{% set banner_refresh_success = run_view.get('banner_refresh_success', {}) or {} %}
 
 {% set timeline = namespace(current_index=1, current_status='pending', current_heartbeat=None, pause_after_item=false) %}
 {% for stage_name in stage_order %}
@@ -65,6 +68,7 @@
         <span class="status-badge status-badge--{{ run_status }}">{{ run_status }}</span>
       </div>
       <p>当前阶段 <code>{{ current_stage }}</code></p>
+      {% if frozen_offline_concurrency %}<p class="run-frozen-config"><span aria-hidden="true">◆</span><b>{{ frozen_offline_concurrency }} 个并发 AI 批次</b><small>已为此运行冻结 · active profile 后续变化不会改写</small></p>{% endif %}
       {% if boundary_event == 'R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING' %}<p class="pipeline-summary__note">R2 已完成；请在下方配置并预览 R3 AI 批次。</p>{% elif boundary_event == 'R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING' %}<p class="pipeline-summary__note">R3 标注与审核已完成；请在当前运行页执行候选检查。</p>{% endif %}
       <span class="stream-state" data-stream-status data-state="connecting"><i aria-hidden="true"></i><span>正在连接实时状态</span></span>
     </div>
@@ -237,6 +241,69 @@
       </section>
     </div>
 
+    {% if banner_refresh_success %}
+      <section class="banner-refresh banner-refresh--success" role="status" tabindex="-1" data-banner-refresh-success data-autofocus>
+        <div class="banner-refresh__mark" aria-hidden="true">32</div>
+        <div class="banner-refresh__success-copy">
+          <p class="section-index">BANNER REFRESH APPLIED</p>
+          <h4>Banner 定向修复已应用</h4>
+          <p>32 个 Banner 变体与离线特征已加入；既有标注保持不变。三个新的 AI 批次正在等待你的发送前检查。</p>
+          {% if banner_refresh_success.get('new_export_id') %}<small>当前完整导出 <code>{{ banner_refresh_success.get('new_export_id') }}</code></small>{% endif %}
+        </div>
+        <dl class="banner-refresh__result">
+          <div><dt>新增变体 / 特征</dt><dd>32 / 32</dd></div>
+          <div><dt>待处理 AI 批次</dt><dd>3</dd></div>
+        </dl>
+        <p class="banner-refresh__next"><span aria-hidden="true">→</span><b>下一步：在批次操作区预览并批准这三个批次。</b><small>这里没有自动批准，也没有调用 provider。</small></p>
+      </section>
+    {% elif current_stage == 'HUMAN_REVIEW' and run_status == 'needs_review' and banner_refresh.get('base_export_id') %}
+      <section class="banner-refresh" aria-labelledby="banner-refresh-heading" data-banner-refresh>
+        <header class="banner-refresh__header">
+          <div>
+            <p class="section-index">BOUNDED REPAIR / 32 TARGETS</p>
+            <h4 id="banner-refresh-heading">Banner 定向修复</h4>
+            <p>只处理这次已知的 Banner 出框问题，不是通用修复工具。</p>
+          </div>
+          <span class="banner-refresh__scope">32 个固定目标</span>
+        </header>
+        <div class="banner-refresh__body">
+          <div class="banner-refresh__guide">
+            <ol>
+              <li><span>01</span><p>先为新的 <code>banner-repair</code> 完整导出运行现有的 Import Check。</p></li>
+              <li><span>02</span><p>检查通过后，把它的 <code>check_id</code> 粘贴到右侧并确认应用。</p></li>
+            </ol>
+            <p class="banner-refresh__effect"><span aria-hidden="true">◆</span>应用后替换当前源导出，只加入 32 个 Banner 变体与特征，保留既有标注，并建立三个未批准的 AI 批次。</p>
+          </div>
+          <form
+            class="banner-refresh__form"
+            hx-post="/ui/runs/{{ run_identifier }}/banner-export-refresh"
+            hx-target="#run-panel"
+            hx-swap="innerHTML"
+            hx-disabled-elt="find button"
+            data-explicit-confirmation
+            autocomplete="off"
+          >
+            <div class="banner-refresh__base">
+              <span>当前基础导出</span>
+              <code>{{ banner_refresh.get('base_export_id') }}</code>
+            </div>
+            <div class="field-group">
+              <label for="banner-check-id-{{ run_identifier }}">已通过的 check_id</label>
+              <input id="banner-check-id-{{ run_identifier }}" name="check_id" type="text" required maxlength="38" pattern="check_[0-9a-f]{32}" placeholder="check_…" spellcheck="false" aria-describedby="banner-check-help-{{ run_identifier }}">
+              <small id="banner-check-help-{{ run_identifier }}">必须来自新的 banner-repair 完整导出。</small>
+            </div>
+            <label class="banner-refresh__confirm">
+              <input name="confirm" type="checkbox" value="true" required data-explicit-confirmation-input>
+              <span>我确认该 Import Check 已通过，并要把这份完整导出应用到当前运行。</span>
+            </label>
+            <button class="button button--primary" type="submit" disabled data-explicit-confirmation-submit>应用定向修复 <span aria-hidden="true">→</span></button>
+            <span class="activity-label htmx-indicator" role="status">正在核对完整导出并更新当前运行…</span>
+          </form>
+        </div>
+        <div id="banner-refresh-feedback" class="banner-refresh__feedback" aria-live="polite"></div>
+      </section>
+    {% endif %}
+
     {% if queue_counts.pending_ai or queue_counts.retry_eligible %}
       <section
         class="ai-queue-actions"
@@ -288,6 +355,7 @@
           <dl class="ai-queue-confirmation__facts">
             <div data-ai-confirm-field="model" hidden><dt>请求 model_id</dt><dd><code data-ai-confirm-value="model"></code></dd></div>
             <div data-ai-confirm-field="adapter" hidden><dt>adapter</dt><dd><code data-ai-confirm-value="adapter"></code></dd></div>
+            <div data-ai-confirm-field="concurrency" hidden><dt>运行冻结并发度</dt><dd><strong data-ai-confirm-value="concurrency"></strong></dd></div>
             <div data-ai-confirm-field="count" hidden><dt>批次数</dt><dd><strong data-ai-confirm-value="count"></strong></dd></div>
             <div data-ai-confirm-field="hash" hidden><dt data-ai-confirm-hash-label>确认哈希</dt><dd><code data-ai-confirm-value="hash"></code></dd></div>
             <div data-ai-confirm-field="batch" hidden><dt>批次</dt><dd><code data-ai-confirm-value="batch"></code></dd></div>

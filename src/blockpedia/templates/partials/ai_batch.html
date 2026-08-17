@@ -1,6 +1,7 @@
 {% set run_view = run|default({}, true) %}
 {% set batch_view = batch|default({}, true) %}
 {% set run_identifier = run_view.get('run_id', run_identifier|default(batch_view.get('run_id', 'unavailable'))) %}
+{% set frozen_offline_concurrency = run_view.get('offline_annotation_concurrency') %}
 <section
   class="ai-control"
   data-ai-control
@@ -10,6 +11,7 @@
   data-current-stage="{{ run_view.get('current_stage', 'PREPARE') }}"
   data-run-status="{{ run_view.get('status', 'pending') }}"
   data-boundary-event="{{ run_view.get('boundary_event') or '' }}"
+  data-offline-concurrency="{{ frozen_offline_concurrency or '' }}"
   aria-labelledby="ai-control-heading"
 >
   <header class="ai-control__header">
@@ -35,9 +37,10 @@
         <div><dt>请求 model_id</dt><dd><code data-ai-model-id>读取中</code></dd></div>
         <div><dt>endpoint</dt><dd><code data-ai-endpoint>读取中</code></dd></div>
         <div><dt>prompt</dt><dd><code data-ai-prompt-version>读取中</code></dd></div>
+        <div><dt>并发 AI 批次</dt><dd><strong data-ai-concurrency>{% if frozen_offline_concurrency %}{{ frozen_offline_concurrency }} · 已为此运行冻结{% else %}读取中{% endif %}</strong></dd></div>
         <div><dt>凭据</dt><dd><span data-ai-credential>读取中</span></dd></div>
       </dl>
-      <p class="privacy-note"><span aria-hidden="true">◆</span> 这里显示请求 model_id；第三方网关可能改写响应中的 model 回显，Blockpedia 不据此验证远端模型身份或替换请求值。这里不显示凭据正文、本机路径、图片编码或 provider 原始响应。</p>
+      <p class="privacy-note"><span aria-hidden="true">◆</span> 运行配置后，并发度与 provider snapshot 一起冻结；之后更改 active profile 不会改写此运行。这里不显示凭据正文、本机路径、图片编码或 provider 原始响应。</p>
     </section>
 
     <form class="ai-run-configure" action="/ui/runs/configure" method="post" data-ai-configure autocomplete="off">

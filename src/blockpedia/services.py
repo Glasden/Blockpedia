@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .directory_chooser import DirectoryChooser
+from .banner_refresh import BannerRefreshFailure, refresh_banner_workspace
 from .importer import ImportCheck, ImportCheckInProgress, ImportCheckStart, ImportService
 from .paths import DataRoot, resolve_data_root
 from .search import WorkspaceQueryService, human_semantics_complete
@@ -35,6 +36,7 @@ from .provider import (
     ProviderProfileError,
     ProviderProfileStore,
     SecretResolver,
+    profile_differs_only_in_offline_concurrency,
     sanitize_validation_diagnostic,
 )
 from .schema import RecordSchemaError, validate_record
@@ -104,13 +106,15 @@ class StudioService:
         self._close_lock = threading.RLock()
         self._closed = False
 
-    def close(self) -> bool:
+    def close(self, *, timeout: float | None = 2.0) -> bool:
         with self._close_lock:
             if self._closed:
                 return False
-            self._closed = True
-            self.worker.close()
+            worker_closed = self.worker.close() if timeout == 2.0 else self.worker.close(timeout=timeout)
+            if not worker_closed:
+                return False
             self.imports.close()
+            self._closed = True
             return True
 
     # ---- R3 Phase C candidate check/build --------------------------------------
@@ -217,10 +221,14 @@ class StudioService:
             raise R3Error("PROVIDER_CONFIG_INVALID")
         try:
             normalized = profile if isinstance(profile, ProviderProfile) else ProviderProfile.from_dict(profile)
-            # A configuration write is never an enable operation.  Even an
-            # unchanged profile must be explicitly re-probed before it can
-            # become active again.
-            normalized = normalized.with_capability("unverified", enabled=False)
+            existing = self.profile_store.load().get(normalized.profile_id)
+            # A legal offline-concurrency-only edit is the one profile edit
+            # that does not invalidate an already verified active profile.
+            # All other configuration writes retain the existing reprobe
+            # requirement, including an unchanged profile submitted through
+            # this service.
+            if existing is None or not profile_differs_only_in_offline_concurrency(existing, normalized):
+                normalized = normalized.with_capability("unverified", enabled=False)
             self.profile_store.save(normalized)
         except (ProviderProfileError, ProviderError, TypeError, ValueError) as exc:
             raise R3Error("PROVIDER_CONFIG_INVALID") from exc
@@ -348,6 +356,147 @@ class StudioService:
 
     # ---- R3 run configuration --------------------------------------------------
 
+    @staticmethod
+    def _frozen_profile(config: dict[str, Any]) -> ProviderProfile:
+        snapshot = config.get("provider_snapshot")
+        raw = snapshot.get("profile") if isinstance(snapshot, dict) else None
+        if not isinstance(raw, dict):
+            raise R3Error("RUN_STATE_CONFLICT")
+        try:
+            return ProviderProfile.from_dict(raw)
+        except (ProviderError, ProviderProfileError, TypeError, ValueError) as exc:
+            raise R3Error("RUN_STATE_CONFLICT") from exc
+
+    @staticmethod
+    def _same_config_except_profile(old: dict[str, Any], new: dict[str, Any]) -> bool:
+        def stripped(value: dict[str, Any]) -> dict[str, Any]:
+            result = json.loads(canonical_json(value))
+            result.pop("effective_config_hash", None)
+            snapshot = result.get("provider_snapshot")
+            if isinstance(snapshot, dict):
+                snapshot.pop("profile", None)
+            return result
+
+        return stripped(old) == stripped(new)
+
+    def _require_pristine_reconfiguration(
+        self,
+        database: WorkspaceDatabase,
+        run_id: str,
+        run: Any,
+        ai_jobs: list[Any],
+    ) -> None:
+        """Fail closed unless the existing R3 work is still pristine."""
+
+        try:
+            if self.worker.has_live_ai_futures(run_id):
+                raise R3Error("RUN_STATE_CONFLICT")
+        except R3Error:
+            raise
+        except Exception as exc:
+            raise R3Error("RUN_STATE_CONFLICT") from exc
+
+        stage = database.fetchone(
+            "SELECT status FROM stage_runs WHERE run_id=? AND stage='AI_ANNOTATE'",
+            (run_id,),
+        )
+        if (
+            run["status"] != "paused"
+            or run["current_stage"] != "AI_ANNOTATE"
+            or run["boundary_event"] is not None
+            or stage is None
+            or stage["status"] != "paused"
+        ):
+            raise R3Error("RUN_STATE_CONFLICT")
+
+        later_stages = database.fetchall(
+            "SELECT stage,status FROM stage_runs WHERE run_id=? AND ordinal>=6 ORDER BY ordinal",
+            (run_id,),
+        )
+        if len(later_stages) != 5 or any(
+            row["stage"] != "AI_ANNOTATE" and row["status"] != "pending" for row in later_stages
+        ):
+            raise R3Error("RUN_STATE_CONFLICT")
+
+        if database.fetchone("SELECT 1 FROM provider_requests LIMIT 1") is not None:
+            raise R3Error("RUN_STATE_CONFLICT")
+        if database.fetchone("SELECT 1 FROM annotations LIMIT 1") is not None:
+            raise R3Error("RUN_STATE_CONFLICT")
+        if database.fetchone(
+            """
+            SELECT 1 FROM artifacts
+            WHERE kind='ai_annotation'
+               OR job_id IN (
+                   SELECT job_id FROM jobs
+                   WHERE run_id=? AND stage IN ('AI_ANNOTATE','VALIDATE','HUMAN_REVIEW')
+               )
+            LIMIT 1
+            """,
+            (run_id,),
+        ) is not None:
+            raise R3Error("RUN_STATE_CONFLICT")
+
+        ai_job_ids = {str(row["job_id"]) for row in ai_jobs}
+        ai_review_codes = {
+            "PROVIDER_FAILURE",
+            "LOW_CONFIDENCE",
+            "SAMPLED_QUALITY_REVIEW",
+            "AI_BATCH_CANCELLED",
+            "AI_BATCH_INPUT_INVALID",
+        }
+        for row in database.fetchall("SELECT reason_code,evidence_json FROM review_tasks"):
+            evidence = _review_evidence_values(row["evidence_json"])
+            if row["reason_code"] in ai_review_codes or any(
+                isinstance(item, str)
+                and (
+                    item.startswith("provider_request:")
+                    or (item.startswith("job:") and item.removeprefix("job:") in ai_job_ids)
+                )
+                for item in evidence
+            ):
+                raise R3Error("RUN_STATE_CONFLICT")
+
+        for row in database.fetchall(
+            "SELECT event_type,job_id FROM audit_events WHERE run_id=? ORDER BY created_at,event_id",
+            (run_id,),
+        ):
+            event_type = str(row["event_type"])
+            if event_type != "AI_BATCH_APPROVAL_REQUIRED" and (
+                row["job_id"] in ai_job_ids or event_type.startswith("AI_")
+            ):
+                raise R3Error("RUN_STATE_CONFLICT")
+
+        clean_cursor_fields = {"approved", "tile_ids", "variant_ids", "input_hash", "payload_signature"}
+        if not ai_jobs:
+            raise R3Error("RUN_STATE_CONFLICT")
+        for row in ai_jobs:
+            if (
+                row["status"] != "pending"
+                or row["auto_attempt"] != 0
+                or row["worker_id"] is not None
+                or row["started_at"] is not None
+                or row["heartbeat_at"] is not None
+                or row["output_hash"] is not None
+                or row["error_code"] is not None
+                or row["error_message"] is not None
+                or row["finished_at"] is not None
+                or ":retry:" in str(row["logical_key"])
+            ):
+                raise R3Error("RUN_STATE_CONFLICT")
+            cursor = _load_object(row["cursor_json"])
+            if set(cursor) != clean_cursor_fields or cursor.get("approved") is not False:
+                raise R3Error("RUN_STATE_CONFLICT")
+            if (
+                cursor.get("input_hash") != row["input_signature"]
+                or cursor.get("payload_signature") != row["input_signature"]
+                or not isinstance(cursor.get("tile_ids"), list)
+                or not isinstance(cursor.get("variant_ids"), list)
+                or not cursor["tile_ids"]
+                or not cursor["variant_ids"]
+                or any(not isinstance(item, str) for item in cursor["tile_ids"] + cursor["variant_ids"])
+            ):
+                raise R3Error("RUN_STATE_CONFLICT")
+
     def configure_run(
         self,
         import_id: str,
@@ -450,7 +599,7 @@ class StudioService:
                 # successful after provider or review data exists.
                 existing_hash = run["effective_config_hash"]
                 existing_jobs = database.fetchall(
-                    "SELECT job_id,logical_key,input_signature,status,cursor_json FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' ORDER BY logical_key",
+                    "SELECT * FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' ORDER BY logical_key",
                     (run_id,),
                 )
                 r3_stage_rows = database.fetchall(
@@ -473,6 +622,113 @@ class StudioService:
                             existing_jobs,
                             idempotent=True,
                         )
+                    if existing_hash is not None and existing_jobs and existing_hash != effective_hash:
+                        old_config = _load_object(run["config_snapshot_json"])
+                        old_profile = self._frozen_profile(old_config)
+                        if (
+                            profile_differs_only_in_offline_concurrency(old_profile, profile)
+                            and self._same_config_except_profile(old_config, config)
+                        ):
+                            self._require_pristine_reconfiguration(database, run_id, run, existing_jobs)
+                            old_concurrency = getattr(old_profile.stages["offline_annotation"], "concurrency", None)
+                            new_concurrency = getattr(profile.stages["offline_annotation"], "concurrency", None)
+                            if old_concurrency == new_concurrency:
+                                raise R3Error("RUN_STATE_CONFLICT")
+                            from .worker import build_ai_batch_specs
+
+                            try:
+                                batch_specs = build_ai_batch_specs(
+                                    database,
+                                    run_id,
+                                    profile,
+                                    batch_size=configured_batch_size,
+                                    sample_rate=sample_rate,
+                                )
+                            except (OSError, ValueError, KeyError) as exc:
+                                raise R3Error("AI_BATCH_INPUT_INVALID") from exc
+                            now = utc_now()
+                            with database.transaction() as connection:
+                                connection.execute("UPDATE provider_profiles SET active=0 WHERE active=1")
+                                connection.execute(
+                                    "INSERT OR REPLACE INTO provider_profiles(profile_id,model_id,base_url_stable_id,secret_reference,active,capability_status,profile_json) VALUES (?,?,?,?,?,?,?)",
+                                    (
+                                        profile.profile_id,
+                                        profile.model_id,
+                                        profile.base_url_stable_id,
+                                        profile.secret_reference,
+                                        1,
+                                        "verified",
+                                        canonical_json(provider_snapshot),
+                                    ),
+                                )
+                                connection.execute(
+                                    "UPDATE runs SET status='pending',current_stage='AI_ANNOTATE',boundary_event=NULL,finished_at=NULL,config_snapshot_json=?,effective_config_hash=? WHERE run_id=?",
+                                    (canonical_json(config), effective_hash, run_id),
+                                )
+                                connection.execute(
+                                    "UPDATE stage_runs SET status='pending',cursor_json='{}',worker_id=NULL,recovery_attempt=0,pause_after_item=0,heartbeat_at=NULL,started_at=NULL,finished_at=NULL WHERE run_id=? AND ordinal>=6",
+                                    (run_id,),
+                                )
+                                connection.execute(
+                                    "DELETE FROM jobs WHERE run_id=? AND stage IN ('AI_ANNOTATE','VALIDATE','HUMAN_REVIEW')",
+                                    (run_id,),
+                                )
+                                for spec in batch_specs:
+                                    connection.execute(
+                                        "INSERT INTO jobs(job_id,run_id,stage,logical_key,input_signature,status,priority,cursor_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                                        (
+                                            _stable_id("job", run_id, spec["logical_key"], spec["input_signature"]),
+                                            run_id,
+                                            "AI_ANNOTATE",
+                                            spec["logical_key"],
+                                            spec["input_signature"],
+                                            "pending",
+                                            0,
+                                            canonical_json({"approved": False, "tile_ids": spec["tile_ids"], "variant_ids": spec["variant_ids"], "input_hash": spec["input_signature"], "payload_signature": spec["payload_signature"]}),
+                                            now,
+                                        ),
+                                    )
+                                connection.execute(
+                                    "INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)",
+                                    (
+                                        _audit_id(),
+                                        "R3_RUN_RECONFIGURED",
+                                        run_id,
+                                        canonical_json(
+                                            {
+                                                "profile_id": profile_id,
+                                                "old_effective_config_hash": existing_hash,
+                                                "new_effective_config_hash": effective_hash,
+                                                "old_concurrency": old_concurrency,
+                                                "new_concurrency": new_concurrency,
+                                                "job_count": len(batch_specs),
+                                            }
+                                        ),
+                                        now,
+                                    ),
+                                )
+                            batches = [
+                                {
+                                    "job_id": _stable_id("job", run_id, spec["logical_key"], spec["input_signature"]),
+                                    "logical_key": spec["logical_key"],
+                                    "input_signature": spec["input_signature"],
+                                    "status": "pending",
+                                    "variant_ids": list(spec["variant_ids"]),
+                                }
+                                for spec in batch_specs
+                            ]
+                            return {
+                                "run_id": run_id,
+                                "import_id": import_id,
+                                "minecraft_version": minecraft_version,
+                                "status": "pending",
+                                "effective_config_hash": effective_hash,
+                                "config_snapshot": self._public_config(config),
+                                "batch_count": len(batch_specs),
+                                "batches": batches,
+                                "idempotent": False,
+                                "reconfigured": True,
+                            }
                     raise R3Error("RUN_STATE_CONFLICT")
                 if (
                     run["status"] != "paused"
@@ -811,6 +1067,8 @@ class StudioService:
                     row = connection.execute("SELECT job_id,status,cursor_json FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' AND logical_key=?", (run_id, logical_key)).fetchone()
                     if row is None:
                         raise R3Error("AI_BATCH_NOT_FOUND")
+                    if self.worker.is_ai_job_send_started(run_id, str(row["job_id"])):
+                        raise R3Error("RUN_STATE_CONFLICT")
                     if row["status"] in {"succeeded", "failed", "skipped"}:
                         return {"run_id": run_id, "logical_key": logical_key, "status": row["status"]}
                     cursor = _load_object(row["cursor_json"])
@@ -1310,9 +1568,21 @@ class StudioService:
                     if row is None:
                         raise KeyError(run_id)
                     require_transition(row["status"], "cancelled")
-                    connection.execute("UPDATE jobs SET status='failed',error_code='RUN_CANCELLED',error_message='cancelled by operator',worker_id=NULL,finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
-                    connection.execute("UPDATE stage_runs SET status='cancelled',worker_id=NULL,pause_after_item=0,finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
-                    connection.execute("UPDATE runs SET status='cancelled',finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
+                    live = {
+                        item["job_id"]: bool(item["send_started"])
+                        for item in self.worker.registered_ai_jobs(run_id)
+                    }
+                    outstanding_jobs = connection.execute(
+                        "SELECT job_id FROM jobs WHERE run_id=? AND status IN ('pending','running')",
+                        (run_id,),
+                    ).fetchall()
+                    for outstanding in outstanding_jobs:
+                        job_id = str(outstanding["job_id"])
+                        if live.get(job_id) is True:
+                            continue
+                        connection.execute("UPDATE jobs SET status='failed',error_code='RUN_CANCELLED',error_message='cancelled by operator',worker_id=NULL,finished_at=? WHERE run_id=? AND job_id=? AND status IN ('pending','running')", (now, run_id, job_id))
+                    connection.execute("UPDATE stage_runs SET status='cancelled',worker_id=NULL,pause_after_item=0,finished_at=? WHERE run_id=? AND status IN ('pending','running','paused')", (now, run_id))
+                    connection.execute("UPDATE runs SET status='cancelled',finished_at=? WHERE run_id=? AND status IN ('pending','running','paused')", (now, run_id))
                     if connection.execute("SELECT changes()").fetchone()[0] != 1:
                         raise RunStateConflict("running run changed during cancel")
                     connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_audit_id(), "RUN_CANCELLED", run_id, "{}", now))
@@ -1554,6 +1824,29 @@ class StudioService:
 
     def tick(self, run_id: str) -> dict[str, Any]:
         return self.worker.tick(run_id)
+
+    def refresh_banner_export(
+        self,
+        run_id: str,
+        *,
+        check_id: str,
+        expected_base_export_id: str,
+        target_ids: list[str],
+        confirm: bool,
+    ) -> dict[str, Any]:
+        with self.worker.run_lock(run_id):
+            try:
+                return refresh_banner_workspace(
+                    imports=self.imports,
+                    worker=self.worker,
+                    run_id=run_id,
+                    check_id=check_id,
+                    expected_base_export_id=expected_base_export_id,
+                    target_ids=target_ids,
+                    confirm=confirm,
+                )
+            except BannerRefreshFailure as exc:
+                raise R3Error(exc.code) from exc
 
     def query_workspace(self, run_id: str, query: str, *, limit: int = 24) -> list[dict[str, Any]]:
         with self.worker.open_database(run_id) as database:

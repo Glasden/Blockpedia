@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib.util
 import hashlib
 import json
+import shutil
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from blockpedia.features import decode_rgba_png
 from blockpedia.paths import DataRoot
-from blockpedia.provider import OpenAIProvider, ProviderProfile, SecretResolver
+from blockpedia.provider import OpenAIProvider, ProviderProfile, SecretResolver, StageConfig
 from blockpedia.r3 import encode_rgba_png
 from blockpedia.services import R3Error, StudioService
 from blockpedia.worker import build_ai_plan_hash
@@ -140,6 +144,51 @@ class _DiagnosticProvider(_FakeProvider):
         }
 
 
+class _ConcurrencyTracker:
+    def __init__(self, target: int, *, release: bool = False, outcome: str = "PROVIDER_SERVER_ERROR") -> None:
+        self.target = target
+        self.release = threading.Event()
+        if release:
+            self.release.set()
+        self.entered = threading.Event()
+        self.outcome = outcome
+        self.lock = threading.Lock()
+        self.active = 0
+        self.max_active = 0
+        self.calls = 0
+        self.created = 0
+        self.closed = 0
+
+
+class _FreshBarrierProvider:
+    def __init__(self, tracker: _ConcurrencyTracker) -> None:
+        self.tracker = tracker
+        with tracker.lock:
+            tracker.created += 1
+
+    def annotate(self, _prompt: str, **_kwargs):
+        tracker = self.tracker
+        with tracker.lock:
+            tracker.active += 1
+            tracker.calls += 1
+            tracker.max_active = max(tracker.max_active, tracker.active)
+            if tracker.active >= tracker.target:
+                tracker.entered.set()
+        tracker.release.wait()
+        with tracker.lock:
+            tracker.active -= 1
+        return {
+            "status": "failed" if tracker.outcome in {"PROVIDER_AUTH_FAILED", "PROVIDER_MODEL_UNAVAILABLE"} else "needs_review",
+            "attempts_used": 1,
+            "error_code": tracker.outcome,
+            "error_class": "authentication" if tracker.outcome == "PROVIDER_AUTH_FAILED" else "retryable",
+        }
+
+    def close(self) -> None:
+        with self.tracker.lock:
+            self.tracker.closed += 1
+
+
 def _duplicate_ai_job(service: StudioService, run_id: str) -> None:
     with service.worker.open_database(run_id) as database:
         with database.transaction() as connection:
@@ -194,6 +243,116 @@ def _service(tmp_path: Path, fake: _FakeProvider, *, adapter: str = "openai_resp
     service.enable("default")
     service.configure_run(imported["import_id"], "26.2", profile_id="default")
     return service, run_id, imported
+
+
+def _tracked_service(
+    tmp_path: Path,
+    tracker: _ConcurrencyTracker,
+    *,
+    concurrency: int,
+    job_count: int,
+    run_count: int = 1,
+) -> tuple[StudioService, list[str], list[dict[str, str]]]:
+    fixture = _r2_fixture_module()
+    service = StudioService(
+        DataRoot(tmp_path),
+        repo_root=Path(__file__).parents[2],
+        toolchain_probe=fixture.PassingToolchainProbe(),
+        provider_factory=lambda _profile, **_kwargs: _FreshBarrierProvider(tracker),
+        secret_resolver=SecretResolver(keyring_backend=_Keyring()),
+    )
+    imported: list[dict[str, str]] = []
+    base_export = fixture.make_export(tmp_path)
+    exports = [base_export]
+    for index in range(1, run_count):
+        old_id = base_export.name
+        new_id = f"export_20260814T1200{index:02d}Z"
+        export = tmp_path / "exports" / "26.2" / new_id
+        shutil.copytree(base_export, export)
+        for path in export.rglob("*"):
+            if path.is_file() and path.name != "checksums.sha256":
+                path.write_bytes(path.read_bytes().replace(old_id.encode(), new_id.encode()))
+        files = sorted(path.relative_to(export).as_posix() for path in export.rglob("*") if path.is_file() and path.name != "checksums.sha256")
+        (export / "checksums.sha256").write_bytes(
+            "".join(hashlib.sha256((export / ref).read_bytes()).hexdigest() + "  " + ref + "\n" for ref in files).encode()
+        )
+        exports.append(export)
+    for export in exports:
+        check = service.check_import(export, "26.2")
+        assert check.can_import, check.issues
+        imported.append(service.import_checked(check.check_id))
+    for run_index, item in enumerate(imported):
+        for _ in range(6):
+            service.tick(item["run_id"])
+    profile = ProviderProfile(profile_id="default", model_id="fixture-model", base_url="http://127.0.0.1:8766/v1")
+    stages = dict(profile.stages)
+    stages["offline_annotation"] = StageConfig(batch_size=12, concurrency=concurrency)
+    profile = replace(profile, stages=stages)
+    service.save_profile(profile)
+    service.profile_store.record_probe(
+        {
+            "profile_id": "default",
+            "adapter": profile.adapter,
+            "capability_status": "verified",
+            "image_input_supported": True,
+            "structured_outputs_supported": True,
+            "error_classification_supported": True,
+            "store_false_supported": True,
+            "base_url_stable_id": profile.base_url_stable_id,
+        }
+    )
+    service.enable("default")
+    run_ids: list[str] = []
+    for run_index, item in enumerate(imported):
+        run_id = str(item["run_id"])
+        service.configure_run(item["import_id"], "26.2", profile_id="default")
+        run_ids.append(run_id)
+        with service.worker.open_database(run_id) as database:
+            with database.transaction() as connection:
+                source = connection.execute("SELECT * FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' LIMIT 1", (run_id,)).fetchone()
+                assert source is not None
+                for job_index in range(1, job_count):
+                    connection.execute(
+                        "INSERT INTO jobs(job_id,run_id,stage,logical_key,input_signature,status,priority,cursor_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                        (
+                            f"job_wave_{run_index}_{job_index}",
+                            run_id,
+                            "AI_ANNOTATE",
+                            f"ai_batch_{job_index:04d}",
+                            source["input_signature"],
+                            "pending",
+                            0,
+                            source["cursor_json"],
+                            source["created_at"],
+                        ),
+                    )
+    return service, run_ids, imported
+
+
+def _approve_plan(service: StudioService, run_id: str) -> dict[str, Any]:
+    plan = service.preview_ai_plan(run_id)
+    approved = service.approve_ai_plan(run_id, plan["plan_hash"])
+    assert approved["approved"] is True
+    return plan
+
+
+def _wait_registry_empty(service: StudioService, run_id: str) -> None:
+    with service.worker._ai_registry_changed:
+        while service.worker.has_live_ai_futures(run_id):
+            service.worker._ai_registry_changed.wait()
+
+
+def _prepare_d044_reconfiguration(
+    service: StudioService,
+    run_id: str,
+) -> tuple[dict[str, object], str]:
+    service.tick(run_id)
+    old_plan = service.preview_ai_plan(run_id)
+    current = service.profile_store.load()["default"]
+    stages = dict(current.stages)
+    stages["offline_annotation"] = StageConfig(batch_size=12, concurrency=5)
+    service.save_provider_profile(replace(current, stages=stages))
+    return old_plan, str(old_plan["jobs"][0]["job_id"])
 
 
 def test_chat_profile_configure_run_ai_path_and_protocol_lineage(tmp_path: Path) -> None:
@@ -588,6 +747,295 @@ def test_configure_run_is_idempotent_before_r3_starts(tmp_path: Path) -> None:
         count_row = database.fetchone("SELECT COUNT(*) AS count FROM jobs WHERE stage='AI_ANNOTATE'")
         assert count_row is not None and count_row["count"] == first["batch_count"]
     service.close()
+
+
+def test_d044_pristine_same_run_reconfiguration_preserves_r2_evidence_and_invalidates_plan(tmp_path: Path) -> None:
+    fake = _FakeProvider()
+    service, run_id, imported = _service(tmp_path, fake)
+    try:
+        service.tick(run_id)
+        old_plan = service.preview_ai_plan(run_id)
+        with service.worker.open_database(run_id) as database:
+            run_before = database.fetchone("SELECT started_at,effective_config_hash FROM runs WHERE run_id=?", (run_id,))
+            r2_stages_before = [
+                dict(row)
+                for row in database.fetchall(
+                    "SELECT stage,status,cursor_json,worker_id,heartbeat_at,started_at,finished_at FROM stage_runs WHERE run_id=? AND ordinal<6 ORDER BY ordinal",
+                    (run_id,),
+                )
+            ]
+            features_before = [dict(row) for row in database.fetchall("SELECT * FROM features ORDER BY variant_id")]
+            artifacts_before = [dict(row) for row in database.fetchall("SELECT * FROM artifacts ORDER BY artifact_id")]
+            reviews_before = [
+                dict(row)
+                for row in database.fetchall("SELECT * FROM review_tasks ORDER BY review_id")
+            ]
+        assert run_before is not None and run_before["started_at"] is not None
+
+        current = service.profile_store.load()["default"]
+        stages = dict(current.stages)
+        stages["offline_annotation"] = StageConfig(batch_size=12, concurrency=5)
+        service.save_provider_profile(replace(current, stages=stages))
+        saved = service.profile_store.load()["default"]
+        assert saved.enabled and saved.capability_status == "verified"
+        assert service.profile_store.capabilities("default") is not None
+
+        result = service.configure_run(imported["import_id"], "26.2", profile_id="default")
+        assert result["run_id"] == run_id
+        assert result["reconfigured"] is True
+        assert result["effective_config_hash"] != old_plan["effective_config_hash"]
+
+        with service.worker.open_database(run_id) as database:
+            run_after = database.fetchone("SELECT started_at,effective_config_hash,status,current_stage FROM runs WHERE run_id=?", (run_id,))
+            r2_stages_after = [
+                dict(row)
+                for row in database.fetchall(
+                    "SELECT stage,status,cursor_json,worker_id,heartbeat_at,started_at,finished_at FROM stage_runs WHERE run_id=? AND ordinal<6 ORDER BY ordinal",
+                    (run_id,),
+                )
+            ]
+            features_after = [dict(row) for row in database.fetchall("SELECT * FROM features ORDER BY variant_id")]
+            artifacts_after = [dict(row) for row in database.fetchall("SELECT * FROM artifacts ORDER BY artifact_id")]
+            reviews_after = [dict(row) for row in database.fetchall("SELECT * FROM review_tasks ORDER BY review_id")]
+            jobs = database.fetchall(
+                "SELECT status,worker_id,started_at,heartbeat_at,output_hash,error_code,error_message,finished_at,cursor_json FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' ORDER BY logical_key",
+                (run_id,),
+            )
+            audit = database.fetchone(
+                "SELECT details_json FROM audit_events WHERE run_id=? AND event_type='R3_RUN_RECONFIGURED' ORDER BY created_at DESC",
+                (run_id,),
+            )
+            provider_requests = database.fetchone("SELECT 1 FROM provider_requests")
+            annotations = database.fetchone("SELECT 1 FROM annotations")
+        assert run_after is not None
+        assert run_after["started_at"] == run_before["started_at"]
+        assert run_after["status"] == "pending" and run_after["current_stage"] == "AI_ANNOTATE"
+        assert r2_stages_after == r2_stages_before
+        assert features_after == features_before
+        assert artifacts_after == artifacts_before
+        assert reviews_after == reviews_before
+        assert jobs and all(
+            row["status"] == "pending"
+            and row["worker_id"] is None
+            and row["started_at"] is None
+            and row["heartbeat_at"] is None
+            and row["output_hash"] is None
+            and row["error_code"] is None
+            and row["error_message"] is None
+            and row["finished_at"] is None
+            and json.loads(row["cursor_json"])["approved"] is False
+            and not {"retry_of_job_id", "retry_nonce", "input_invalid", "input_error_code"} & set(json.loads(row["cursor_json"]))
+            for row in jobs
+        )
+        assert audit is not None
+        details = json.loads(audit["details_json"])
+        assert details["old_effective_config_hash"] == old_plan["effective_config_hash"]
+        assert details["new_effective_config_hash"] == result["effective_config_hash"]
+        assert details["old_concurrency"] == 1
+        assert details["new_concurrency"] == 5
+        assert details["job_count"] == len(jobs)
+        assert fake.calls == 0 and provider_requests is None and annotations is None
+
+        with pytest.raises(R3Error) as conflict:
+            service.approve_ai_plan(run_id, old_plan["plan_hash"])
+        assert conflict.value.code == "AI_BATCH_PLAN_CONFLICT"
+
+        repeated = service.configure_run(imported["import_id"], "26.2", profile_id="default")
+        assert repeated["run_id"] == run_id and repeated["idempotent"] is True
+    finally:
+        service.close()
+
+
+def test_service_profile_save_keeps_concurrency_edit_but_invalidates_model_edit(tmp_path: Path) -> None:
+    service, _, _ = _service(tmp_path, _FakeProvider())
+    try:
+        current = service.profile_store.load()["default"]
+        stages = dict(current.stages)
+        stages["offline_annotation"] = StageConfig(batch_size=12, concurrency=5)
+        service.save_provider_profile(replace(current, stages=stages))
+        preserved = service.profile_store.load()["default"]
+        assert preserved.enabled and preserved.capability_status == "verified"
+        assert service.profile_store.capabilities("default") is not None
+
+        service.save_provider_profile(replace(preserved, model_id="model-v2"))
+        invalidated = service.profile_store.load()["default"]
+        assert not invalidated.enabled and invalidated.capability_status == "unverified"
+        assert service.profile_store.capabilities("default") is None
+    finally:
+        service.close()
+
+
+def test_d044_preserves_imported_machine_idempotency_review(tmp_path: Path) -> None:
+    service, run_id, imported = _service(tmp_path, _FakeProvider())
+    try:
+        service.tick(run_id)
+        with service.worker.open_database(run_id) as database:
+            with database.transaction() as connection:
+                connection.execute(
+                    "INSERT INTO review_tasks(review_id,minecraft_version,target_type,target_id,reason_code,severity,status,note,evidence_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        "imported_machine_idempotency",
+                        "26.2",
+                        "variant",
+                        "minecraft:stone",
+                        "IDEMPOTENCY_CONFLICT",
+                        "high",
+                        "open",
+                        "Imported machine evidence",
+                        json.dumps(["machine:export", "artifact:render"]),
+                        "2026-08-16T00:00:00Z",
+                    ),
+                )
+        old_plan = service.preview_ai_plan(run_id)
+        current = service.profile_store.load()["default"]
+        stages = dict(current.stages)
+        stages["offline_annotation"] = StageConfig(batch_size=12, concurrency=5)
+        service.save_provider_profile(replace(current, stages=stages))
+        result = service.configure_run(imported["import_id"], "26.2", profile_id="default")
+        assert result["run_id"] == run_id and result["reconfigured"] is True
+        with service.worker.open_database(run_id) as database:
+            review = database.fetchone(
+                "SELECT reason_code,status,evidence_json FROM review_tasks WHERE review_id=?",
+                ("imported_machine_idempotency",),
+            )
+        assert review is not None
+        assert review["reason_code"] == "IDEMPOTENCY_CONFLICT"
+        assert review["status"] == "open"
+        assert json.loads(review["evidence_json"]) == ["machine:export", "artifact:render"]
+        assert result["effective_config_hash"] != old_plan["effective_config_hash"]
+    finally:
+        service.close()
+
+
+def test_d044_non_null_boundary_event_rejects_without_mutation(tmp_path: Path) -> None:
+    service, run_id, imported = _service(tmp_path, _FakeProvider())
+    try:
+        _prepare_d044_reconfiguration(service, run_id)
+        with service.worker.open_database(run_id) as database:
+            with database.transaction() as connection:
+                connection.execute(
+                    "UPDATE runs SET boundary_event=? WHERE run_id=?",
+                    ("R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING", run_id),
+                )
+            before_run = database.fetchone(
+                "SELECT effective_config_hash,status,current_stage,boundary_event FROM runs WHERE run_id=?",
+                (run_id,),
+            )
+            before_jobs = [
+                dict(row)
+                for row in database.fetchall(
+                    "SELECT job_id,status,cursor_json FROM jobs WHERE run_id=? ORDER BY job_id",
+                    (run_id,),
+                )
+            ]
+            before_audits = [
+                dict(row)
+                for row in database.fetchall(
+                    "SELECT event_id,event_type,details_json FROM audit_events WHERE run_id=? ORDER BY event_id",
+                    (run_id,),
+                )
+            ]
+        with pytest.raises(R3Error) as conflict:
+            service.configure_run(imported["import_id"], "26.2", profile_id="default")
+        assert conflict.value.code == "RUN_STATE_CONFLICT"
+        with service.worker.open_database(run_id) as database:
+            after_run = database.fetchone(
+                "SELECT effective_config_hash,status,current_stage,boundary_event FROM runs WHERE run_id=?",
+                (run_id,),
+            )
+            after_jobs = [
+                dict(row)
+                for row in database.fetchall(
+                    "SELECT job_id,status,cursor_json FROM jobs WHERE run_id=? ORDER BY job_id",
+                    (run_id,),
+                )
+            ]
+            after_audits = [
+                dict(row)
+                for row in database.fetchall(
+                    "SELECT event_id,event_type,details_json FROM audit_events WHERE run_id=? ORDER BY event_id",
+                    (run_id,),
+                )
+            ]
+        assert after_run == before_run
+        assert after_jobs == before_jobs
+        assert after_audits == before_audits
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize(
+    "dirty_kind",
+    ["provider_request", "annotation", "ai_artifact", "ai_review", "ai_audit", "dirty_job", "live_future"],
+)
+def test_d044_pristine_reconfiguration_dirty_gates_fail_closed_without_mutation(
+    tmp_path: Path,
+    dirty_kind: str,
+    monkeypatch,
+) -> None:
+    fake = _FakeProvider()
+    service, run_id, imported = _service(tmp_path, fake)
+    try:
+        old_plan, job_id = _prepare_d044_reconfiguration(service, run_id)
+        if dirty_kind == "live_future":
+            monkeypatch.setattr(service.worker, "has_live_ai_futures", lambda _run_id: True)
+        else:
+            with service.worker.open_database(run_id) as database:
+                with database.transaction() as connection:
+                    job = connection.execute("SELECT input_signature FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+                    assert job is not None
+                    if dirty_kind == "provider_request":
+                        connection.execute(
+                            "INSERT INTO provider_requests(request_id,profile_id,stage,wire_schema_id,attempt,cache_key,input_sha256,validated_artifact_sha256,error_code,error_class,envelope_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            ("dirty_request", "default", "offline_annotation", "annotation-batch-output.v1", 1, "dirty-cache", job["input_signature"], None, None, None, "{}", "pending", "2026-08-16T00:00:00Z"),
+                        )
+                    elif dirty_kind == "annotation":
+                        connection.execute(
+                            "INSERT INTO annotations(annotation_id,subject_type,subject_id,minecraft_version,record_json) VALUES (?,?,?,?,?)",
+                            ("dirty_annotation", "variant", "minecraft:stone", "26.2", "{}"),
+                        )
+                    elif dirty_kind == "ai_artifact":
+                        connection.execute(
+                            "INSERT INTO artifacts(artifact_id,job_id,kind,relative_ref,sha256,metadata_json) VALUES (?,?,?,?,?,?)",
+                            ("dirty_artifact", job_id, "ai_annotation", "generated/dirty.json", "dirty-hash", "{}"),
+                        )
+                    elif dirty_kind == "ai_review":
+                        connection.execute(
+                            "INSERT INTO review_tasks(review_id,minecraft_version,target_type,target_id,reason_code,severity,status,note,evidence_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            ("dirty_review", "26.2", "variant", "minecraft:stone", "PROVIDER_FAILURE", "high", "open", "dirty", json.dumps([f"job:{job_id}"]), "2026-08-16T00:00:00Z"),
+                        )
+                    elif dirty_kind == "ai_audit":
+                        connection.execute(
+                            "INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)",
+                            ("dirty_audit", "AI_BATCH_APPROVED", run_id, job_id, "{}", "2026-08-16T00:00:00Z"),
+                        )
+                    else:
+                        cursor = json.loads(connection.execute("SELECT cursor_json FROM jobs WHERE job_id=?", (job_id,)).fetchone()["cursor_json"])
+                        cursor["input_invalid"] = True
+                        connection.execute("UPDATE jobs SET cursor_json=? WHERE job_id=?", (json.dumps(cursor, sort_keys=True), job_id))
+        with service.worker.open_database(run_id) as database:
+            before = database.fetchone("SELECT config_snapshot_json,effective_config_hash,status,current_stage,started_at FROM runs WHERE run_id=?", (run_id,))
+            job_count_row = database.fetchone("SELECT COUNT(*) AS count FROM jobs WHERE run_id=?", (run_id,))
+            reconfigured_row = database.fetchone("SELECT COUNT(*) AS count FROM audit_events WHERE run_id=? AND event_type='R3_RUN_RECONFIGURED'", (run_id,))
+            assert job_count_row is not None and reconfigured_row is not None
+            job_count_before = job_count_row["count"]
+            reconfigured_before = reconfigured_row["count"]
+        with pytest.raises(R3Error) as conflict:
+            service.configure_run(imported["import_id"], "26.2", profile_id="default")
+        assert conflict.value.code == "RUN_STATE_CONFLICT"
+        with service.worker.open_database(run_id) as database:
+            after = database.fetchone("SELECT config_snapshot_json,effective_config_hash,status,current_stage,started_at FROM runs WHERE run_id=?", (run_id,))
+            job_count_row = database.fetchone("SELECT COUNT(*) AS count FROM jobs WHERE run_id=?", (run_id,))
+            reconfigured_row = database.fetchone("SELECT COUNT(*) AS count FROM audit_events WHERE run_id=? AND event_type='R3_RUN_RECONFIGURED'", (run_id,))
+            assert job_count_row is not None and reconfigured_row is not None
+            job_count_after = job_count_row["count"]
+            reconfigured_after = reconfigured_row["count"]
+        assert after == before
+        assert job_count_after == job_count_before
+        assert reconfigured_after == reconfigured_before
+        assert fake.calls == 0
+    finally:
+        service.close()
 
 
 def test_cancel_batch_creates_one_high_review_per_cursor_variant(tmp_path: Path) -> None:
@@ -1360,3 +1808,391 @@ def test_d040_retry_wave_parent_is_non_leaf_for_every_child_status(tmp_path: Pat
         assert next_generation["job_id"] != children[-1]
     finally:
         service.close()
+
+
+def test_d044_shared_executor_bounds_and_fresh_provider_instances(tmp_path: Path) -> None:
+    serial_tracker = _ConcurrencyTracker(1, release=True)
+    serial, serial_runs, _ = _tracked_service(tmp_path / "serial", serial_tracker, concurrency=1, job_count=2)
+    try:
+        _approve_plan(serial, serial_runs[0])
+        serial.tick(serial_runs[0])
+        serial.tick(serial_runs[0])
+        assert serial_tracker.max_active == 1
+        assert serial_tracker.calls == 2
+    finally:
+        serial.close()
+    assert serial_tracker.created == serial_tracker.closed == 2
+
+    tracker = _ConcurrencyTracker(5)
+    service, run_ids, _ = _tracked_service(tmp_path / "shared", tracker, concurrency=3, job_count=3, run_count=2)
+    try:
+        for run_id in run_ids:
+            _approve_plan(service, run_id)
+        service.tick(run_ids[0])
+        service.tick(run_ids[1])
+        assert tracker.entered.wait()
+        assert tracker.max_active == 5
+        assert len(service.worker.registered_ai_jobs(run_ids[0])) == 3
+        assert len(service.worker.registered_ai_jobs(run_ids[1])) == 2
+        assert len(service.worker.registered_ai_jobs()) == 5
+    finally:
+        tracker.release.set()
+        service.close()
+    assert tracker.max_active <= 5
+    assert tracker.created == tracker.closed == tracker.calls == 5
+
+
+def test_d044_ordered_contiguous_approval_barrier(tmp_path: Path) -> None:
+    tracker = _ConcurrencyTracker(2)
+    service, run_ids, _ = _tracked_service(tmp_path, tracker, concurrency=5, job_count=2)
+    run_id = run_ids[0]
+    try:
+        with service.worker.open_database(run_id) as database:
+            rows = database.fetchall("SELECT job_id,logical_key FROM jobs WHERE stage='AI_ANNOTATE' ORDER BY logical_key,job_id")
+        assert len(rows) == 2
+        later = service.preview_ai_batch(run_id, str(rows[1]["logical_key"]))
+        service.approve_ai_batch(run_id, later["logical_key"], later["input_signature"])
+        service.tick(run_id)
+        assert tracker.calls == 0
+        assert service.get_run(run_id)["status"] == "paused"
+        with service.worker.open_database(run_id) as database:
+            assert all(row["status"] == "pending" for row in database.fetchall("SELECT status FROM jobs WHERE stage='AI_ANNOTATE'"))
+
+        first = service.preview_ai_batch(run_id)
+        service.approve_ai_batch(run_id, first["logical_key"], first["input_signature"])
+        service.tick(run_id)
+        assert tracker.entered.wait()
+        registered = service.worker.registered_ai_jobs(run_id)
+        assert [item["job_id"] for item in registered] == [row["job_id"] for row in rows]
+    finally:
+        tracker.release.set()
+        service.close()
+    assert tracker.calls == 2
+
+
+def test_d044_final_gate_mutation_and_live_registry_control(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tracker = _ConcurrencyTracker(1, release=True)
+    service, run_ids, _ = _tracked_service(tmp_path / "mutation", tracker, concurrency=5, job_count=1)
+    run_id = run_ids[0]
+    gate_seen = threading.Event()
+    original_gate = service.worker._final_ai_send_gate
+
+    def revoke_before_gate(gated_run_id: str, job_id: str, signature: str):
+        gate_seen.set()
+        with service.worker.open_database(gated_run_id) as database:
+            with database.transaction() as connection:
+                row = connection.execute("SELECT cursor_json FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+                assert row is not None
+                cursor = json.loads(row["cursor_json"])
+                cursor["approved"] = False
+                connection.execute("UPDATE jobs SET cursor_json=? WHERE job_id=?", (json.dumps(cursor, sort_keys=True), job_id))
+        return original_gate(gated_run_id, job_id, signature)
+
+    monkeypatch.setattr(service.worker, "_final_ai_send_gate", revoke_before_gate)
+    try:
+        _approve_plan(service, run_id)
+        service.tick(run_id)
+        assert gate_seen.wait()
+        _wait_registry_empty(service, run_id)
+        assert tracker.calls == 0
+        with service.worker.open_database(run_id) as database:
+            job = database.fetchone("SELECT status,cursor_json FROM jobs WHERE run_id=?", (run_id,))
+            assert job is not None
+            assert job["status"] == "pending"
+            assert json.loads(job["cursor_json"])["approved"] is False
+        assert service.get_run(run_id)["status"] == "paused"
+    finally:
+        service.close()
+
+    live_tracker = _ConcurrencyTracker(1)
+    live, live_runs, imported = _tracked_service(tmp_path / "live", live_tracker, concurrency=5, job_count=1)
+    live_run = live_runs[0]
+    try:
+        _approve_plan(live, live_run)
+        live.tick(live_run)
+        assert live_tracker.entered.wait()
+        current = live.profile_store.load()["default"]
+        stages = dict(current.stages)
+        stages["offline_annotation"] = StageConfig(batch_size=12, concurrency=4)
+        live.save_provider_profile(replace(current, stages=stages))
+        with pytest.raises(R3Error) as reconfigure:
+            live.configure_run(imported[0]["import_id"], profile_id="default")
+        assert reconfigure.value.code == "RUN_STATE_CONFLICT"
+        with pytest.raises(Exception):
+            live.worker.recover(live_run)
+        with live.worker.open_database(live_run) as database:
+            live.worker._finish_ai_stage(database, live_run)
+            stage = database.fetchone("SELECT status FROM stage_runs WHERE run_id=? AND stage='AI_ANNOTATE'", (live_run,))
+            assert stage is not None and stage["status"] == "running"
+        live.tick(live_run)
+        live.tick(live_run)
+        assert live_tracker.calls == 1
+    finally:
+        live_tracker.release.set()
+        live.close()
+    with live.worker.open_database(live_run) as database:
+        completed = database.fetchone(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE run_id=? AND event_type='STAGE_SUCCEEDED' AND details_json LIKE '%AI_ANNOTATE%'",
+            (live_run,),
+        )
+        assert completed is not None and completed["count"] == 1
+
+
+def test_d044_pause_cancel_and_fatal_send_started_outcomes_do_not_revive_terminal_runs(tmp_path: Path) -> None:
+    tracker = _ConcurrencyTracker(1, outcome="PROVIDER_SERVER_ERROR")
+    service, run_ids, _ = _tracked_service(tmp_path / "cancel", tracker, concurrency=5, job_count=1)
+    run_id = run_ids[0]
+    try:
+        preview = _approve_plan(service, run_id)["jobs"][0]
+        service.tick(run_id)
+        assert tracker.entered.wait()
+        with pytest.raises(R3Error) as conflict:
+            service.cancel_ai_batch(run_id, preview["logical_key"])
+        assert conflict.value.code == "RUN_STATE_CONFLICT"
+        service.cancel(run_id)
+    finally:
+        tracker.release.set()
+        service.close()
+    assert service.get_run(run_id)["status"] == "cancelled"
+
+    fatal_tracker = _ConcurrencyTracker(1, outcome="PROVIDER_AUTH_FAILED")
+    fatal, fatal_runs, _ = _tracked_service(tmp_path / "fatal", fatal_tracker, concurrency=5, job_count=1)
+    fatal_run = fatal_runs[0]
+    try:
+        _approve_plan(fatal, fatal_run)
+        fatal.tick(fatal_run)
+        assert fatal_tracker.entered.wait()
+        fatal.pause(fatal_run)
+    finally:
+        fatal_tracker.release.set()
+        fatal.close()
+    assert fatal.get_run(fatal_run)["status"] == "failed"
+
+
+def test_d044_stop_waits_direct_tick_and_reuses_executor_until_close(tmp_path: Path) -> None:
+    import blockpedia.worker as worker_module
+
+    tracker = _ConcurrencyTracker(1)
+    service, run_ids, _ = _tracked_service(tmp_path, tracker, concurrency=1, job_count=2)
+    run_id = run_ids[0]
+    executor = worker_module._PROCESS_COORDINATOR.executor
+    tick_thread = threading.Thread(target=lambda: service.tick(run_id))
+    stop_result: list[bool] = []
+    try:
+        _approve_plan(service, run_id)
+        tick_thread.start()
+        assert tracker.entered.wait()
+        stopper = threading.Thread(target=lambda: stop_result.append(service.worker.stop()))
+        stopper.start()
+        tracker.release.set()
+        stopper.join()
+        tick_thread.join()
+        assert stop_result == [True]
+        assert worker_module._PROCESS_COORDINATOR.executor is executor
+        assert worker_module._PROCESS_COORDINATOR.process_stopping is False
+        tracker.entered.clear()
+        assert service.worker.start() is True
+        assert tracker.entered.wait()
+        service.worker.stop()
+        assert worker_module._PROCESS_COORDINATOR.executor is executor
+        assert worker_module._PROCESS_COORDINATOR.process_stopping is False
+    finally:
+        tracker.release.set()
+        service.close()
+    assert worker_module._PROCESS_COORDINATOR.executor is executor
+    assert worker_module._PROCESS_COORDINATOR.process_stopping is False
+    assert service.worker.start() is False
+    assert tracker.created == tracker.closed == tracker.calls == 2
+
+
+def test_d044_process_coordinator_is_shared_across_workers_and_roots(tmp_path: Path) -> None:
+    from blockpedia.stages import RunStateConflict
+
+    tracker = _ConcurrencyTracker(3)
+    service, run_ids, _ = _tracked_service(tmp_path, tracker, concurrency=3, job_count=3)
+    fixture = _r2_fixture_module()
+    observer = StudioService(
+        DataRoot(tmp_path),
+        repo_root=Path(__file__).parents[2],
+        toolchain_probe=fixture.PassingToolchainProbe(),
+        provider_factory=lambda _profile, **_kwargs: _FreshBarrierProvider(tracker),
+        secret_resolver=SecretResolver(keyring_backend=_Keyring()),
+    )
+    run_id = run_ids[0]
+    import blockpedia.worker as worker_module
+
+    executor = worker_module._PROCESS_COORDINATOR.executor
+    try:
+        _approve_plan(service, run_id)
+        service.tick(run_id)
+        assert tracker.entered.wait(5)
+        assert len(observer.worker.registered_ai_jobs(run_id)) == 3
+        with pytest.raises(RunStateConflict):
+            observer.worker.recover(run_id)
+        assert observer.close(timeout=0.1) is True
+        assert worker_module._PROCESS_COORDINATOR.executor is executor
+        assert worker_module._PROCESS_COORDINATOR.process_stopping is False
+    finally:
+        tracker.release.set()
+        service.close(timeout=5)
+    assert tracker.created == tracker.closed == tracker.calls == 3
+    assert worker_module._PROCESS_COORDINATOR.executor is executor
+
+
+def test_d044_stop_wins_final_gate_without_provider_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tracker = _ConcurrencyTracker(1, release=True)
+    service, run_ids, _ = _tracked_service(tmp_path, tracker, concurrency=1, job_count=1)
+    run_id = run_ids[0]
+    gate_entered = threading.Event()
+    release_gate = threading.Event()
+    stop_result: list[bool] = []
+    original_gate = service.worker._try_mark_send_started
+
+    def blocked_gate(entry, run_concurrency):
+        gate_entered.set()
+        assert release_gate.wait(5)
+        return original_gate(entry, run_concurrency)
+
+    monkeypatch.setattr(service.worker, "_try_mark_send_started", blocked_gate)
+    tick_thread = threading.Thread(target=lambda: service.tick(run_id))
+    try:
+        _approve_plan(service, run_id)
+        tick_thread.start()
+        assert gate_entered.wait(5)
+        stopper = threading.Thread(target=lambda: stop_result.append(service.worker.stop(timeout=0.05)))
+        stopper.start()
+        stopper.join(timeout=5)
+        assert stop_result == [False]
+        release_gate.set()
+        tick_thread.join(timeout=5)
+        assert not tick_thread.is_alive()
+        assert service.worker.stop(timeout=5) is True
+        assert tracker.calls == 0
+        with service.worker.open_database(run_id) as database:
+            job = database.fetchone("SELECT status FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE'", (run_id,))
+            assert job is not None and job["status"] == "pending"
+    finally:
+        release_gate.set()
+        tracker.release.set()
+        service.close(timeout=5)
+
+
+def test_d044_submit_failure_restores_only_unsubmitted_suffix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tracker = _ConcurrencyTracker(3, release=True)
+    service, run_ids, _ = _tracked_service(tmp_path, tracker, concurrency=3, job_count=3)
+    run_id = run_ids[0]
+    import blockpedia.worker as worker_module
+
+    executor = worker_module._PROCESS_COORDINATOR.executor
+    original_submit = executor.submit
+    submit_calls = 0
+
+    def fail_first_submit(function, *args, **kwargs):
+        nonlocal submit_calls
+        submit_calls += 1
+        if submit_calls == 1:
+            raise RuntimeError("fixture submit failure")
+        return original_submit(function, *args, **kwargs)
+
+    monkeypatch.setattr(executor, "submit", fail_first_submit)
+    try:
+        _approve_plan(service, run_id)
+        service.tick(run_id)
+        _wait_registry_empty(service, run_id)
+        assert submit_calls == 1
+        assert tracker.calls == 0
+        with service.worker.open_database(run_id) as database:
+            statuses = database.fetchall("SELECT status FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' ORDER BY logical_key", (run_id,))
+            assert statuses and all(row["status"] == "pending" for row in statuses)
+
+        monkeypatch.setattr(executor, "submit", original_submit)
+        service.tick(run_id)
+        _wait_registry_empty(service, run_id)
+        assert tracker.calls == 3
+    finally:
+        tracker.release.set()
+        service.close(timeout=5)
+
+
+def test_d044_completion_callback_retains_registry_until_stage_finish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from blockpedia.stages import RunStateConflict
+
+    tracker = _ConcurrencyTracker(1, release=True)
+    service, run_ids, _ = _tracked_service(tmp_path, tracker, concurrency=1, job_count=1)
+    run_id = run_ids[0]
+    finish_entered = threading.Event()
+    release_finish = threading.Event()
+    finish_calls = 0
+    original_finish = service.worker._finish_ai_stage
+
+    def blocked_finish(database, gated_run_id, **kwargs):
+        nonlocal finish_calls
+        if kwargs.get("exclude_entry_key") is not None:
+            finish_calls += 1
+            finish_entered.set()
+            assert release_finish.wait(5)
+        return original_finish(database, gated_run_id, **kwargs)
+
+    monkeypatch.setattr(service.worker, "_finish_ai_stage", blocked_finish)
+    tick_thread = threading.Thread(target=lambda: service.tick(run_id))
+    try:
+        _approve_plan(service, run_id)
+        tick_thread.start()
+        assert finish_entered.wait(5)
+        entries = service.worker.registered_ai_jobs(run_id)
+        assert len(entries) == 1 and entries[0]["completion_in_progress"] is True
+        assert service.stale_markers(run_id) == []
+        recover_done = threading.Event()
+        recover_error: list[Exception] = []
+
+        def blocked_recover() -> None:
+            try:
+                service.worker.recover(run_id)
+            except Exception as exc:
+                recover_error.append(exc)
+            finally:
+                recover_done.set()
+
+        recover_thread = threading.Thread(target=blocked_recover)
+        recover_thread.start()
+        assert not recover_done.wait(0.05)
+        assert service.worker.stop(timeout=0.05) is False
+        release_finish.set()
+        recover_thread.join(timeout=5)
+        assert recover_done.is_set()
+        assert recover_error and isinstance(recover_error[0], RunStateConflict)
+        tick_thread.join(timeout=5)
+        assert not tick_thread.is_alive()
+        assert service.worker.stop(timeout=5) is True
+        assert service.worker.registered_ai_jobs(run_id) == ()
+        assert finish_calls == 1
+    finally:
+        release_finish.set()
+        tracker.release.set()
+        service.close(timeout=5)
+
+
+def test_d044_serial_background_close_is_retryable_and_truthful(tmp_path: Path) -> None:
+    tracker = _ConcurrencyTracker(1)
+    service, run_ids, _ = _tracked_service(tmp_path, tracker, concurrency=1, job_count=1)
+    run_id = run_ids[0]
+    import blockpedia.worker as worker_module
+
+    executor = worker_module._PROCESS_COORDINATOR.executor
+    try:
+        _approve_plan(service, run_id)
+        assert service.worker.start(interval_seconds=0.01) is True
+        assert tracker.entered.wait(5)
+        assert service.close(timeout=0.05) is False
+        assert service._closed is False
+        assert service.worker._closed is False
+        tracker.release.set()
+        assert service.close(timeout=5) is True
+        assert service._closed is True
+        assert service.worker.start() is False
+        assert worker_module._PROCESS_COORDINATOR.executor is executor
+        assert worker_module._PROCESS_COORDINATOR.process_stopping is False
+    finally:
+        tracker.release.set()
+        if not service._closed:
+            service.close(timeout=5)
