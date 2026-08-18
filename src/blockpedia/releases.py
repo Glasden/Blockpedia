@@ -776,8 +776,16 @@ class ReleaseBuilder:
                     raise ReleaseBuildFailure("RUN_NOT_FOUND")
                 if str(run_row["minecraft_version"]) != minecraft_version:
                     raise ReleaseBuildFailure("RELEASE_VERSION_MISMATCH")
-                self._require_check_precondition(connection, run_id)
+                repeat_candidate = self._require_check_precondition(connection, run_id)
                 snapshot = self._snapshot(connection, workspace, run_row, minecraft_version)
+                if repeat_candidate:
+                    self._validate_repeat_candidate_lineage(
+                        connection,
+                        run_id,
+                        minecraft_version,
+                        snapshot=snapshot,
+                        failure_code="RELEASE_CHECK_NOT_READY",
+                    )
                 report, source_export_id = self._gate(snapshot, database)
         finally:
             database.close()
@@ -862,6 +870,7 @@ class ReleaseBuilder:
         staging_identity: tuple[int, int, int] | None = None
         final: Path | None = None
         committed = False
+        repeat_cursor_lineage: tuple[str, str] | None = None
         try:
             with database.read_transaction() as connection:
                 run_row = connection.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
@@ -870,11 +879,27 @@ class ReleaseBuilder:
                 if str(run_row["minecraft_version"]) != version:
                     raise ReleaseBuildFailure("RELEASE_VERSION_MISMATCH")
                 current = self._snapshot(connection, workspace, run_row, version)
+                repeat_candidate = self._is_repeat_candidate_run(current.run)
+                if repeat_candidate:
+                    repeat_cursor_lineage = self._read_repeat_cursor_lineage(connection, run_id, failure_code="RELEASE_BUILD_INTEGRITY_FAILED")
+                    release_id = _release_id_for_build_id(str(state["release_build_id"]))
+                    if repeat_cursor_lineage != (release_id, str(state["release_build_id"])):
+                        self._validate_repeat_candidate_lineage(
+                            connection,
+                            run_id,
+                            version,
+                            snapshot=None,
+                            failure_code="RELEASE_BUILD_INTEGRITY_FAILED",
+                        )
             if current.fingerprint != state["snapshot_fingerprint"]:
                 self._mark_stale(state)
                 raise ReleaseBuildFailure("RELEASE_CHECK_STALE")
 
             release_id = _release_id_for_build_id(str(state["release_build_id"]))
+            if repeat_candidate and repeat_cursor_lineage == (release_id, str(state["release_build_id"])):
+                committed_result = self._find_committed_release(state, current, check_id, release_id)
+                if committed_result is not None:
+                    return committed_result
             committed_result = self._find_committed_release(state, current, check_id, release_id)
             if committed_result is not None:
                 return committed_result
@@ -906,6 +931,17 @@ class ReleaseBuilder:
             if latest.value["check_id"] != check_id:
                 self._mark_stale(state)
                 raise ReleaseBuildFailure("RELEASE_CHECK_STALE")
+            if repeat_candidate:
+                with database.read_transaction() as connection:
+                    current_row = connection.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
+                    current = self._snapshot(connection, workspace, current_row, version)
+                    self._validate_repeat_candidate_lineage(
+                        connection,
+                        run_id,
+                        version,
+                        snapshot=current,
+                        failure_code="RELEASE_BUILD_INTEGRITY_FAILED",
+                    )
 
             if self.pre_rename_hook is not None:
                 try:
@@ -919,6 +955,14 @@ class ReleaseBuilder:
                 if hook_snapshot.fingerprint != state["snapshot_fingerprint"]:
                     self._mark_stale(state)
                     raise ReleaseBuildFailure("RELEASE_CHECK_STALE")
+                if repeat_candidate:
+                    self._validate_repeat_candidate_lineage(
+                        connection,
+                        run_id,
+                        version,
+                        snapshot=hook_snapshot,
+                        failure_code="RELEASE_BUILD_INTEGRITY_FAILED",
+                    )
             # The hook is intentionally allowed to inject a last-moment
             # mutation.  Revalidate the complete package after it returns;
             # fingerprinting the workspace alone cannot detect a staged-file
@@ -1006,17 +1050,181 @@ class ReleaseBuilder:
             "built_at": release_json.get("built_at"),
         }
 
-    def _require_check_precondition(self, connection: Any, run_id: str) -> None:
+    def _require_check_precondition(self, connection: Any, run_id: str) -> bool:
         run = connection.execute("SELECT status,current_stage,boundary_event FROM runs WHERE run_id=?", (run_id,)).fetchone()
         if run is None:
             raise ReleaseBuildFailure("RUN_NOT_FOUND")
-        if run["status"] != "paused" or run["current_stage"] != "BUILD_RELEASE" or run["boundary_event"] != "R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING":
-            raise ReleaseBuildFailure("RELEASE_CHECK_NOT_READY")
         rows = connection.execute("SELECT stage,status FROM stage_runs WHERE run_id=? ORDER BY ordinal", (run_id,)).fetchall()
         required = {"PREPARE", "IMPORT_EXPORT", "VALIDATE_REGISTRY", "VALIDATE_VARIANTS", "VALIDATE_RENDERS", "EXTRACT_FEATURES", "AI_ANNOTATE", "VALIDATE", "HUMAN_REVIEW"}
         by_stage = {str(row["stage"]): str(row["status"]) for row in rows}
-        if any(by_stage.get(stage) != "succeeded" for stage in required) or by_stage.get("BUILD_RELEASE") != "pending" or by_stage.get("ACTIVATE_RELEASE") != "pending":
+        if any(by_stage.get(stage) != "succeeded" for stage in required):
             raise ReleaseBuildFailure("RELEASE_CHECK_NOT_READY")
+
+        first_candidate = (
+            run["status"] == "paused"
+            and run["current_stage"] == "BUILD_RELEASE"
+            and run["boundary_event"] == "R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING"
+            and by_stage.get("BUILD_RELEASE") == "pending"
+            and by_stage.get("ACTIVATE_RELEASE") == "pending"
+        )
+        repeat_candidate = (
+            run["status"] == "paused"
+            and run["current_stage"] == "ACTIVATE_RELEASE"
+            and run["boundary_event"] == "R3_CANDIDATE_BUILT_ACTIVATION_PENDING"
+            and by_stage.get("BUILD_RELEASE") == "succeeded"
+            and by_stage.get("ACTIVATE_RELEASE") == "pending"
+        )
+        if not first_candidate and not repeat_candidate:
+            raise ReleaseBuildFailure("RELEASE_CHECK_NOT_READY")
+        return repeat_candidate
+
+    @staticmethod
+    def _is_repeat_candidate_run(run: Mapping[str, Any]) -> bool:
+        return (
+            run.get("status") == "paused"
+            and run.get("current_stage") == "ACTIVATE_RELEASE"
+            and run.get("boundary_event") == "R3_CANDIDATE_BUILT_ACTIVATION_PENDING"
+        )
+
+    def _read_repeat_cursor_lineage(self, connection: Any, run_id: str, *, failure_code: str) -> tuple[str, str]:
+        cursor_row = connection.execute(
+            "SELECT cursor_json FROM stage_runs WHERE run_id=? AND stage='BUILD_RELEASE'",
+            (run_id,),
+        ).fetchone()
+        if cursor_row is None:
+            raise ReleaseBuildFailure(failure_code)
+        try:
+            cursor = json.loads(cursor_row["cursor_json"] or "")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ReleaseBuildFailure(failure_code) from exc
+        if not isinstance(cursor, dict) or set(cursor) != {"release_id", "release_build_id", "completed"} or cursor.get("completed") is not True:
+            raise ReleaseBuildFailure(failure_code)
+        release_id = cursor.get("release_id")
+        release_build_id = cursor.get("release_build_id")
+        if not isinstance(release_id, str) or RELEASE_ID_RE.fullmatch(release_id) is None or not isinstance(release_build_id, str) or RELEASE_BUILD_ID_RE.fullmatch(release_build_id) is None or _release_id_for_build_id(release_build_id) != release_id:
+            raise ReleaseBuildFailure(failure_code)
+        return release_id, release_build_id
+
+    def _validate_repeat_candidate_lineage(
+        self,
+        connection: Any,
+        run_id: str,
+        minecraft_version: str,
+        *,
+        snapshot: Snapshot | None,
+        failure_code: str,
+    ) -> tuple[str, str]:
+        """Validate the original candidate before allowing a repeat build.
+
+        The repeat boundary itself is mutable workspace state, so it is not
+        sufficient evidence of the first candidate.  The original BUILD
+        cursor, its built check cache, immutable release, and audit event form
+        one small lineage tuple that is checked again at each build boundary.
+        """
+
+        try:
+            release_id, release_build_id = self._read_repeat_cursor_lineage(connection, run_id, failure_code=failure_code)
+
+            matching_checks: list[CheckState] = []
+            cache_root = self.data_root.cache / "release-checks"
+            _safe_components(cache_root, self.data_root.root)
+            for entry in sorted(cache_root.iterdir(), key=lambda item: item.name):
+                if RELEASE_CHECK_ID_RE.fullmatch(entry.name) is None:
+                    continue
+                try:
+                    checked = self.get_check_state(entry.name)
+                except ReleaseCheckNotFound:
+                    continue
+                state = checked.value
+                report = checked.report
+                if (
+                    state.get("status") == "built"
+                    and state.get("can_build") is True
+                    and state.get("run_id") == run_id
+                    and state.get("minecraft_version") == minecraft_version
+                    and state.get("release_id") == release_id
+                    and state.get("release_build_id") == release_build_id
+                    and report.get("status") == "buildable"
+                    and report.get("can_build") is True
+                    and report.get("run_id") == run_id
+                    and report.get("minecraft_version") == minecraft_version
+                    and report.get("release_build_id") == release_build_id
+                ):
+                    matching_checks.append(checked)
+            if len(matching_checks) != 1:
+                raise ReleaseBuildFailure(failure_code)
+            original_check = matching_checks[0]
+            if original_check.report.get("snapshot_fingerprint") != original_check.value.get("snapshot_fingerprint"):
+                raise ReleaseBuildFailure(failure_code)
+
+            matching_audits = 0
+            for audit in connection.execute(
+                "SELECT details_json FROM audit_events WHERE run_id=? AND event_type='R3_CANDIDATE_BUILT_ACTIVATION_PENDING'",
+                (run_id,),
+            ):
+                try:
+                    details = json.loads(audit["details_json"] or "")
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ReleaseBuildFailure(failure_code) from exc
+                if not isinstance(details, dict) or set(details) != {"release_id", "release_build_id"}:
+                    raise ReleaseBuildFailure(failure_code)
+                audit_release_id = details.get("release_id")
+                audit_build_id = details.get("release_build_id")
+                if not isinstance(audit_release_id, str) or RELEASE_ID_RE.fullmatch(audit_release_id) is None or not isinstance(audit_build_id, str) or RELEASE_BUILD_ID_RE.fullmatch(audit_build_id) is None or _release_id_for_build_id(audit_build_id) != audit_release_id:
+                    raise ReleaseBuildFailure(failure_code)
+                if audit_release_id == release_id:
+                    if audit_build_id != release_build_id:
+                        raise ReleaseBuildFailure(failure_code)
+                    matching_audits += 1
+            if matching_audits != 1:
+                raise ReleaseBuildFailure(failure_code)
+
+            release_dir = self.data_root.releases / minecraft_version / release_id
+            self._validate_repeat_release_directory(release_dir, release_id, release_build_id, run_id, minecraft_version, original_check.value)
+            return release_id, release_build_id
+        except ReleaseBuildFailure as exc:
+            if exc.code == failure_code:
+                raise
+            raise ReleaseBuildFailure(failure_code) from exc
+        except (OSError, TypeError, ValueError, sqlite3.Error) as exc:
+            raise ReleaseBuildFailure(failure_code) from exc
+
+    def _validate_repeat_release_directory(
+        self,
+        release_dir: Path,
+        release_id: str,
+        release_build_id: str,
+        run_id: str,
+        minecraft_version: str,
+        check_state: Mapping[str, Any],
+    ) -> None:
+        _safe_components(release_dir, self.data_root.root)
+        expected_top = {"release.json", "manifest.json", "index.sqlite3", "previews", "quality_report.json", "manual-overrides.json", "schemas.sha256", "checksums.sha256"}
+        entries = list(release_dir.iterdir())
+        for entry in entries:
+            _lstat(entry, directory=None)
+        if {entry.name for entry in entries} != expected_top:
+            raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED")
+        _validate_checksums(release_dir)
+        release_json, _ = _json_bytes(release_dir / "release.json", release_dir)
+        manifest, _ = _json_bytes(release_dir / "manifest.json", release_dir)
+        report, _ = _json_bytes(release_dir / "quality_report.json", release_dir)
+        if not _record_ok("release.v1", release_json, self.repo_root) or not _record_ok("release-manifest.v1", manifest, self.repo_root) or not _valid_release_report(report):
+            raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED")
+        if (
+            release_json.get("release_id") != release_id
+            or release_json.get("minecraft_version") != minecraft_version
+            or release_json.get("manifest_sha256") != _hash_file(release_dir / "manifest.json", release_dir)
+            or manifest.get("release_id") != release_id
+            or manifest.get("minecraft_version") != minecraft_version
+            or manifest.get("quality_report_sha256") != _hash_file(release_dir / "quality_report.json", release_dir)
+            or report.get("release_id") != release_id
+            or report.get("release_build_id") != release_build_id
+            or report.get("run_id") != run_id
+            or report.get("minecraft_version") != minecraft_version
+            or report.get("snapshot_fingerprint") != check_state.get("snapshot_fingerprint")
+        ):
+            raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED")
 
     def _snapshot(self, connection: Any, workspace: Path, run_row: Any, minecraft_version: str) -> Snapshot:
         if run_row is None:

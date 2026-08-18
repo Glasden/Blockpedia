@@ -317,16 +317,16 @@ def test_release_build_missing_backend_field_fails_closed(release_context) -> No
     assert payload["error_code"] == "RELEASE_BUILD_FAILED"
 
 
-def test_release_route_surface_has_only_phase_c_routes_and_no_activation_or_mcp(release_context) -> None:
+def test_release_route_surface_includes_activation_and_excludes_rollback(release_context) -> None:
     client, _ = release_context
     paths = {route.path for route in client.app.routes}
     assert {path for path in paths if path.startswith("/api/releases")} == {
         "/api/releases/check",
         "/api/releases/build",
-    }
-    for path in (
         "/api/releases/activation-check",
         "/api/releases/apply",
+    }
+    for path in (
         "/api/releases/rollback",
         "/api/releases/cleanup",
         "/api/releases/unknown",

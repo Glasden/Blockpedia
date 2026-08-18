@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 from urllib.parse import quote
 
-from .features import FEATURE_EXTRACTOR_VERSION, DecodedPng, decode_rgba_png
+from .features import FEATURE_EXTRACTOR_VERSION, DecodedPng, decode_rgba_png, validate_rgba_png
 from .paths import DataRoot, safe_relative_posix_ref
 from .releases import CHECK_CODES, _valid_release_report
 from .schema import RecordSchemaError, schema_namespace, validate_record
@@ -63,6 +63,7 @@ FEATURE_KEYS = frozenset(
         "machine_tags",
     }
 )
+REQUIRED_RECORD_SCHEMA_IDS = frozenset({"block-record.v1", "state-record.v1", "visual-variant-record.v1"})
 
 
 class MCPReleaseError(RuntimeError):
@@ -390,6 +391,8 @@ def _parse_schema_inventory(payload: bytes, repo_root: Path) -> None:
         ids.append(schema_id)
     if ids != sorted(ids, key=lambda value: value.encode("utf-8")) or len(ids) != len(set(ids)):
         raise MCPReleaseError("RELEASE_INTEGRITY_FAILED", "The schema inventory is not sorted.", details={"integrity_component": "manifest"})
+    if not REQUIRED_RECORD_SCHEMA_IDS.issubset(ids):
+        raise MCPReleaseError("RELEASE_INTEGRITY_FAILED", "The schema inventory is missing required record schemas.", details={"integrity_component": "manifest"})
 
 
 def _quality_passed(report: Mapping[str, Any]) -> bool:
@@ -570,7 +573,7 @@ class MCPReleaseResolver:
         except MCPReleaseError:
             connection.close()
             raise
-        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, sqlite3.Error) as exc:
+        except (AttributeError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, sqlite3.Error) as exc:
             connection.close()
             raise MCPReleaseError("RELEASE_INTEGRITY_FAILED", "The release record projection is invalid.", minecraft_version=version, details={"integrity_component": "index"}) from exc
         return ReleaseHandle(self.data_root, version, release_id, release_path, release, manifest, quality, actual_manifest_hash, connection, verified_files)
@@ -653,12 +656,16 @@ class MCPReleaseResolver:
             identifier = str(record["review_id"])
             target_type = str(record["target_type"])
             target = str(record["target_id"])
-            targets = {"block": blocks, "state": states, "visual_variant": variants}.get(target_type)
-            if targets is None or target not in targets or ("skip", identifier) in seen:
+            if target_type == "visual_variant":
+                target_exists = target in variants or (target not in variants and target in blocks)
+            else:
+                targets = {"block": blocks, "state": states}.get(target_type)
+                target_exists = targets is not None and target in targets
+            if not target_exists or ("skip", identifier) in seen:
                 raise ValueError("skip review reference is invalid")
             seen.add(("skip", identifier))
             skip_ids.add(identifier)
-            if target_type == "visual_variant" and identifier not in variants[target].get("override_refs", []):
+            if target_type == "visual_variant" and target in variants and identifier not in variants[target].get("override_refs", []):
                 raise ValueError("skip review is not referenced by its variant")
         for record in manual["qualification_reviews"]:
             _validate_record("qualification-review.v1", record, component="index", version=version)
@@ -697,7 +704,6 @@ class MCPReleaseResolver:
         annotations: dict[str, dict[str, Any]] = {}
         for row in connection.execute("SELECT block_id,minecraft_version,translation_key,name_zh,name_en,default_state_id,machine_facts_json,record_json FROM blocks ORDER BY block_id"):
             block = json.loads(row[7])
-            _validate_record("block-record.v1", block, component="index", version=version)
             expected = (block["block_id"], block["minecraft_version"], block["translation_key"], block["official_names"]["zh_cn"], block["official_names"]["en_us"], block["default_state_id"], self._canonical(block["machine_facts"]), self._canonical(block))
             actual = (str(row[0]), str(row[1]), row[2], row[3], row[4], str(row[5]), row[6], row[7])
             if actual != expected or block["block_id"] in blocks:
@@ -705,7 +711,6 @@ class MCPReleaseResolver:
             blocks[str(row[0])] = block
         for row in connection.execute("SELECT state_id,block_id,properties_json,is_default,record_json FROM states ORDER BY state_id"):
             state = json.loads(row[4])
-            _validate_record("state-record.v1", state, component="index", version=version)
             expected = (state["state_id"], state["block_id"], self._canonical(state["properties"]), int(state["is_default"] is True), self._canonical(state))
             actual = (str(row[0]), str(row[1]), row[2], int(row[3]), row[4])
             if actual != expected or state["state_id"] in states:
@@ -714,7 +719,6 @@ class MCPReleaseResolver:
         for row in connection.execute("SELECT variant_id,block_id,canonical_state_id,represented_state_ids_json,preview_path,mask_path,render_metadata_path,image_sha256,mask_sha256,render_metadata_sha256,candidate_qualification,warnings_json,record_json,feature_json FROM visual_variants ORDER BY variant_id"):
             variant = json.loads(row[12])
             feature = json.loads(row[13])
-            _validate_record("visual-variant-record.v1", variant, component="index", version=version)
             self._validate_feature(feature, variant)
             suffix = str(row[0]).removeprefix("minecraft:")
             expected = (
@@ -738,16 +742,26 @@ class MCPReleaseResolver:
         self._validate_manual_package(manual, version, str(manifest["release_id"]), blocks, states, variants)
         if set(annotations) != set(variants):
             raise ValueError("annotation projection coverage is invalid")
+        default_state_counts: dict[str, int] = {}
+        for state in states.values():
+            if state["is_default"] is True:
+                block_id = str(state["block_id"])
+                default_state_counts[block_id] = default_state_counts.get(block_id, 0) + 1
+        variant_counts: dict[str, int] = {}
+        for variant in variants.values():
+            block_id = str(variant["block_id"])
+            variant_counts[block_id] = variant_counts.get(block_id, 0) + 1
+        block_skip_targets = {str(record["target_id"]) for record in manual["skip_reviews"] if record["target_type"] == "block"}
+        visual_variant_skip_targets = {str(record["target_id"]) for record in manual["skip_reviews"] if record["target_type"] == "visual_variant"}
         for block_id, block in blocks.items():
             default_state = states.get(str(block["default_state_id"]))
             if default_state is None or default_state["block_id"] != block_id or default_state["is_default"] is not True:
                 raise ValueError("block default state reference is invalid")
-            block_states = [state for state in states.values() if state["block_id"] == block_id]
-            if sum(state["is_default"] is True for state in block_states) != 1:
+            if default_state_counts.get(block_id, 0) != 1:
                 raise ValueError("block default state cardinality is invalid")
-            block_variants = [variant for variant in variants.values() if variant["block_id"] == block_id]
-            skipped = any(record["target_type"] == "block" and record["target_id"] == block_id for record in manual["skip_reviews"])
-            if not block_variants and not skipped:
+            variant_count = variant_counts.get(block_id, 0)
+            skipped = block_id in block_skip_targets or (variant_count == 0 and block_id in visual_variant_skip_targets)
+            if variant_count == 0 and not skipped:
                 raise ValueError("block has neither a visual variant nor an audited skip")
         for state_id, state in states.items():
             if len(state["variant_ids"]) != len(set(state["variant_ids"])) or state["block_id"] not in blocks or any(variant_id not in variants or variants[variant_id]["block_id"] != state["block_id"] for variant_id in state["variant_ids"]):
@@ -777,8 +791,8 @@ class MCPReleaseResolver:
                 expected_digest = "sha256:" + verified_files[relative][0]
                 if identity != verified_files[relative][1] or _hash_bytes(payload) != expected_digest or render[key] != expected_digest:
                     raise ValueError("variant image hash is invalid")
-                decoded = decode_rgba_png(payload)
-                if decoded.width != 512 or decoded.height != 512:
+                metadata = validate_rgba_png(payload)
+                if metadata.width != 512 or metadata.height != 512:
                     raise ValueError("variant image dimensions are invalid")
             metadata_relative = paths["render_metadata"]
             metadata_path = release_path / metadata_relative

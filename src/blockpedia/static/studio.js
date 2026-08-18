@@ -1947,16 +1947,22 @@
 
   const showCandidateError = (panel, error) => {
     const box = panel.querySelector("[data-candidate-error]");
-    const code = /^[A-Z][A-Z0-9_]{1,127}$/.test(String(error?.code || "")) ? String(error.code) : "RELEASE_CHECK_FAILED";
+    const activation = panel.matches("[data-release-activation]");
+    const code = /^[A-Z][A-Z0-9_]{1,127}$/.test(String(error?.code || ""))
+      ? String(error.code)
+      : (activation ? "ACTIVATION_CHECK_FAILED" : "RELEASE_CHECK_FAILED");
     box.hidden = false;
     setText(box.querySelector("[data-candidate-error-code]"), code);
-    setText(box.querySelector("[data-candidate-error-message]"), candidateSafeMessage(error?.message, "候选操作未完成，请按错误码处理。"));
+    setText(
+      box.querySelector("[data-candidate-error-message]"),
+      candidateSafeMessage(error?.message, activation ? "激活操作未完成，请按错误码处理。" : "候选操作未完成，请按错误码处理。"),
+    );
     panel.dataset.state = "error";
     const badge = panel.querySelector("[data-candidate-badge]");
     badge.className = "status-badge status-badge--failed";
     badge.textContent = "操作未完成";
     setText(panel.querySelector("[data-candidate-message]"), `${code} · 请处理后重试。`);
-    announce(`候选操作未完成：${code}。`);
+    announce(`${activation ? "激活" : "候选"}操作未完成：${code}。`);
   };
 
   const renderCandidateCheck = (panel, data) => {
@@ -2092,9 +2098,290 @@
     }
   };
 
+  const activationReleaseId = (value) => {
+    const text = String(value || "").trim();
+    return /^rel_[0-9a-f]{32}$/.test(text) ? text : null;
+  };
+
+  const activationCheckId = (value) => {
+    const text = String(value || "").trim();
+    return /^activation_[0-9a-f]{32}$/.test(text) ? text : null;
+  };
+
+  const setActivationField = (panel, name, value) => {
+    const field = panel.querySelector(`[data-activation-field="${name}"]`);
+    setText(field, value);
+    if (field?.tagName === "TIME") {
+      if (value === "未报告") field.removeAttribute("datetime");
+      else field.setAttribute("datetime", value);
+    }
+  };
+
+  const syncActivationControls = (panel) => {
+    const busy = panel.dataset.activationBusy === "true";
+    const passed = panel.dataset.activationPassed === "true";
+    const applied = panel.dataset.activationApplied === "true";
+    const target = panel.querySelector("[data-activation-target]");
+    const check = panel.querySelector("[data-activation-check]");
+    const confirmation = panel.querySelector("[data-activation-confirm]");
+    const defaultChoices = Array.from(panel.querySelectorAll("[data-activation-default]"));
+    const apply = panel.querySelector("[data-activation-apply]");
+    const selectedDefault = defaultChoices.some((input) => input.checked);
+
+    if (target) target.disabled = busy || applied;
+    if (check) check.disabled = busy || applied;
+    if (confirmation) confirmation.disabled = busy || applied || !passed;
+    defaultChoices.forEach((input) => { input.disabled = busy || applied || !passed; });
+    if (apply) apply.disabled = busy || applied || !passed || !confirmation?.checked || !selectedDefault;
+
+    const status = panel.querySelector("[data-activation-apply-status]");
+    if (!status || applied) return;
+    if (!passed) setText(status, "激活检查通过后才能应用。");
+    else if (!confirmation?.checked) setText(status, "勾选切换确认后才能应用。");
+    else setText(status, "两项决定已明确，可以应用。");
+  };
+
+  const setActivationBusy = (panel, busy, activeButton, pendingLabel) => {
+    panel.dataset.activationBusy = busy ? "true" : "false";
+    panel.toggleAttribute("aria-busy", busy);
+    if (activeButton) {
+      if (!activeButton.dataset.idleLabel) activeButton.dataset.idleLabel = activeButton.textContent.trim();
+      activeButton.toggleAttribute("aria-busy", busy);
+      activeButton.textContent = busy ? pendingLabel : activeButton.dataset.idleLabel;
+    }
+    syncActivationControls(panel);
+  };
+
+  const invalidateActivationCheck = (panel) => {
+    const checkId = panel.querySelector("[data-activation-check-id]");
+    if (!checkId?.value) return;
+    checkId.value = "";
+    delete panel.dataset.activationCheckId;
+    panel.dataset.activationPassed = "false";
+    panel.dataset.state = "activation-ready";
+    panel.querySelector("[data-activation-check-result]").hidden = true;
+    panel.querySelector("[data-activation-apply-action]").hidden = true;
+    panel.querySelector("[data-activation-blocked]").hidden = true;
+    panel.querySelector("[data-candidate-error]").hidden = true;
+    const confirmation = panel.querySelector("[data-activation-confirm]");
+    if (confirmation) confirmation.checked = false;
+    panel.querySelector('[data-activation-step="check"]').className = "is-current";
+    panel.querySelector('[data-activation-step="apply"]').className = "";
+    const badge = panel.querySelector("[data-candidate-badge]");
+    badge.className = "status-badge status-badge--paused";
+    badge.textContent = "需要重新检查";
+    setText(panel.querySelector("[data-candidate-message]"), "目标 release 已修改；current 尚未切换。请重新运行激活检查。");
+    syncActivationControls(panel);
+  };
+
+  const renderActivationCheck = (panel, data, requestedTarget) => {
+    if (data.run_id !== panel.dataset.candidateRunId || data.minecraft_version !== panel.dataset.candidateVersion) {
+      throw { code: "RELEASE_VERSION_MISMATCH", message: "激活检查结果与当前运行不一致。" };
+    }
+    const targetReleaseId = activationReleaseId(data.target_release_id);
+    if (!targetReleaseId || targetReleaseId !== requestedTarget) {
+      throw { code: "ACTIVATION_CHECK_RESULT_INVALID", message: "激活检查返回了不一致的目标 release。" };
+    }
+    const checkId = activationCheckId(data.activation_check_id);
+    if (!checkId) throw { code: "ACTIVATION_CHECK_RESULT_INVALID", message: "激活检查标识不合法。" };
+
+    const passed = data.status === "passed" && data.can_apply === true;
+    const candidates = Array.isArray(data.candidate_releases) ? data.candidate_releases : [];
+    const expectedCurrent = data.expected_current_sha256 == null
+      ? "尚无 current"
+      : candidateSafeHash(data.expected_current_sha256);
+    const errorCode = /^[A-Z][A-Z0-9_]{1,127}$/.test(String(data.error_code || ""))
+      ? String(data.error_code)
+      : "ACTIVATION_CHECK_FAILED";
+
+    panel.dataset.activationCheckId = checkId;
+    panel.dataset.activationPassed = passed ? "true" : "false";
+    panel.dataset.state = passed ? "activation-passed" : "activation-blocked";
+    panel.querySelector("[data-activation-check-id]").value = checkId;
+    panel.querySelector("[data-candidate-error]").hidden = true;
+    panel.querySelector("[data-activation-check-result]").hidden = false;
+    setActivationField(panel, "activation_check_id", checkId);
+    setActivationField(panel, "target_release_id", targetReleaseId);
+    setActivationField(panel, "candidate_count", String(candidates.length));
+    setActivationField(panel, "expected_current_sha256", expectedCurrent);
+    setActivationField(panel, "updated_at", candidateSafeTime(data.updated_at));
+
+    const badge = panel.querySelector("[data-candidate-badge]");
+    const resultBadge = panel.querySelector("[data-activation-result-badge]");
+    badge.className = `status-badge status-badge--${passed ? "succeeded" : "failed"}`;
+    resultBadge.className = `status-badge status-badge--${passed ? "succeeded" : "failed"}`;
+    badge.textContent = passed ? "检查通过" : "检查未通过";
+    resultBadge.textContent = passed ? "passed" : "failed";
+    setText(
+      panel.querySelector("[data-candidate-message]"),
+      passed ? "激活检查已通过；current 尚未切换。请完成下方确认。" : `${errorCode} · 激活检查未通过，current 未切换。`,
+    );
+    setText(
+      panel.querySelector("[data-activation-check-note]"),
+      passed ? "检查已通过，但 current 尚未切换。" : "检查未通过，current 未切换。",
+    );
+
+    const blocked = panel.querySelector("[data-activation-blocked]");
+    blocked.hidden = passed;
+    setText(blocked.querySelector("[data-activation-blocked-heading]"), errorCode);
+    setText(blocked.querySelector("[data-activation-blocked-message]"), "请按稳定错误码处理后重新检查；current 未切换。");
+    panel.querySelector("[data-activation-apply-action]").hidden = !passed;
+    const confirmation = panel.querySelector("[data-activation-confirm]");
+    if (confirmation) confirmation.checked = false;
+    const defaultTrue = panel.querySelector('[data-activation-default][value="true"]');
+    if (defaultTrue) defaultTrue.checked = true;
+    panel.querySelector('[data-activation-step="check"]').className = passed ? "is-complete" : "is-blocked";
+    panel.querySelector('[data-activation-step="apply"]').className = passed ? "is-current" : "";
+    syncActivationControls(panel);
+    announce(passed ? "激活检查通过；current 尚未切换。" : `激活检查未通过：${errorCode}。`);
+  };
+
+  const runActivationCheck = async (panel) => {
+    if (panel.dataset.activationBusy === "true") return;
+    const form = panel.querySelector("[data-activation-check-form]");
+    const targetInput = panel.querySelector("[data-activation-target]");
+    if (!form.reportValidity()) return;
+    const targetReleaseId = activationReleaseId(targetInput.value);
+    if (!targetReleaseId) {
+      targetInput.setCustomValidity("请输入 rel_ 加 32 位小写十六进制字符。");
+      targetInput.reportValidity();
+      targetInput.setCustomValidity("");
+      return;
+    }
+
+    invalidateActivationCheck(panel);
+    const button = panel.querySelector("[data-activation-check]");
+    setActivationBusy(panel, true, button, "正在检查…");
+    panel.querySelector("[data-candidate-error]").hidden = true;
+    panel.dataset.state = "activation-checking";
+    const badge = panel.querySelector("[data-candidate-badge]");
+    badge.className = "status-badge status-badge--running";
+    badge.textContent = "检查中";
+    setText(panel.querySelector("[data-candidate-message]"), "正在执行激活检查；current 不会在此步骤切换。");
+    try {
+      const data = await postJsonEnvelope(panel.dataset.activationCheckRoute, {
+        run_id: panel.dataset.candidateRunId,
+        minecraft_version: panel.dataset.candidateVersion,
+        target_release_id: targetReleaseId,
+      });
+      renderActivationCheck(panel, data, targetReleaseId);
+    } catch (error) {
+      showCandidateError(panel, error);
+    } finally {
+      setActivationBusy(panel, false, button, "正在检查…");
+    }
+  };
+
+  const renderActivationApplied = (panel, data, setAsDefault) => {
+    const releaseId = activationReleaseId(data.target_release_id);
+    const checkId = activationCheckId(data.activation_check_id);
+    const expectedTarget = activationReleaseId(panel.querySelector('[data-activation-field="target_release_id"]')?.textContent);
+    if (
+      data.status !== "applied"
+      || !releaseId
+      || releaseId !== expectedTarget
+      || !checkId
+      || checkId !== panel.dataset.activationCheckId
+      || data.run_id !== panel.dataset.candidateRunId
+      || data.minecraft_version !== panel.dataset.candidateVersion
+    ) {
+      throw { code: "ACTIVATION_APPLY_RESULT_INVALID", message: "激活结果摘要不完整。" };
+    }
+    panel.dataset.activationApplied = "true";
+    panel.dataset.activationPassed = "false";
+    panel.dataset.state = "activation-applied";
+    panel.querySelector("[data-candidate-error]").hidden = true;
+    panel.querySelector("[data-activation-blocked]").hidden = true;
+    panel.querySelector("[data-activation-apply-action]").hidden = true;
+    panel.querySelector("[data-activation-applied]").hidden = false;
+    setText(panel.querySelector('[data-activation-applied-field="target_release_id"]'), releaseId);
+    setText(panel.querySelector('[data-activation-applied-field="minecraft_version"]'), data.minecraft_version);
+    const updatedAt = candidateSafeTime(data.updated_at);
+    const updatedField = panel.querySelector('[data-activation-applied-field="updated_at"]');
+    setText(updatedField, updatedAt);
+    if (updatedAt === "未报告") updatedField.removeAttribute("datetime");
+    else updatedField.setAttribute("datetime", updatedAt);
+    setText(
+      panel.querySelector("[data-activation-success-message]"),
+      setAsDefault
+        ? `Minecraft ${data.minecraft_version} 的 current 已切换到 ${releaseId}，并设为默认版本。`
+        : `Minecraft ${data.minecraft_version} 的 current 已切换到 ${releaseId}；默认版本保持不变。`,
+    );
+    const badge = panel.querySelector("[data-candidate-badge]");
+    badge.className = "status-badge status-badge--succeeded";
+    badge.textContent = "current 已切换";
+    setText(panel.querySelector("[data-candidate-message]"), `current 已切换到 ${releaseId}。`);
+    panel.querySelector('[data-activation-step="check"]').className = "is-complete";
+    panel.querySelector('[data-activation-step="apply"]').className = "is-complete";
+    syncActivationControls(panel);
+    announce(`current 已切换到 ${releaseId}。`);
+  };
+
+  const applyActivation = async (panel) => {
+    if (panel.dataset.activationBusy === "true" || panel.dataset.activationPassed !== "true") return;
+    const form = panel.querySelector("[data-activation-apply-form]");
+    if (!form.reportValidity()) return;
+    const checkId = activationCheckId(panel.querySelector("[data-activation-check-id]")?.value);
+    const confirmation = panel.querySelector("[data-activation-confirm]")?.checked === true;
+    const selectedDefault = panel.querySelector('[data-activation-default]:checked');
+    if (!checkId || !confirmation || !selectedDefault) return;
+    const setAsDefault = selectedDefault.value === "true";
+    const button = panel.querySelector("[data-activation-apply]");
+    setActivationBusy(panel, true, button, "正在切换…");
+    panel.querySelector("[data-candidate-error]").hidden = true;
+    panel.dataset.state = "activation-applying";
+    const badge = panel.querySelector("[data-candidate-badge]");
+    badge.className = "status-badge status-badge--running";
+    badge.textContent = "应用中";
+    setText(panel.querySelector("[data-candidate-message]"), "正在应用已通过的激活检查并切换 current。");
+    try {
+      const data = await postJsonEnvelope(panel.dataset.activationApplyRoute, {
+        activation_check_id: checkId,
+        confirm_current_switch: confirmation,
+        set_as_default: setAsDefault,
+      });
+      renderActivationApplied(panel, data, setAsDefault);
+    } catch (error) {
+      showCandidateError(panel, error);
+    } finally {
+      setActivationBusy(panel, false, button, "正在切换…");
+    }
+  };
+
+  const initializeReleaseActivation = (panel) => {
+    if (panel.dataset.activationReady === "true") return;
+    panel.dataset.activationReady = "true";
+    panel.dataset.activationBusy = "false";
+    panel.dataset.activationPassed = "false";
+    panel.dataset.activationApplied = "false";
+    const target = panel.querySelector("[data-activation-target]");
+    if (target && !target.value.trim()) {
+      const existingRelease = activationReleaseId(document.querySelector('[data-candidate-built-field="release_id"]')?.textContent);
+      if (existingRelease) target.value = existingRelease;
+    }
+    target?.addEventListener("input", () => invalidateActivationCheck(panel));
+    panel.querySelector("[data-activation-confirm]")?.addEventListener("change", () => syncActivationControls(panel));
+    panel.querySelectorAll("[data-activation-default]").forEach((input) => {
+      input.addEventListener("change", () => syncActivationControls(panel));
+    });
+    panel.querySelector("[data-activation-check-form]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      runActivationCheck(panel);
+    });
+    panel.querySelector("[data-activation-apply-form]")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      applyActivation(panel);
+    });
+    syncActivationControls(panel);
+  };
+
   const initializeReleaseCandidate = (panel) => {
     if (panel.dataset.candidateReady === "true") return;
     panel.dataset.candidateReady = "true";
+    if (panel.matches("[data-release-activation]")) {
+      initializeReleaseActivation(panel);
+      return;
+    }
     panel.querySelector("[data-candidate-check]")?.addEventListener("click", () => runCandidateCheck(panel));
     panel.querySelector("[data-candidate-build]")?.addEventListener("click", () => buildCandidate(panel));
   };

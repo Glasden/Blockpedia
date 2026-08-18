@@ -404,20 +404,17 @@ class MCPQueryService:
         try:
             for row in handle.execute("SELECT block_id, minecraft_version, default_state_id, record_json FROM blocks ORDER BY block_id"):
                 block = json.loads(row["record_json"])
-                validate_record("block-record.v1", block)
                 if block.get("block_id") != row["block_id"] or block.get("minecraft_version") != handle.minecraft_version or block.get("default_state_id") != row["default_state_id"]:
                     raise ValueError("block projection mismatch")
                 blocks[str(row["block_id"])] = block
             for row in handle.execute("SELECT state_id, block_id, record_json FROM states ORDER BY state_id"):
                 state = json.loads(row["record_json"])
-                validate_record("state-record.v1", state)
                 if state.get("state_id") != row["state_id"] or state.get("block_id") != row["block_id"]:
                     raise ValueError("state projection mismatch")
                 states[str(row["state_id"])] = state
             for row in handle.execute("SELECT variant_id, block_id, record_json, feature_json FROM visual_variants ORDER BY variant_id"):
                 variant = json.loads(row["record_json"])
                 feature = json.loads(row["feature_json"])
-                validate_record("visual-variant-record.v1", variant)
                 if not isinstance(feature, dict) or variant.get("variant_id") != row["variant_id"] or variant.get("block_id") != row["block_id"]:
                     raise ValueError("variant projection mismatch")
                 variants[str(row["variant_id"])] = variant
@@ -434,7 +431,7 @@ class MCPQueryService:
                 raise ValueError("manual record package is invalid")
             if not isinstance(manual, dict):
                 raise ValueError("manual record package is invalid")
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError, RecordSchemaError) as exc:
+        except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError, RecordSchemaError) as exc:
             raise MCPReleaseError("RELEASE_INTEGRITY_FAILED", "The release record projection is invalid.", minecraft_version=handle.minecraft_version, details={"integrity_component": "index"}) from exc
         return _Snapshot(blocks, states, variants, features, annotations, manual)
 

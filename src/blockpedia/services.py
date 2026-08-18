@@ -13,6 +13,7 @@ from typing import Any
 
 from .directory_chooser import DirectoryChooser
 from .banner_refresh import BannerRefreshFailure, refresh_banner_workspace
+from .activation import ActivationError, ActivationService
 from .importer import ImportCheck, ImportCheckInProgress, ImportCheckStart, ImportService
 from .paths import DataRoot, resolve_data_root
 from .search import WorkspaceQueryService, human_semantics_complete
@@ -103,6 +104,11 @@ class StudioService:
             force_normalized_like=force_normalized_like,
             pre_rename_hook=release_pre_rename_hook,
         )
+        self.activation = ActivationService(
+            self.data_root,
+            repo_root=self.worker.repo_root,
+            force_normalized_like=force_normalized_like,
+        )
         self._close_lock = threading.RLock()
         self._closed = False
 
@@ -191,15 +197,71 @@ class StudioService:
             if run["boundary_event"] == R3_CANDIDATE_BUILT_BOUNDARY_EVENT:
                 if run["status"] != "paused" or run["current_stage"] != "ACTIVATE_RELEASE" or build_stage["status"] != "succeeded" or activate_stage["status"] != "pending":
                     raise R3Error("RELEASE_BUILD_FAILED")
-                existing_cursor = connection.execute("SELECT cursor_json FROM stage_runs WHERE run_id=? AND stage='BUILD_RELEASE'", (run_id,)).fetchone()
-                if existing_cursor is None or json.loads(existing_cursor["cursor_json"] or "{}").get("release_id") != result["release_id"]:
-                    raise R3Error("RELEASE_BUILD_INTEGRITY_FAILED")
+                try:
+                    original_lineage = self.release_builder._read_repeat_cursor_lineage(
+                        connection,
+                        run_id,
+                        failure_code="RELEASE_BUILD_INTEGRITY_FAILED",
+                    )
+                    # A committed first build can reach this branch before
+                    # _mark_built succeeds.  Replaying that same check only
+                    # completes its cache state; it is not a new repeat
+                    # candidate and must not add another audit.
+                    if original_lineage == (result["release_id"], result["release_build_id"]):
+                        return
+                    self.release_builder._validate_repeat_candidate_lineage(
+                        connection,
+                        run_id,
+                        str(result["minecraft_version"]),
+                        snapshot=None,
+                        failure_code="RELEASE_BUILD_INTEGRITY_FAILED",
+                    )
+                except ReleaseBuildFailure as exc:
+                    raise R3Error(exc.code) from exc
+                # A repeat build intentionally leaves the workspace stage and
+                # its original cursor untouched.  The new immutable release
+                # gets its own idempotent boundary audit, keyed by both IDs.
+                seen_release = False
+                for audit in connection.execute(
+                    "SELECT details_json FROM audit_events WHERE run_id=? AND event_type=?",
+                    (run_id, R3_CANDIDATE_BUILT_BOUNDARY_EVENT),
+                ):
+                    details = _load_object(audit["details_json"])
+                    if details.get("release_id") == result["release_id"]:
+                        if details.get("release_build_id") != result["release_build_id"]:
+                            raise R3Error("RELEASE_BUILD_INTEGRITY_FAILED")
+                        seen_release = True
+                        break
+                if not seen_release:
+                    connection.execute(
+                        "INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)",
+                        (_audit_id(), R3_CANDIDATE_BUILT_BOUNDARY_EVENT, run_id, canonical_json({"release_id": result["release_id"], "release_build_id": result["release_build_id"]}), now),
+                    )
             elif run["status"] == "paused" and run["current_stage"] == "BUILD_RELEASE" and build_stage["status"] == "pending" and activate_stage["status"] == "pending":
                 connection.execute("UPDATE stage_runs SET status='succeeded',worker_id=NULL,heartbeat_at=?,finished_at=?,cursor_json=? WHERE run_id=? AND stage='BUILD_RELEASE' AND status='pending'", (now, now, cursor, run_id))
                 connection.execute("UPDATE runs SET status='paused',current_stage='ACTIVATE_RELEASE',boundary_event=?,finished_at=NULL WHERE run_id=? AND status='paused' AND current_stage='BUILD_RELEASE'", (R3_CANDIDATE_BUILT_BOUNDARY_EVENT, run_id))
                 connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_audit_id(), R3_CANDIDATE_BUILT_BOUNDARY_EVENT, run_id, canonical_json({"release_id": result["release_id"], "release_build_id": result["release_build_id"]}), now))
             else:
                 raise R3Error("RELEASE_BUILD_FAILED")
+
+    def check_activation(self, run_id: str, minecraft_version: str, target_release_id: str) -> dict[str, Any]:
+        try:
+            with self.worker.run_lock(run_id):
+                return self.activation.check(run_id, minecraft_version, target_release_id)
+        except ActivationError as exc:
+            raise R3Error(exc.code) from exc
+
+    def apply_activation(self, activation_check_id: str, *, confirm_current_switch: bool, set_as_default: bool) -> dict[str, Any]:
+        try:
+            state = self.activation._read_state(activation_check_id)
+            with self.worker.run_lock(str(state["run_id"])):
+                return self.activation.apply(
+                    activation_check_id,
+                    confirm_current_switch=confirm_current_switch,
+                    set_as_default=set_as_default,
+                )
+        except ActivationError as exc:
+            raise R3Error(exc.code) from exc
 
     # ---- Provider/profile application service ---------------------------------
 

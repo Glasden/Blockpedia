@@ -160,6 +160,161 @@ def test_candidate_build_layout_index_hashes_and_boundary(tmp_path: Path) -> Non
         service.close()
 
 
+def test_repeat_candidate_builds_independent_release_without_rewinding_workspace(tmp_path: Path, monkeypatch) -> None:
+    service, run_id = _ready(tmp_path)
+    try:
+        def workspace_boundary() -> tuple[dict[str, object], list[tuple[object, ...]]]:
+            with service.worker.open_database(run_id) as database:
+                run = database.fetchone("SELECT status,current_stage,boundary_event FROM runs WHERE run_id=?", (run_id,))
+                stages = database.fetchall("SELECT stage,status,cursor_json FROM stage_runs WHERE run_id=? ORDER BY ordinal", (run_id,))
+            assert run is not None
+            return dict(run), [tuple(row) for row in stages]
+
+        first_check = service.check_candidate_release(run_id, "26.2")
+        first = service.build_candidate_release(first_check["check_id"])
+        first_boundary, first_stages = workspace_boundary()
+        assert first_boundary == {
+            "status": "paused",
+            "current_stage": "ACTIVATE_RELEASE",
+            "boundary_event": "R3_CANDIDATE_BUILT_ACTIVATION_PENDING",
+        }
+
+        monkeypatch.setattr(releases_module, "_now", lambda: "2099-01-01T00:00:00Z")
+        second_check = service.check_candidate_release(run_id, "26.2")
+        assert second_check["check_id"] != first_check["check_id"]
+        assert second_check["release_build_id"] != first_check["release_build_id"]
+        assert second_check["snapshot_fingerprint"] == first_check["snapshot_fingerprint"]
+        second = service.build_candidate_release(second_check["check_id"])
+        second_boundary, second_stages = workspace_boundary()
+
+        assert second["release_id"] != first["release_id"]
+        assert second_boundary == first_boundary
+        assert second_stages == first_stages
+        assert not (tmp_path / "current.json").exists()
+
+        release_parent = tmp_path / "releases" / "26.2"
+        release_dirs = sorted(release_parent.glob("rel_*"))
+        assert {path.name for path in release_dirs} == {first["release_id"], second["release_id"]}
+        expected_layout = {
+            "release.json",
+            "manifest.json",
+            "index.sqlite3",
+            "previews",
+            "quality_report.json",
+            "manual-overrides.json",
+            "schemas.sha256",
+            "checksums.sha256",
+        }
+        assert all({path.name for path in release.iterdir()} == expected_layout for release in release_dirs)
+        assert json.loads((release_parent / first["release_id"] / "release.json").read_text(encoding="utf-8"))["release_id"] == first["release_id"]
+        assert json.loads((release_parent / second["release_id"] / "release.json").read_text(encoding="utf-8"))["release_id"] == second["release_id"]
+
+        with service.worker.open_database(run_id) as database:
+            audits = database.fetchall(
+                "SELECT details_json FROM audit_events WHERE run_id=? AND event_type='R3_CANDIDATE_BUILT_ACTIVATION_PENDING'",
+                (run_id,),
+            )
+        assert {json.loads(row["details_json"])["release_id"] for row in audits} == {first["release_id"], second["release_id"]}
+        assert len(audits) == 2
+
+        with pytest.raises(R3Error) as error:
+            service.build_candidate_release(second_check["check_id"])
+        assert error.value.code == "RELEASE_ALREADY_BUILT"
+        with service.worker.open_database(run_id) as database:
+            audit_count = database.fetchone(
+                "SELECT COUNT(*) AS count FROM audit_events WHERE run_id=? AND event_type='R3_CANDIDATE_BUILT_ACTIVATION_PENDING'",
+                (run_id,),
+            )
+        assert audit_count is not None
+        assert audit_count["count"] == 2
+    finally:
+        service.close()
+
+
+def test_repeat_candidate_lineage_corruption_fails_at_check_and_build(tmp_path: Path, monkeypatch) -> None:
+    service, run_id = _ready(tmp_path)
+    try:
+        first_check = service.check_candidate_release(run_id, "26.2")
+        first = service.build_candidate_release(first_check["check_id"])
+        with service.worker.open_database(run_id) as database:
+            cursor_row = database.fetchone("SELECT cursor_json FROM stage_runs WHERE run_id=? AND stage='BUILD_RELEASE'", (run_id,))
+        assert cursor_row is not None
+        original_cursor = json.loads(cursor_row["cursor_json"])
+
+        with service.worker.open_database(run_id) as database:
+            with database.transaction() as connection:
+                connection.execute(
+                    "UPDATE stage_runs SET cursor_json=? WHERE run_id=? AND stage='BUILD_RELEASE'",
+                    (json.dumps({**original_cursor, "completed": False}, sort_keys=True), run_id),
+                )
+        with pytest.raises(R3Error) as check_error:
+            service.check_candidate_release(run_id, "26.2")
+        assert check_error.value.code == "RELEASE_CHECK_NOT_READY"
+
+        with service.worker.open_database(run_id) as database:
+            with database.transaction() as connection:
+                connection.execute(
+                    "UPDATE stage_runs SET cursor_json=? WHERE run_id=? AND stage='BUILD_RELEASE'",
+                    (json.dumps(original_cursor, sort_keys=True), run_id),
+                )
+
+        monkeypatch.setattr(releases_module, "_now", lambda: "2099-01-01T00:00:00Z")
+        repeat_check = service.check_candidate_release(run_id, "26.2")
+        forged_build_id = "build_" + ("f" * 32)
+        forged_cursor = {
+            "release_id": "rel_" + ("f" * 32),
+            "release_build_id": forged_build_id,
+            "completed": True,
+        }
+        with service.worker.open_database(run_id) as database:
+            with database.transaction() as connection:
+                connection.execute(
+                    "UPDATE stage_runs SET cursor_json=? WHERE run_id=? AND stage='BUILD_RELEASE'",
+                    (json.dumps(forged_cursor, sort_keys=True), run_id),
+                )
+        with pytest.raises(R3Error) as build_error:
+            service.build_candidate_release(repeat_check["check_id"])
+        assert build_error.value.code == "RELEASE_BUILD_INTEGRITY_FAILED"
+        assert len(list((tmp_path / "releases" / "26.2").glob("rel_*"))) == 1
+        assert first["release_id"] == original_cursor["release_id"]
+    finally:
+        service.close()
+
+
+def test_repeat_candidate_accepts_historical_snapshot_fingerprint(tmp_path: Path, monkeypatch) -> None:
+    service, run_id = _ready(tmp_path)
+    try:
+        first_check = service.check_candidate_release(run_id, "26.2")
+        first = service.build_candidate_release(first_check["check_id"])
+        original_check = service.release_builder.get_check_state(first_check["check_id"])
+        assert original_check.value["status"] == "built"
+        assert original_check.value["snapshot_fingerprint"] == original_check.report["snapshot_fingerprint"]
+
+        packaged_schema = releases_module.packaged_release_index_schema
+
+        def historical_schema() -> tuple[bytes, str]:
+            sql, _ = packaged_schema()
+            mutated = sql + b"\n-- historical lineage fingerprint test\n"
+            return mutated, "sha256:" + hashlib.sha256(mutated).hexdigest()
+
+        monkeypatch.setattr(releases_module, "packaged_release_index_schema", historical_schema)
+        monkeypatch.setattr(releases_module, "_now", lambda: "2099-01-01T00:00:00Z")
+        repeat_check = service.check_candidate_release(run_id, "26.2")
+        assert repeat_check["snapshot_fingerprint"] != original_check.value["snapshot_fingerprint"]
+        repeat_cached = service.release_builder.get_check_state(repeat_check["check_id"])
+        assert repeat_cached.value["snapshot_fingerprint"] == repeat_cached.report["snapshot_fingerprint"]
+
+        rebuilt = service.build_candidate_release(repeat_check["check_id"])
+        assert rebuilt["release_id"] != first["release_id"]
+        index = sqlite3.connect(tmp_path / rebuilt["relative_path"] / "index.sqlite3")
+        try:
+            assert index.execute("SELECT format_version FROM schema_meta").fetchall() == [(2,)]
+        finally:
+            index.close()
+    finally:
+        service.close()
+
+
 def test_blocked_check_is_completed_and_hash_manifest_not_run(tmp_path: Path) -> None:
     service, run_id = _ready(tmp_path)
     try:

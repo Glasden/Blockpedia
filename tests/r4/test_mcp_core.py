@@ -256,6 +256,94 @@ def test_audit_ids_require_explicit_targets() -> None:
     assert MCPQueryService._audit_ids({"skip_reviews": [{"review_id": "missing-target"}]}, "skip_reviews", "minecraft:stone") == []
 
 
+def _remove_glass_variant(fixture: object) -> None:
+    index = sqlite3.connect(fixture.release / "index.sqlite3")  # type: ignore[union-attr]
+    try:
+        state_row = index.execute("SELECT record_json FROM states WHERE state_id='minecraft:glass'").fetchone()
+        state = json.loads(state_row[0])
+        state["variant_ids"] = []
+        state["mapping_status"] = "skipped"
+        state["failure_id"] = "failure_glass"
+        index.execute(
+            "UPDATE states SET record_json=? WHERE state_id='minecraft:glass'",
+            (json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":")),),
+        )
+        index.execute("DELETE FROM annotations WHERE variant_id='minecraft:glass'")
+        index.execute("DELETE FROM visual_variants WHERE variant_id='minecraft:glass'")
+        index.execute("DELETE FROM search_fts WHERE variant_id='minecraft:glass'")
+        index.commit()
+    finally:
+        index.close()
+    for relative in (
+        "previews/minecraft/glass/preview.png",
+        "previews/minecraft/glass/mask.png",
+        "previews/minecraft/glass/render.json",
+    ):
+        (fixture.release / relative).unlink()  # type: ignore[union-attr]
+
+
+def test_audited_visual_variant_skip_without_published_variant_resolves(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path)
+    manual = json.loads((fixture.release / "manual-overrides.json").read_text(encoding="utf-8"))
+    manual["skip_reviews"] = [{
+        "schema_version": "skip-review.v1",
+        "review_id": "skip-glass",
+        "target_type": "visual_variant",
+        "target_id": "minecraft:glass",
+        "minecraft_version": "26.2",
+        "reviewer": "fixture",
+        "reviewed_at": "2026-08-18T12:00:00Z",
+        "reason_code": "MISSING_TEXTURE",
+        "note": "Fixture block has no publishable visual variant.",
+        "evidence": ["index.sqlite3"],
+        "source_version": "fixture.v1",
+        "machine_failure_ref": "failure_glass",
+    }]
+    _write_json(fixture.release / "manual-overrides.json", manual)
+    _remove_glass_variant(fixture)
+    _rehash_fixture(fixture, index_changed=True)
+
+    result = MCPQueryService(tmp_path).index_info()
+    assert not result.is_error
+
+
+def test_no_published_variant_without_exact_audited_skip_is_rejected(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path)
+    _remove_glass_variant(fixture)
+    _rehash_fixture(fixture, index_changed=True)
+
+    result = MCPQueryService(tmp_path).index_info()
+    assert result.is_error
+    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
+    assert result["details"]["integrity_component"] == "index"
+
+
+def test_orphan_visual_variant_skip_target_remains_rejected(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path)
+    manual = json.loads((fixture.release / "manual-overrides.json").read_text(encoding="utf-8"))
+    manual["skip_reviews"] = [{
+        "schema_version": "skip-review.v1",
+        "review_id": "skip-missing",
+        "target_type": "visual_variant",
+        "target_id": "minecraft:missing",
+        "minecraft_version": "26.2",
+        "reviewer": "fixture",
+        "reviewed_at": "2026-08-18T12:00:00Z",
+        "reason_code": "MISSING_TEXTURE",
+        "note": "Fixture orphan target.",
+        "evidence": ["index.sqlite3"],
+        "source_version": "fixture.v1",
+        "machine_failure_ref": "failure_missing",
+    }]
+    _write_json(fixture.release / "manual-overrides.json", manual)
+    _rehash_fixture(fixture, index_changed=False)
+
+    result = MCPQueryService(tmp_path).index_info()
+    assert result.is_error
+    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
+    assert result["details"]["integrity_component"] == "index"
+
+
 def test_verified_handle_rejects_file_replacement_after_resolution(tmp_path: Path) -> None:
     fixture = build_fixture(tmp_path)
     resolver = MCPReleaseResolver(tmp_path)
@@ -291,6 +379,137 @@ def test_rehashed_quality_report_is_still_rejected(tmp_path: Path) -> None:
     assert result["details"]["integrity_component"] == "quality_report"
 
 
+@pytest.mark.parametrize("mutation", ["missing_machine_schema", "failed_ai_schema"])
+def test_rehashed_quality_schema_evidence_is_required_and_passed(tmp_path: Path, mutation: str) -> None:
+    fixture = build_fixture(tmp_path)
+    quality = json.loads((fixture.release / "quality_report.json").read_text(encoding="utf-8"))
+    if mutation == "missing_machine_schema":
+        quality["items"] = [item for item in quality["items"] if item["code"] != "MACHINE_SCHEMA_VALID"]
+    else:
+        next(item for item in quality["items"] if item["code"] == "AI_SCHEMA_VALID")["status"] = "failed"
+    _write_json(fixture.release / "quality_report.json", quality)
+    _rehash_fixture(fixture, index_changed=False)
+
+    result = MCPQueryService(tmp_path).index_info()
+    assert result.is_error
+    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
+    assert result["details"]["integrity_component"] == "quality_report"
+
+
+def test_schema_inventory_requires_record_schema_entries(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path)
+    inventory = fixture.release / "schemas.sha256"
+    lines = inventory.read_text(encoding="ascii").splitlines(keepends=True)
+    inventory.write_text("".join(line for line in lines if "  block-record.v1  " not in line), encoding="ascii")
+    _rehash_fixture(fixture, index_changed=False)
+
+    result = MCPQueryService(tmp_path).index_info()
+    assert result.is_error
+    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
+    assert result["details"]["integrity_component"] == "manifest"
+
+
+@pytest.mark.parametrize("projection", ["block", "state", "variant"])
+def test_rehashed_canonical_row_record_mismatch_is_rejected(tmp_path: Path, projection: str) -> None:
+    fixture = build_fixture(tmp_path)
+    index = sqlite3.connect(fixture.release / "index.sqlite3")
+    try:
+        if projection == "block":
+            index.execute("UPDATE blocks SET translation_key='corrupt' WHERE block_id='minecraft:stone'")
+        elif projection == "state":
+            index.execute("UPDATE states SET properties_json=? WHERE state_id='minecraft:stone'", (json.dumps({"tampered": True}, separators=(",", ":")),))
+        else:
+            index.execute("UPDATE visual_variants SET candidate_qualification='excluded' WHERE variant_id='minecraft:stone'")
+        index.commit()
+    finally:
+        index.close()
+    _rehash_fixture(fixture, index_changed=True)
+
+    result = MCPQueryService(tmp_path).index_info()
+    assert result.is_error
+    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
+    assert result["details"]["integrity_component"] == "index"
+
+
+@pytest.mark.parametrize("mutation", ["missing_key", "root_container", "nested_container"])
+def test_removed_record_schema_shapes_fail_as_release_integrity(tmp_path: Path, mutation: str) -> None:
+    fixture = build_fixture(tmp_path)
+    index = sqlite3.connect(fixture.release / "index.sqlite3")
+    try:
+        if mutation == "missing_key":
+            row = index.execute("SELECT record_json FROM blocks WHERE block_id='minecraft:stone'").fetchone()
+            record = json.loads(row[0])
+            del record["default_state_id"]
+            index.execute("UPDATE blocks SET record_json=? WHERE block_id='minecraft:stone'", (json.dumps(record, sort_keys=True, separators=(",", ":")),))
+        elif mutation == "root_container":
+            index.execute("UPDATE states SET record_json='[]' WHERE state_id='minecraft:stone'")
+        else:
+            row = index.execute("SELECT record_json FROM visual_variants WHERE variant_id='minecraft:stone'").fetchone()
+            record = json.loads(row[0])
+            record["machine_facts"] = []
+            index.execute("UPDATE visual_variants SET record_json=? WHERE variant_id='minecraft:stone'", (json.dumps(record, sort_keys=True, separators=(",", ":")),))
+        index.commit()
+    finally:
+        index.close()
+    _rehash_fixture(fixture, index_changed=True)
+
+    result = MCPQueryService(tmp_path).index_info()
+    assert result.is_error
+    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
+    assert result["details"]["integrity_component"] == "index"
+
+
+@pytest.mark.parametrize("mode", ["zero", "multiple"])
+def test_default_state_cardinality_is_rejected_after_grouping(tmp_path: Path, mode: str) -> None:
+    fixture = build_fixture(tmp_path)
+    index = sqlite3.connect(fixture.release / "index.sqlite3")
+    try:
+        row = index.execute("SELECT state_id,block_id,record_json FROM states WHERE state_id='minecraft:stone'").fetchone()
+        state = json.loads(row[2])
+        if mode == "zero":
+            state["is_default"] = False
+            index.execute("UPDATE states SET is_default=0,record_json=? WHERE state_id='minecraft:stone'", (json.dumps(state, sort_keys=True, separators=(",", ":")),))
+        else:
+            state["state_id"] = "minecraft:stone_extra"
+            index.execute(
+                "INSERT INTO states(state_id,block_id,properties_json,is_default,record_json) VALUES (?,?,?,?,?)",
+                (state["state_id"], state["block_id"], "{}", 1, json.dumps(state, sort_keys=True, separators=(",", ":"))),
+            )
+        index.commit()
+    finally:
+        index.close()
+    _rehash_fixture(fixture, index_changed=True)
+
+    result = MCPQueryService(tmp_path).index_info()
+    assert result.is_error
+    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
+    assert result["details"]["integrity_component"] == "index"
+
+
+@pytest.mark.parametrize("mutation", ["missing_state", "cross_block"])
+def test_missing_or_cross_block_variant_references_are_rejected(tmp_path: Path, mutation: str) -> None:
+    fixture = build_fixture(tmp_path)
+    index = sqlite3.connect(fixture.release / "index.sqlite3")
+    try:
+        row = index.execute("SELECT record_json FROM visual_variants WHERE variant_id='minecraft:stone'").fetchone()
+        variant = json.loads(row[0])
+        if mutation == "missing_state":
+            variant["canonical_state_id"] = "minecraft:missing_state"
+            index.execute("UPDATE visual_variants SET canonical_state_id=?,record_json=? WHERE variant_id='minecraft:stone'", (variant["canonical_state_id"], json.dumps(variant, sort_keys=True, separators=(",", ":"))))
+        else:
+            variant["block_id"] = "minecraft:glass"
+            index.execute("UPDATE visual_variants SET block_id=?,record_json=? WHERE variant_id='minecraft:stone'", (variant["block_id"], json.dumps(variant, sort_keys=True, separators=(",", ":"))))
+        index.commit()
+    finally:
+        index.close()
+    _rehash_fixture(fixture, index_changed=True)
+
+    result = MCPQueryService(tmp_path).index_info()
+    assert result.is_error
+    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
+    assert result["details"]["integrity_component"] == "index"
+
+
 @pytest.mark.parametrize("projection", ["fts", "feature", "render"])
 def test_rehashed_projection_corruption_reaches_strict_validators(tmp_path: Path, projection: str) -> None:
     fixture = build_fixture(tmp_path)
@@ -312,6 +531,33 @@ def test_rehashed_projection_corruption_reaches_strict_validators(tmp_path: Path
     _rehash_fixture(fixture, index_changed=True)
     result = MCPQueryService(tmp_path).index_info()
     assert result.is_error and result["error_code"] == "RELEASE_INTEGRITY_FAILED"
+    assert result["details"]["integrity_component"] == "index"
+
+
+def test_rehashed_malformed_png_is_rejected_by_bulk_image_validation(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path)
+    preview = fixture.release / "previews/minecraft/stone/preview.png"
+    malformed = bytearray(preview.read_bytes())
+    malformed[0] ^= 1
+    preview.write_bytes(malformed)
+    image_hash = "sha256:" + hashlib.sha256(malformed).hexdigest()
+    index = sqlite3.connect(fixture.release / "index.sqlite3")
+    try:
+        row = index.execute("SELECT record_json FROM visual_variants WHERE variant_id='minecraft:stone'").fetchone()
+        variant = json.loads(row[0])
+        variant["render"]["image_sha256"] = image_hash
+        index.execute(
+            "UPDATE visual_variants SET image_sha256=?, record_json=? WHERE variant_id='minecraft:stone'",
+            (image_hash, json.dumps(variant, ensure_ascii=False, sort_keys=True, separators=(",", ":"))),
+        )
+        index.commit()
+    finally:
+        index.close()
+    _rehash_fixture(fixture, index_changed=True)
+
+    result = MCPQueryService(tmp_path).index_info()
+    assert result.is_error
+    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
     assert result["details"]["integrity_component"] == "index"
 
 

@@ -183,6 +183,30 @@ class ReleaseBuildRequest(StrictRequest):
         return value
 
 
+class ActivationCheckRequest(StrictRequest):
+    run_id: str = Field(min_length=1, max_length=256, pattern=r"^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$")
+    minecraft_version: str = Field(min_length=3, max_length=32)
+    target_release_id: str = Field(min_length=36, max_length=36, pattern=r"^rel_[0-9a-f]{32}$")
+
+    @field_validator("minecraft_version")
+    @classmethod
+    def valid_minecraft_version(cls, value: str) -> str:
+        return validate_minecraft_version(value)
+
+
+class ActivationApplyRequest(StrictRequest):
+    activation_check_id: str = Field(min_length=43, max_length=43, pattern=r"^activation_[0-9a-f]{32}$")
+    confirm_current_switch: bool
+    set_as_default: bool
+
+    @field_validator("confirm_current_switch")
+    @classmethod
+    def require_current_confirmation(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("confirm_current_switch must be true")
+        return value
+
+
 class RecoverRequest(StrictRequest):
     job_id: str | None = Field(default=None, min_length=1, max_length=160)
     stage: str | None = Field(default=None, min_length=1, max_length=64)
@@ -609,6 +633,22 @@ def create_app(
             data_sanitizer=_release_data_passthrough,
             status_code=201,
         )
+
+    @app.post("/api/releases/activation-check")
+    def api_activation_check(payload: ActivationCheckRequest, request: Request):
+        _allow_query_keys(request, set())
+        checked = studio.check_activation(payload.run_id, payload.minecraft_version, payload.target_release_id)
+        return _success_response(request, _shape_activation_state(checked), data_sanitizer=_release_data_passthrough)
+
+    @app.post("/api/releases/apply")
+    def api_activation_apply(payload: ActivationApplyRequest, request: Request):
+        _allow_query_keys(request, set())
+        applied = studio.apply_activation(
+            payload.activation_check_id,
+            confirm_current_switch=payload.confirm_current_switch,
+            set_as_default=payload.set_as_default,
+        )
+        return _success_response(request, _shape_activation_state(applied), data_sanitizer=_release_data_passthrough)
 
     @app.get("/api/provider/profile")
     def api_provider_profile(request: Request, profile_id: str | None = Query(default=None, min_length=1, max_length=64)):
@@ -2526,6 +2566,22 @@ _RELEASE_BUILD_FIELDS = frozenset(
         "built_at",
     }
 )
+_ACTIVATION_STATE_FIELDS = frozenset(
+    {
+        "format_version",
+        "activation_check_id",
+        "run_id",
+        "minecraft_version",
+        "target_release_id",
+        "candidate_releases",
+        "expected_current_sha256",
+        "status",
+        "can_apply",
+        "created_at",
+        "updated_at",
+        "error_code",
+    }
+)
 
 
 def _release_raw_payload(value: Any, required: frozenset[str], error_code: str) -> Mapping[str, Any]:
@@ -2609,6 +2665,39 @@ def _shape_release_build(value: Any) -> dict[str, Any]:
         "quality_report_sha256": _release_string(raw, "quality_report_sha256", _RELEASE_HASH_RE, error_code),
         "checksums_sha256": _release_string(raw, "checksums_sha256", _RELEASE_HASH_RE, error_code),
         "built_at": _release_string(raw, "built_at", _RELEASE_TIMESTAMP_RE, error_code),
+    }
+
+
+def _shape_activation_state(value: Any) -> dict[str, Any]:
+    error_code = "ACTIVATION_STATE_INVALID"
+    raw = value.to_dict() if hasattr(value, "to_dict") else value
+    if not isinstance(raw, Mapping) or set(raw) != _ACTIVATION_STATE_FIELDS or raw.get("format_version") != 1:
+        raise R3Error(error_code)
+    if not isinstance(raw.get("activation_check_id"), str) or re.fullmatch(r"activation_[0-9a-f]{32}", raw["activation_check_id"]) is None or not isinstance(raw.get("run_id"), str) or _RELEASE_RUN_ID_RE.fullmatch(raw["run_id"]) is None or not isinstance(raw.get("minecraft_version"), str) or _RELEASE_VERSION_RE.fullmatch(raw["minecraft_version"]) is None or not isinstance(raw.get("target_release_id"), str) or RELEASE_ID_RE.fullmatch(raw["target_release_id"]) is None:
+        raise R3Error(error_code)
+    candidates = raw.get("candidate_releases")
+    if not isinstance(candidates, list) or any(not isinstance(item, Mapping) or set(item) != {"release_id", "checksums_sha256"} or not isinstance(item.get("release_id"), str) or RELEASE_ID_RE.fullmatch(item["release_id"]) is None or not isinstance(item.get("checksums_sha256"), str) or _RELEASE_HASH_RE.fullmatch(item["checksums_sha256"]) is None for item in candidates):
+        raise R3Error(error_code)
+    if candidates != sorted(candidates, key=lambda item: item["release_id"].encode("utf-8")) or len({item["release_id"] for item in candidates}) != len(candidates):
+        raise R3Error(error_code)
+    expected = raw.get("expected_current_sha256")
+    if expected is not None and (not isinstance(expected, str) or _RELEASE_HASH_RE.fullmatch(expected) is None):
+        raise R3Error(error_code)
+    if raw.get("status") not in {"passed", "failed", "stale", "applied"} or not isinstance(raw.get("can_apply"), bool) or (raw["status"] == "passed") != raw["can_apply"] or not isinstance(raw.get("created_at"), str) or _RELEASE_TIMESTAMP_RE.fullmatch(raw["created_at"]) is None or not isinstance(raw.get("updated_at"), str) or _RELEASE_TIMESTAMP_RE.fullmatch(raw["updated_at"]) is None or (raw.get("error_code") is not None and (not isinstance(raw["error_code"], str) or _SAFE_CODE.fullmatch(raw["error_code"]) is None)):
+        raise R3Error(error_code)
+    return {
+        "format_version": 1,
+        "activation_check_id": raw["activation_check_id"],
+        "run_id": raw["run_id"],
+        "minecraft_version": raw["minecraft_version"],
+        "target_release_id": raw["target_release_id"],
+        "candidate_releases": [dict(item) for item in candidates],
+        "expected_current_sha256": expected,
+        "status": raw["status"],
+        "can_apply": raw["can_apply"],
+        "created_at": raw["created_at"],
+        "updated_at": raw["updated_at"],
+        "error_code": raw["error_code"],
     }
 
 
@@ -2946,9 +3035,11 @@ def _validation_fields(errors: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     public_fields = {
         "action",
         "adapter",
+        "activation_check_id",
         "base_url",
         "check_id",
         "confirm",
+        "confirm_current_switch",
         "confirm_immutable_release",
         "copy_mode",
         "expected_base_export_id",
@@ -2960,7 +3051,9 @@ def _validation_fields(errors: Sequence[Mapping[str, Any]]) -> dict[str, str]:
         "plan_hash",
         "query",
         "run_id",
+        "set_as_default",
         "stage",
+        "target_release_id",
         "target_ids",
         "wave_hash",
     }
@@ -2984,6 +3077,7 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
             "REVIEW_NOT_FOUND",
             "IMPORT_NOT_FOUND",
             "RELEASE_CHECK_NOT_FOUND",
+            "ACTIVATION_CHECK_NOT_FOUND",
             "RUN_NOT_FOUND",
         }
         conflict = {
@@ -3002,6 +3096,12 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
             "BANNER_REFRESH_LIVE_WORK",
             "BANNER_REFRESH_ALREADY_APPLIED",
             "BANNER_REFRESH_RECOVERY_REQUIRED",
+            "ACTIVATION_CHECK_NOT_READY",
+            "ACTIVATION_CHECK_STALE",
+            "ACTIVATION_CURRENT_STALE",
+            "ACTIVATION_CANDIDATES_STALE",
+            "ACTIVATION_RUN_STATE_INVALID",
+            "CURRENT_SWITCH_BUSY",
         }
         invalid = {
             "INVALID_INPUT",
@@ -3026,6 +3126,9 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
             "BANNER_REFRESH_PATH_UNSAFE",
             "BANNER_REFRESH_FAILED",
             "BANNER_REFRESH_SOURCE_ARTIFACT_INVALID",
+            "ACTIVATION_CONFIRMATION_REQUIRED",
+            "ACTIVATION_DEFAULT_REQUIRED",
+            "ACTIVATION_DEFAULT_INVALID",
         }
         unprocessable = {
             "PROVIDER_CONFIG_INVALID",
@@ -3041,9 +3144,19 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
             "DATABASE_SCHEMA_MISMATCH",
             "RELEASE_BUILD_INTEGRITY_FAILED",
             "RELEASE_CHECK_FAILED",
+            "ACTIVATION_CANDIDATES_INSUFFICIENT",
+            "ACTIVATION_TARGET_INVALID",
+            "ACTIVATION_CANDIDATE_LINEAGE_INVALID",
+            "ACTIVATION_MCP_SMOKE_FAILED",
+            "ACTIVATION_RELEASE_INTEGRITY_FAILED",
+            "ACTIVATION_STATE_INVALID",
+            "CURRENT_POINTER_INVALID",
+            "ACTIVATION_AUDIT_INTEGRITY_FAILED",
+            "ACTIVATION_INPUT_STALE",
+            "ACTIVATION_STATE_WRITE_FAILED",
             "PROVIDER_RETRY_NOT_ELIGIBLE",
         }
-        if code in {"RELEASE_BUILD_FAILED", "BANNER_REFRESH_FAILED"}:
+        if code in {"RELEASE_BUILD_FAILED", "BANNER_REFRESH_FAILED", "CURRENT_SWITCH_FAILED", "ACTIVATION_APPLY_FAILED"}:
             status = 500
         elif code == "WORKER_UNAVAILABLE":
             status = 503
@@ -3075,6 +3188,20 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
             "RELEASE_CHECK_STALE": "候选发布检查已过期，请重新执行检查。",
             "RELEASE_ALREADY_BUILT": "该候选发布检查已经构建过。",
             "RELEASE_BUILD_INTEGRITY_FAILED": "候选发布完整性校验未通过。",
+            "ACTIVATION_CHECK_NOT_FOUND": "激活检查不存在或已失效。",
+            "ACTIVATION_CHECK_NOT_READY": "激活检查尚未通过或已经使用。",
+            "ACTIVATION_CHECK_STALE": "激活检查已过期，请重新执行检查。",
+            "ACTIVATION_CURRENT_STALE": "当前指针已变化，请重新执行激活检查。",
+            "ACTIVATION_CANDIDATES_STALE": "候选集合已变化，请重新执行激活检查。",
+            "ACTIVATION_CANDIDATES_INSUFFICIENT": "尚无两个独立且完整的 v2 candidate。",
+            "ACTIVATION_TARGET_INVALID": "目标 candidate 不满足激活门。",
+            "ACTIVATION_MCP_SMOKE_FAILED": "临时 release 的 MCP 四工具冒烟未通过。",
+            "ACTIVATION_RELEASE_INTEGRITY_FAILED": "candidate release 完整性校验未通过。",
+            "ACTIVATION_DEFAULT_REQUIRED": "首次激活必须将目标版本设为默认版本。",
+            "ACTIVATION_CONFIRMATION_REQUIRED": "必须明确确认 current 切换。",
+            "ACTIVATION_RUN_STATE_INVALID": "运行尚未处于可激活边界。",
+            "CURRENT_POINTER_INVALID": "当前指针不符合严格契约。",
+            "CURRENT_SWITCH_FAILED": "current 指针原子切换未完成。",
             "RELEASE_BUILD_FAILED": "候选发布构建未完成。",
             "WORKER_UNAVAILABLE": "内置 Worker 当前不可用。请重启 Index Studio 后再试。",
             "OVERRIDE_INVALID": "人工覆盖内容不合法。",

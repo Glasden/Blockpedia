@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import platform
 import sqlite3
+import struct
 import threading
 import time
+import zlib
 from pathlib import Path
 
 import pytest
 
-from blockpedia.features import axis_aligned_union, extract_features
+from blockpedia.features import PngDecodeError, axis_aligned_union, decode_rgba_png, extract_features, validate_rgba_png
 from blockpedia.importer import ImportNotAllowed
 from blockpedia.paths import DataRoot, ExportPathError, UnsafeReference, default_data_root
 from blockpedia.run_snapshots import _safe_config
@@ -18,6 +20,57 @@ from blockpedia.services import StudioService
 from blockpedia.stages import RunStateConflict
 from blockpedia.storage import DatabaseSchemaMismatch, WorkspaceDatabase, utc_now
 from blockpedia.toolchain import ToolchainProbe
+
+
+def _png_chunk(kind: bytes, data: bytes) -> bytes:
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+
+def _rgba_png(width: int, height: int, scanlines: bytes) -> bytes:
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header) + _png_chunk(b"IDAT", zlib.compress(scanlines)) + _png_chunk(b"IEND", b"")
+
+
+def _filter_scanlines(pixels: bytes, width: int, height: int, filter_type: int) -> bytes:
+    row_bytes = width * 4
+    rows = [pixels[row * row_bytes : (row + 1) * row_bytes] for row in range(height)]
+    previous = bytes(row_bytes)
+    filtered = bytearray()
+    for current in rows:
+        row = bytearray(row_bytes)
+        for index, value in enumerate(current):
+            left = current[index - 4] if index >= 4 else 0
+            above = previous[index]
+            upper_left = previous[index - 4] if index >= 4 else 0
+            if filter_type == 0:
+                predictor = 0
+            elif filter_type == 1:
+                predictor = left
+            elif filter_type == 2:
+                predictor = above
+            elif filter_type == 3:
+                predictor = (left + above) // 2
+            else:
+                estimate = left + above - upper_left
+                distances = (abs(estimate - left), abs(estimate - above), abs(estimate - upper_left))
+                predictor = (left, above, upper_left)[distances.index(min(distances))]
+            row[index] = (value - predictor) & 0xFF
+        filtered.append(filter_type)
+        filtered.extend(row)
+        previous = current
+    return bytes(filtered)
+
+
+def _chunk_location(payload: bytes, wanted: bytes) -> tuple[int, int, int, int]:
+    offset = 8
+    while offset + 12 <= len(payload):
+        length = int.from_bytes(payload[offset : offset + 4], "big")
+        data_start = offset + 8
+        data_end = data_start + length
+        if payload[offset + 4 : offset + 8] == wanted:
+            return offset + 4, data_start, data_end, data_end + 4
+        offset = data_end + 4
+    raise AssertionError(f"missing PNG chunk {wanted!r}")
 
 
 def test_cross_platform_defaults_and_safe_refs(tmp_path: Path) -> None:
@@ -115,6 +168,40 @@ def test_feature_determinism(export_fixture: Path) -> None:
     assert first == second
     assert first["feature_extractor_version"] == "features.v1"
     assert 0 < first["mask_coverage"] < 1
+
+
+def test_png_metadata_matches_full_decoder_for_all_filter_types() -> None:
+    width, height = 2, 2
+    pixels = bytes((10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255))
+    for filter_type in range(5):
+        payload = _rgba_png(width, height, _filter_scanlines(pixels, width, height, filter_type))
+        metadata = validate_rgba_png(payload)
+        decoded = decode_rgba_png(payload)
+        assert (metadata.width, metadata.height) == (decoded.width, decoded.height) == (width, height)
+        assert decoded.pixels == pixels
+
+
+@pytest.mark.parametrize("corruption", ["crc", "zlib", "scanline", "filter"])
+def test_png_metadata_and_full_decoder_reject_corruption(corruption: str) -> None:
+    width, height = 2, 2
+    pixels = bytes((10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255))
+    valid_scanlines = _filter_scanlines(pixels, width, height, 0)
+    if corruption == "scanline":
+        payload = _rgba_png(width, height, valid_scanlines[:-1])
+    elif corruption == "filter":
+        payload = _rgba_png(width, height, bytes((5,)) + valid_scanlines[1:])
+    else:
+        raw = bytearray(_rgba_png(width, height, valid_scanlines))
+        kind_start, data_start, data_end, crc_start = _chunk_location(bytes(raw), b"IDAT")
+        if corruption == "crc":
+            raw[crc_start] ^= 1
+        else:
+            raw[data_start] = 0
+            raw[crc_start : crc_start + 4] = struct.pack(">I", zlib.crc32(raw[kind_start:data_end]) & 0xFFFFFFFF)
+        payload = bytes(raw)
+    for parser in (validate_rgba_png, decode_rgba_png):
+        with pytest.raises(PngDecodeError):
+            parser(payload)
 
 
 def test_check_uses_immutable_snapshot_after_source_changes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, export_fixture: Path) -> None:

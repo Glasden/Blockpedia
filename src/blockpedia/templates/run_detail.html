@@ -65,13 +65,15 @@
     <section class="future-card" aria-labelledby="future-heading">
       <span>PHASE C / R4 / R5</span>
       <h2 id="future-heading">当前实现边界</h2>
-      <p>候选检查与不可变构建已放在本运行页。后续阶段入口仍不在这里提供。</p>
+      <p>候选检查、不可变构建与首次激活都在本运行页。其他后续入口仍不在这里提供。</p>
     </section>
   </aside>
 </div>
 
 <section class="page-shell r3-control-shell reveal reveal--3">
   {% if run_view.get('boundary_event') == 'R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING' %}
+    {% with run=run_view, run_identifier=run_identifier %}{% include "partials/release_candidate.html" %}{% endwith %}
+  {% elif run_view.get('boundary_event') == 'R3_CANDIDATE_BUILT_ACTIVATION_PENDING' and run_view.get('current_stage') == 'ACTIVATE_RELEASE' %}
     {% with run=run_view, run_identifier=run_identifier %}{% include "partials/release_candidate.html" %}{% endwith %}
   {% else %}
     {% with run=run_view, run_identifier=run_identifier %}{% include "partials/ai_batch.html" %}{% endwith %}

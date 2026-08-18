@@ -1,15 +1,140 @@
 {% set run_view = run|default({}, true) %}
 {% set run_identifier = run_view.get('run_id', run_identifier|default('unavailable')) %}
+{% set activation_mode = run_view.get('boundary_event') == 'R3_CANDIDATE_BUILT_ACTIVATION_PENDING' and run_view.get('current_stage') == 'ACTIVATE_RELEASE' %}
+{% set suggested_release_id = run_view.get('target_release_id', run_view.get('release_id', '')) %}
 <section
   class="release-candidate"
   data-release-candidate
   data-candidate-run-id="{{ run_identifier }}"
   data-candidate-version="{{ run_view.get('minecraft_version', '26.2') }}"
+  {% if activation_mode %}
+  data-release-activation
+  data-activation-check-route="/api/releases/activation-check"
+  data-activation-apply-route="/api/releases/apply"
+  data-state="activation-ready"
+  {% else %}
   data-candidate-check-route="/api/releases/check"
   data-candidate-build-route="/api/releases/build"
   data-state="ready"
+  {% endif %}
   aria-labelledby="release-candidate-heading"
 >
+  {% if activation_mode %}
+  <header class="release-candidate__header">
+    <div>
+      <p class="section-index"><span>R5</span> / ACTIVATE_RELEASE</p>
+      <h2 id="release-candidate-heading">首次激活</h2>
+      <p>确认目标 release，先运行激活检查，再显式切换 <code>current</code>。</p>
+    </div>
+    <div class="candidate-safety-note" role="note">
+      <span aria-hidden="true">◇</span>
+      <p><b>检查不会切换 current</b><br>只有应用操作成功后，当前指针才会改变。</p>
+    </div>
+  </header>
+
+  <ol class="candidate-step-rail" aria-label="激活检查与应用步骤">
+    <li class="is-current" data-activation-step="check"><span>01</span><div><b>激活检查</b><small>核对候选与 MCP smoke</small></div></li>
+    <li data-activation-step="apply"><span>02</span><div><b>切换 current</b><small>需要两项显式确认</small></div></li>
+  </ol>
+
+  <div class="candidate-status-line" role="status" aria-live="polite" data-candidate-status>
+    <span class="status-badge status-badge--paused" data-candidate-badge>等待检查</span>
+    <p data-candidate-message><code>current</code> 尚未切换。请先确认目标 release。</p>
+  </div>
+
+  <form class="candidate-action-row activation-check-form" action="/api/releases/activation-check" method="post" data-activation-check-form autocomplete="off">
+    <div class="activation-check-fields">
+      <div class="field-group">
+        <label for="activation-target-{{ run_identifier }}">目标 release_id</label>
+        <input
+          id="activation-target-{{ run_identifier }}"
+          name="target_release_id"
+          type="text"
+          value="{{ suggested_release_id }}"
+          required
+          maxlength="36"
+          pattern="rel_[0-9a-f]{32}"
+          placeholder="rel_…"
+          spellcheck="false"
+          aria-describedby="activation-target-help-{{ run_identifier }}"
+          data-activation-target
+          data-activation-control
+        >
+        <small id="activation-target-help-{{ run_identifier }}">输入要成为 Minecraft {{ run_view.get('minecraft_version', '26.2') }} 当前版本的不可变 v2 release。</small>
+      </div>
+      <div class="activation-check-context" aria-label="激活检查上下文">
+        <span>运行 <code>{{ run_identifier }}</code></span>
+        <span>版本 <code>{{ run_view.get('minecraft_version', '26.2') }}</code></span>
+      </div>
+    </div>
+    <button class="button button--primary" type="submit" data-activation-check data-activation-control>运行激活检查 <span aria-hidden="true">→</span></button>
+  </form>
+
+  <section class="candidate-check-result activation-check-result" data-activation-check-result hidden aria-labelledby="activation-check-result-heading">
+    <header>
+      <div><p class="section-index">ACTIVATION CHECK</p><h3 id="activation-check-result-heading">检查摘要</h3></div>
+      <span class="status-badge" data-activation-result-badge>等待结果</span>
+    </header>
+    <dl>
+      <div><dt>activation_check_id</dt><dd><code data-activation-field="activation_check_id">—</code></dd></div>
+      <div><dt>target release</dt><dd><code data-activation-field="target_release_id">—</code></dd></div>
+      <div><dt>可用候选</dt><dd data-activation-field="candidate_count">—</dd></div>
+      <div><dt>current 前置</dt><dd><code data-activation-field="expected_current_sha256">—</code></dd></div>
+      <div><dt>updated</dt><dd><time data-activation-field="updated_at">—</time></dd></div>
+    </dl>
+    <p class="activation-no-switch" data-activation-check-note>检查结果不会切换 <code>current</code>。</p>
+  </section>
+
+  <div class="candidate-blocked" data-activation-blocked hidden>
+    <span aria-hidden="true">!</span>
+    <p><b data-activation-blocked-heading>激活检查未通过</b><br><span data-activation-blocked-message>请按稳定错误码处理后重新检查；current 未切换。</span></p>
+  </div>
+
+  <section class="candidate-build-action activation-apply-action" data-activation-apply-action hidden aria-labelledby="activation-apply-heading">
+    <div class="activation-apply-intro">
+      <p class="section-index">PASSED / NOT APPLIED</p>
+      <h3 id="activation-apply-heading">检查已通过，等待确认。</h3>
+      <p>应用前仍未发生 current 切换。修改目标 release 后必须重新检查。</p>
+    </div>
+    <form action="/api/releases/apply" method="post" data-activation-apply-form autocomplete="off">
+      <input type="hidden" name="activation_check_id" value="" data-activation-check-id>
+      <div class="activation-confirmation-grid">
+        <label class="banner-refresh__confirm activation-confirm">
+          <input name="confirm_current_switch" type="checkbox" value="true" required data-activation-confirm data-activation-control>
+          <span><b>确认切换 current</b><small>我已核对目标 release，并确认执行当前指针切换。当前最小流程尚未提供回滚操作。</small></span>
+        </label>
+        <fieldset class="review-decisions activation-default-choice">
+          <legend>是否设为默认版本</legend>
+          <label><input name="set_as_default" type="radio" value="true" checked required data-activation-default data-activation-control><span><b>是，设为默认</b><small>首次激活使用此选择</small></span></label>
+          <label><input name="set_as_default" type="radio" value="false" data-activation-default data-activation-control><span><b>否，保留原默认</b><small>已有其他默认版本时使用</small></span></label>
+        </fieldset>
+      </div>
+      <div class="activation-apply-submit">
+        <p role="status" aria-live="polite" data-activation-apply-status>勾选切换确认后才能应用。</p>
+        <button class="button button--primary" type="submit" disabled data-activation-apply data-activation-control>应用并切换 current <span aria-hidden="true">→</span></button>
+      </div>
+    </form>
+  </section>
+
+  <section class="candidate-built activation-applied" data-activation-applied hidden aria-labelledby="activation-applied-heading">
+    <span class="candidate-built__mark" aria-hidden="true">✓</span>
+    <div>
+      <p class="section-index">CURRENT SWITCHED</p>
+      <h3 id="activation-applied-heading">current 已切换</h3>
+      <dl>
+        <div><dt>release_id</dt><dd><code data-activation-applied-field="target_release_id">—</code></dd></div>
+        <div><dt>minecraft_version</dt><dd><code data-activation-applied-field="minecraft_version">—</code></dd></div>
+        <div><dt>updated_at</dt><dd><time data-activation-applied-field="updated_at">—</time></dd></div>
+      </dl>
+      <p data-activation-success-message>当前指针已切换到所选 release。</p>
+    </div>
+  </section>
+
+  <div class="candidate-error" role="alert" data-candidate-error hidden>
+    <span class="error-code" data-candidate-error-code>ACTIVATION_CHECK_FAILED</span>
+    <p data-candidate-error-message>激活操作未完成。</p>
+  </div>
+  {% else %}
   <header class="release-candidate__header">
     <div>
       <p class="section-index"><span>PHASE C</span> / BUILD_RELEASE</p>
@@ -87,4 +212,5 @@
     <span class="error-code" data-candidate-error-code>RELEASE_CHECK_FAILED</span>
     <p data-candidate-error-message>候选操作未完成。</p>
   </div>
+  {% endif %}
 </section>

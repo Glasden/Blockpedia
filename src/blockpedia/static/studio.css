@@ -6599,6 +6599,44 @@ output {
   font-size: 0.68rem;
 }
 
+.activation-check-form {
+  align-items: end;
+}
+
+.candidate-action-row > .activation-check-fields {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(170px, 0.45fr);
+  flex: 1;
+  gap: 1rem;
+  align-items: end;
+}
+
+.activation-check-fields .field-group small {
+  max-width: 700px;
+}
+
+.activation-check-context {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.65rem 0.75rem;
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+}
+
+.activation-check-context span {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 0.4rem;
+  color: var(--ink-soft);
+  font-size: 0.61rem;
+}
+
+.activation-check-context code {
+  color: var(--teal);
+  font-size: 0.6rem;
+  overflow-wrap: anywhere;
+}
+
 .candidate-check-result {
   margin: 0 clamp(1.2rem, 3vw, 2rem) 1.2rem;
   background: var(--panel);
@@ -6663,6 +6701,15 @@ output {
   overflow-wrap: anywhere;
 }
 
+.activation-no-switch {
+  margin: 0;
+  padding: 0.7rem 1rem;
+  color: var(--teal);
+  background: var(--teal-pale);
+  border-top: 1px solid #9bbabb;
+  font-size: 0.7rem;
+}
+
 .candidate-blocked {
   display: flex;
   align-items: flex-start;
@@ -6717,6 +6764,80 @@ output {
 
 .candidate-build-action .button {
   flex: 0 0 auto;
+}
+
+.activation-apply-action {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.42fr) minmax(0, 0.58fr);
+  align-items: stretch;
+}
+
+.activation-apply-intro {
+  align-self: center;
+}
+
+.activation-apply-action > form {
+  display: grid;
+  gap: 0.8rem;
+  min-width: 0;
+}
+
+.activation-confirmation-grid {
+  display: grid;
+  grid-template-columns: minmax(200px, 0.8fr) minmax(280px, 1.2fr);
+  gap: 0.7rem;
+}
+
+.activation-confirm {
+  padding: 0.8rem;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+}
+
+.activation-confirm b,
+.activation-confirm small {
+  display: block;
+}
+
+.activation-confirm b {
+  font-family: var(--sans);
+  font-size: 0.7rem;
+}
+
+.activation-confirm small {
+  margin-top: 0.2rem;
+  color: var(--ink-soft);
+  font-size: 0.61rem;
+  line-height: 1.45;
+}
+
+.activation-default-choice {
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.activation-default-choice legend {
+  margin-bottom: 0.35rem;
+  font-size: 0.74rem;
+}
+
+.activation-apply-submit {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.8rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #a6bfa0;
+}
+
+.activation-apply-submit p {
+  flex: 1;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.68rem;
 }
 
 .candidate-built {
@@ -6785,6 +6906,10 @@ output {
   font-size: 0.7rem;
 }
 
+.activation-applied dl {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .candidate-error {
   display: flex;
   align-items: center;
@@ -6802,7 +6927,9 @@ output {
 }
 
 .release-candidate[data-state="checking"] .candidate-action-row,
-.release-candidate[data-state="building"] .candidate-build-action {
+.release-candidate[data-state="building"] .candidate-build-action,
+.release-candidate[data-state="activation-checking"] .activation-check-form,
+.release-candidate[data-state="activation-applying"] .activation-apply-action {
   background: linear-gradient(90deg, var(--panel), var(--teal-pale), var(--panel));
   background-size: 220% 100%;
   animation: progress-scan 1.4s linear infinite;
@@ -6811,7 +6938,8 @@ output {
 @media (max-width: 760px) {
   .release-candidate__header,
   .candidate-action-row,
-  .candidate-build-action {
+  .candidate-build-action,
+  .activation-apply-submit {
     align-items: stretch;
     flex-direction: column;
   }
@@ -6821,12 +6949,14 @@ output {
   }
 
   .candidate-action-row .button,
-  .candidate-build-action .button {
+  .candidate-build-action .button,
+  .activation-apply-submit .button {
     width: 100%;
   }
 
   .candidate-check-result dl,
-  .candidate-built dl {
+  .candidate-built dl,
+  .activation-applied dl {
     grid-template-columns: 1fr;
   }
 
@@ -6837,6 +6967,12 @@ output {
 
   .candidate-built__hashes {
     grid-column: auto;
+  }
+
+  .candidate-action-row > .activation-check-fields,
+  .activation-apply-action,
+  .activation-confirmation-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -6858,5 +6994,9 @@ output {
   .candidate-built__hashes dd > span {
     grid-template-columns: 1fr;
     gap: 0.1rem;
+  }
+
+  .activation-default-choice {
+    grid-template-columns: 1fr;
   }
 }
