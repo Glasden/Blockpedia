@@ -16,7 +16,7 @@
 
 ## 1. 检索输入和版本边界
 
-每次检索 **MUST** 解析到一个精确的、完整性通过的不可变 `release`。WebUI/API 搜索测试必须显式提供 `minecraft_version`；MCP 的 `minecraft_version` 可以省略，省略时使用 `current-pointer.v1.default_minecraft_version` 对应的 current release，显式版本使用该版本的 current release。未知或未发布版本返回 `VERSION_NOT_AVAILABLE` 并列出可用精确版本，**MUST NOT** 回退到其他版本。MCP 不支持历史 `release_id` selector；历史选择只由 WebUI rollback 完成。
+每次检索 **MUST** 解析到一个精确的、完整性通过的不可变 `release`。WebUI/API 搜索测试必须显式提供 `minecraft_version`；MCP 的 `minecraft_version` 可以省略，省略时使用 `current-pointer.v1.default_minecraft_version` 对应的 current release，显式输入必须匹配严格版本格式 `^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$`，格式非法返回 JSON-RPC `-32602`。格式合法但未知或未发布版本返回 `VERSION_NOT_AVAILABLE` 并列出可用精确版本，**MUST NOT** 回退到其他版本。MCP 不支持历史 `release_id` selector；历史选择只由 WebUI rollback 完成。MCP/activation 只接受 fresh `release-index.v2.sql` projection；历史 v1 index 返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`。
 
 搜索只读发布投影，不读取 `workspace`、草稿、未审核 annotation 或正在生成的图片。`excluded`、无发布变体和未审核高优先级记录不得进入默认候选；详情可在 release 允许时展示审计事实。所有返回的 `block_id`、`variant_id`、状态、图片映射和 release 元数据必须来自该 release。
 
@@ -37,7 +37,7 @@
 }
 ```
 
-约束：`query` 为 1–2000 个 Unicode 字符；`limit` 为 1–12，默认 8；WebUI/API 的 release 固定为 resolved `current`，不得从查询输入选择历史 release；`context.family` 只能引用 resolved current release 中已存在的 family；`context.compare_states` 默认 false；`rerank` 只能为 `auto`、`local_only` 或 `required`。未知字段、绝对路径、SQL、`block_id` 候选列表和未声明的硬规则必须拒绝。
+约束：`minecraft_version` 省略或匹配上述 pattern；`query` 为 1–2000 个 Unicode 字符；`limit` 为 1–12，默认 8；WebUI/API 的 release 固定为 resolved `current`，不得从查询输入选择历史 release；当前 R4 没有 schema-owned `family_id` 或 family catalog，`context.family` 必须为 null。非 null 的 `context.family` 在 input shape 有效后返回业务错误 `QUERY_INVALID`，不得推断或创建 family ID；`context.compare_states` 默认 false；`rerank` 只能为 `auto`、`local_only` 或 `required`。未知字段、绝对路径、SQL、`block_id` 候选列表和未声明的硬规则必须拒绝并按输入契约返回 JSON-RPC `-32602`。
 
 ## 2. `QuerySpec` strict Schema
 
@@ -85,8 +85,8 @@ resolve current release
   → FTS5/field recall
   → deterministic score
   → Top-24
-  → family dedupe
-  → 8–12 contact-sheet candidates
+  → preserve stable order
+  → 8–12 contact-sheet candidates (stable order)
   → optional visual rerank
 ```
 
@@ -144,26 +144,21 @@ behavior       0.05
 
 排序结果至少包含：`local_score`、`score_breakdown`、`search_ranking_version`、`hard_filter_reasons`、`warnings`。权重任何改变必须产生新 `search-ranking.vN`、新 release/配置快照和新的测试证据；不得在运行时悄悄调参。
 
-## 5. Top-24、family 去重和联系表
+## 5. Top-24、稳定顺序和联系表
 
 ### 5.1 Top-24
 
 本地评分后必须先截取最多 24 个候选（少于 24 时返回实际数量），并以稳定排序键决定截断。Top-24 之前不得使用视觉 LLM；不得让 LLM 扩大召回集合。
 
-### 5.2 family 去重
+### 5.2 family 参数当前 R4 为 no-op
 
-默认同一 `family` 最多保留 2 个候选，选择分数更高且变体不同者；family 未知时只按真实 `family_id`，不得由模型临时创建 family。以下情况可解除 family 上限：
+当前 R4 release projection 没有 schema-owned `family_id` 或 family catalog，因此不执行 family 分组。`context.family=null` 是确定性 no-op：不应用 family 上限、不生成 family warning，也不改变候选顺序。非 null 的 `context.family` 在 input shape 有效后必须返回 `QUERY_INVALID`，不得从文本、语义标签或模型输出推断/创建 family ID。
 
-- 用户显式请求比较某个 family；
-- 用户显式请求比较多个状态/变体；
-- `context.compare_states=true`；
-- `compare_blocks` 工具明确传入 2–6 个 block ID。
-
-解除原因必须在 `dedupe_policy` 和 warnings 中说明。去重不能删除硬约束通过的唯一候选，也不能以“多样性”为理由新增候选。
+`context.compare_states=true` 和 `compare_blocks` 的显式 2–6 个 `block_id` 只影响给定状态/方块的比较范围，不解除不存在的 family limit，也不产生 family metadata。当前 R4 不得新增 family dedupe 字段、响应 metadata 或持久化数据。
 
 ### 5.3 8–12 联系表
 
-从 family 去重结果生成最多 8–12 个候选的稳定联系表；候选少于 8 时使用实际数量，绝不填充虚假 ID。每个 tile 具有唯一 `candidate_id`，格式建议为 `A1`、`A2`、`B1`，但最终格式必须由 release/schema 固定；tile 映射必须是本地生成的：
+从 Top-24 的稳定顺序生成最多 8–12 个候选的联系表；候选少于 8 时使用实际数量，绝不填充虚假 ID。每个 tile 具有唯一 `candidate_id`，格式建议为 `A1`、`A2`、`B1`，但最终格式必须由 release/schema 固定；tile 映射必须是本地生成的：
 
 ```json
 {
@@ -186,7 +181,7 @@ behavior       0.05
 
 ## 6. 同一个模型视觉重排
 
-若 `rerank=auto` 且 Studio 活动 profile 或 release-bound snapshot 的选定 adapter 能力通过，使用 [`openai-provider.md`](openai-provider.md) 中同一 `adapter`/`model_id` 的 strict `rerank-output.v1` 请求。若 `rerank=required` 而 provider 不可用，返回可操作业务错误，不伪造重排；若 `auto` 失败，必须返回本地排序结果并设置 `reranked_by_llm=false`，不得自动切换协议。
+若 `rerank=auto` 且 Studio 活动 profile 或 release-bound snapshot 的选定 adapter 能力通过，使用 [`openai-provider.md`](openai-provider.md) 中同一 `adapter`/`model_id` 的 strict `rerank-output.v1` 请求。若 `rerank=required` 而 provider 不可用，返回顶层 `RERANK_REQUIRED_UNAVAILABLE`，底层 provider code 只放入 `details.provider_error_code`，不伪造重排；若 `auto` 失败，必须返回 `isError=false` 的本地排序结果、warning 并设置 `reranked_by_llm=false`，不得自动切换协议。
 
 模型输入只能是原始 query、已校验 QuerySpec、8–12 个候选联系表和每个候选的最小已验证机器/语义 metadata。模型输出只能重排现有 `candidate_id` 并提供理由；它不得新增、删除或改写候选、`block_id`、状态、图片、硬过滤结果、candidate qualification、release metadata 或机器事实。消费端必须检查输出集合与本地集合完全一致；失败进入 `PROVIDER_OUTPUT_ID_MISMATCH`/warning，并走本地降级。
 
@@ -243,7 +238,7 @@ MCP 等价在线搜索结构化结果使用 `mcp-search-blocks-output.v1`，至�
 
 在线 QuerySpec/重排缓存必须遵循 [`openai-provider.md`](openai-provider.md) 的 key：`image_hash`、`machine_metadata_hash`、`adapter`、`prompt_version`、`model_id`、`schema_version`、`base_url_stable_id`、`stage`，并额外绑定 `minecraft_version`、resolved release manifest hash、原始 query hash、QuerySpec hash、候选集合 hash 和 `search-ranking_version`。缓存只能保存通过 Schema 的最小 artifact，不保存完整 response、图片或 usage；MCP 进程不写此缓存。
 
-同一 release、同一 QuerySpec、同一排序配置和同一 fixture 必须产生相同 Top-24、family 去重、tile mapping、候选 ID 和本地顺序；时间、request ID 和展示 `search_id` 不参与排序。
+同一 release、同一 QuerySpec、同一排序配置和同一 fixture 必须产生相同 Top-24、family no-op 结果、tile mapping、候选 ID 和本地顺序；Top-24 之后必须保持该稳定顺序。时间、request ID 和展示 `search_id` 不参与排序。
 
 ## 9. 错误码
 
@@ -252,8 +247,8 @@ MCP 等价在线搜索结构化结果使用 `mcp-search-blocks-output.v1`，至�
 | `VERSION_REQUIRED` | WebUI/API 缺少 `minecraft_version`；MCP 省略不报错 | 否 |
 | `VERSION_NOT_AVAILABLE` | 未知或未发布版本 | 否 |
 | `RELEASE_NOT_FOUND` | current pointer 指向不存在 release | 否 |
-| `RELEASE_INTEGRITY_FAILED` | manifest/hash/质量门失败 | 否 |
-| `QUERY_INVALID` | query/context/Schema 非法 | 否 |
+| `RELEASE_INTEGRITY_FAILED` | manifest/hash/质量门/index format 失败；历史 v1 index 的 MCP details component 为 `index` | 否 |
+| `QUERY_INVALID` | query/context/Schema 非法，或非 null 的 `context.family` | 否 |
 | `QUERY_PARSE_FAILED` | 无法得到安全 QuerySpec | 仅返回安全空结果 |
 | `HARD_CONSTRAINT_UNSUPPORTED` | 请求硬条件不在机器或 bounded semantic fields 能力内 | 否，须追问 |
 | `NO_CANDIDATES` | 保留为内部/兼容诊断码；正常硬过滤空集不得作为 MCP error | 否，保持空成功 |
@@ -266,7 +261,7 @@ MCP 等价在线搜索结构化结果使用 `mcp-search-blocks-output.v1`，至�
 | `IMAGE_READ_FAILED` | release 图片不可读 | 否，发布门应已阻断 |
 | `BLOCK_NOT_FOUND` | 详情或比较 ID 不存在 | 否 |
 
-错误消息必须说明修复动作，不回显路径、key、完整 provider response 或 SQL。
+本表中的 provider codes 是 search lane 的内部分类，不是 `mcp-error.v1.error_code` 的新增值；MCP 顶层错误和 `details.provider_error_code` 映射以 [`mcp-api.md`](mcp-api.md) 为准。错误消息必须说明修复动作，不回显路径、key、完整 provider response 或 SQL。
 
 ## 10. 可执行验收
 
@@ -276,7 +271,7 @@ MCP 等价在线搜索结构化结果使用 `mcp-search-blocks-output.v1`，至�
 2. 版本、发布状态、合法状态、明确排除行为、明确支撑/透明/发光/方向/形状先过滤；空结果为成功空集，不放宽并带建议追问。
 3. FTS5 trigram 和 `normalized_like` fallback 都覆盖名称、同义词、颜色、几何、用途、风格和行为通道。
 4. `search-ranking.v1` 权重精确为 `.35/.30/.15/.10/.05/.05`；未出现维度按规则归一化；结果可复现。
-5. Top-24 → family 默认最多 2 个 → 8–12 联系表；显式 family/state comparison 能解除上限，不能新增虚假候选。
+5. Top-24 后 family dedupe 必须是确定性 no-op：`context.family=null` 保持稳定顺序并生成 8–12 联系表；非 null 的 `context.family` 返回 `QUERY_INVALID`。`compare_states`/`compare_blocks` 不解除不存在的 family limit，也不能新增 family metadata 或虚假候选。
 6. provider 重排只允许已有 candidate ID；成功结果 `reranked_by_llm=true`，失败降级明确 `false`，不改变硬过滤。
 7. 图像编号、结构化映射和 `block_id`/state 全部来自 release，图片不可读或映射不一致时失败。
 8. 歧义返回 `needs_user_choice`、歧义点和建议追问；未验证视觉条件返回 warning 和 `visual_constraints_verified=false`。

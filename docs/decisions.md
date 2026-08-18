@@ -47,7 +47,7 @@
 | D-034 | 不制作安装包、容器、服务或自动更新 | 交付为源码锁依赖和本地运行说明；不增加部署层 |
 | D-035 | 等价技术替换必须先记录影响并获项目所有者明确批准 | 记录必须证明单机、复现、无额外服务、MCP 只读和数据契约不受破坏；未经批准不得编码 |
 | D-036 | R0 物化采用最小闭合：精确字段形状唯一由 `schemas/{exporter,workspace,provider,mcp}` 下的 26 个真实 Schema 文件拥有；Markdown 只拥有核心产品、组件和安全行为，示例仅为说明 | 不重复穷举字段形状；R0 只做轻量 inventory/fixture/provider wire 基础验证，不引入通用规则引擎、额外 Schema ID、词汇 artifact、服务或 R2-R4 内部视图设计；项目 owner 已于 2026-08-13 在本会话批准该简化 |
-| D-037 | R3 Phase C candidate check/build 契约按 owner 批准的 Recommended Oracle 方案冻结 | 只增加 WebUI 同步 check/build、check cache、逻辑 snapshot fingerprint、独立 `release-index.v1.sql`、Gate C 质量报告、release 内人工记录包和安全提交边界；不改变 `workspace.v1.sql`、26 个 JSON Schema、依赖、服务、Python CLI、R4 或 R5；Phase C 不实现 activation/current/MCP 或第二 release |
+| D-037 | R3 Phase C candidate check/build 契约按 owner 批准的 Recommended Oracle 方案冻结 | 只增加 WebUI 同步 check/build、check cache、逻辑 snapshot fingerprint、独立 `release-index.v1.sql`、Gate C 质量报告、release 内人工记录包和安全提交边界；保留 R3 v1 candidate 作为有效、不可变的 R3 证据，但不作为 R4 MCP 或 activation 输入；不改变 `workspace.v1.sql`、26 个 JSON Schema、依赖、服务或 Python CLI |
 | D-038 | 2026-08-15 owner-approved：protocol-neutral `OpenAIProvider` 与显式 `openai_responses`/`openai_chat_completions` adapter；Responses `POST /responses`+`store=false`，Chat `POST /chat/completions` 且省略 `store`；不自动 fallback/switch，response echo 不再是 enable gate | Supersedes/revises D-006/D-007/D-008/D-026/D-027；复用现有 `adapter` 字段，不新增 required field、依赖、服务、CLI、SQL column、migration 或 Schema ID；未来才将 adapter 纳入 envelope/cache/signature/release lineage；任何协议都不证明远端 retention，旧 `openai_responses` profiles/releases immutable，in-flight cache/workspace invalidated/rerun |
 | D-039 | 2026-08-15 owner-approved：忽略第三方 gateway 返回的 model identity mismatch；仍要求成功响应存在 string `model`，但不与请求的 `model_id` 比较 | `ProviderProfile.model_id` 仍是每阶段原样发送并用于 cache/run/envelope/release lineage 的 requested identity；返回 model 只作不可信结构字段，不持久化、不展示为已验证实际模型、不替换配置值；不自动切换/fallback，不新增字段、依赖、Schema、SQL、服务、CLI、migration 或 release rewrite |
 | D-040 | 2026-08-15 owner-approved：手动逐批默认；一次明确 WebUI 确认只授权 unchanged frozen remaining batch plan 的自动顺序提交，send concurrency 后由 D-044 修订；item-local provider failure 继续，fatal provider/config/auth/capability failure 立即停止；支持一次 WebUI bulk retry wave | 复用现有 per-job cursor 的 `approved`、payload signature、audit、`cursor_json` 和 job lineage；D-044 只替换其 send concurrency=`1` 部分，其余不新增 state、DB column/table/migration、config schema、JSON Schema ID/field、dependency、service、CLI、protocol/model fallback 或 retry budget；retry 使用 terminal AI job 的 child cursor/generation，并保持原始 evidence/request rows 可见 |
@@ -56,6 +56,11 @@
 | D-043 | 2026-08-16 owner-approved：R1 Phase 1 最小渲染纠错、`render.v2` 当前策略、透明 edge-on quadrant/材料真相/动画确定性和历史证据边界 | 当前 exporter 使用 `render.v2`；既有 `render.v1` Schema ID 同时接受 v1/v2，历史导出与 R3 run 不原地修改；仅修正 exporter 运行时与其必要契约，保留无 block-entity fixture 范围、两次同环境导出证据门和 Linux→R5，不继续旧导出 candidate 工作；stable pre-render selection token 进入 `logical_input_signature`，replacement exports 不复用旧签名 |
 | D-044 | 2026-08-16 owner-approved：Phase 1 有界批次并发、发送线性化、进程级共享 executor 与 pristine same-run reconfiguration | 仅 supersede D-040/D-041 的 send concurrency=`1`；`offline_annotation` 为整数 `1..5`、默认 `1`，`query_spec`/`visual_rerank` 固定 `1`；保留 logical-batch 两次总尝试、无 fallback、顺序授权、TOCTOU、审计、恢复和既有数据契约；不新增服务、队列、per-run executor、adaptive concurrency、SQL/Schema/migration、状态、依赖、CLI 或 retry 语义 |
 | D-045 | 2026-08-17 owner-approved：精确 32 个 standing/wall banner 的 targeted complete replacement export 与当前 run refresh；`camera.v2`/banner-camera policy；混合 export lineage 与最小增量 AI 工作 | 仅为本次精确操作 supersede D-043 的 camera category-invariance 与 historical-run no-refresh boundary；其它 D-043/D-044 边界、`render.v2`、完整导出校验和既有数据契约均保持有效；不新增 partial package、Schema ID、迁移、服务、队列、产品 CLI 或通用 patch framework |
+| D-046 | 2026-08-18 owner-approved：纠正 MCP JSON-RPC 错误分类；未知 RPC method 为 `-32601`，合法 `tools/call` 中的未知 tool name 为 Invalid Params `-32602` | 只修正协议错误映射和验收表述；不改变工具集合、transport、Schema、服务、CLI、持久化、release 语义或只读边界 |
+| D-047 | 2026-08-18 owner-approved：保持 `mcp-error.v1` 既有 `error_code` enum 不变，纠正 MCP 输入、空结果和 provider 降级的错误分层 | 输入 shape 错误使用 JSON-RPC `-32602`；正常空搜索和 `rerank=auto` provider failure 为成功 warning；`rerank=required` 仅用顶层 `RERANK_REQUIRED_UNAVAILABLE`，provider code 仅在 `details.provider_error_code`；不新增 Schema 或 fixture |
+| D-048 | 2026-08-18 owner-approved：为未来 R4/R5 candidate 增加 fresh-only `release-index.v2.sql`，保留 R3 `release-index.v1.sql` 历史证据但禁止 MCP/activation 使用 | v2 保留 v1 scalar/indexed columns 并增加 validated record/feature JSON columns，`schema_meta.format_version=2`；只 fresh build、不迁移/改写旧 release；MCP 遇 v1 返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`；不新增 JSON Schema、服务、CLI 或状态 |
+| D-049 | 2026-08-18 owner-approved：MCP tool input 的 `minecraft_version` 改用严格版本格式 pattern，不再用 `const: 26.2` | 格式非法返回 JSON-RPC `-32602`；格式合法但未发布版本返回 `VERSION_NOT_AVAILABLE` 且不回退；不增加当前版本支持或改变 Minecraft 26.2 baseline |
+| D-050 | 2026-08-18 owner-approved：当前 R4 的 `context.family` 没有 schema-owned `family_id`/family catalog；family dedupe 为确定性 no-op | `context.family=null` 时不分组、不限额且保持 Top-24 后稳定顺序；非 null 时返回 `QUERY_INVALID`；不得推断/创建 family ID；`compare_states`/`compare_blocks` 不解除不存在的 family limit；不新增 Schema、字段、数据、服务、CLI 或 migration |
 
 ## 关键边界的执行解释
 
@@ -372,3 +377,45 @@ Pairwise report `run/blockpedia-data/reports/export_20260816T091512Z--export_202
 - **No extra service and data contract**：复用现有 exporter/record Schemas、workspace JSON storage、SQLite schema、状态枚举、锁和 validator；只把 `camera_policy_version` 从单一 `camera.v1` 放宽为 `camera.v1|camera.v2`，不新增 Schema ID、表、列、migration、queue、dependency 或 generic patch layer。
 - **MCP read-only and release immutability**：refresh 只改变可变 workspace 和后续新 release 输入；MCP 仍只读 resolved immutable release，不读取 workspace、不写 current、release、cache 或 logs。任何发布修订仍生成新的 immutable release，不原地修改历史 release。
 - **Recovery and safety**：passed immutable check、exact base/targets/diff、run lock、no-live-work gate 和 narrow journal/backup 共同确保文件与 SQLite 可恢复提交；失败不得解析为成功或部分 refresh。D-043 的其它历史证据与 D-044 的并发/lineage/retry 边界继续有效。
+
+## D-046：MCP JSON-RPC 错误分类纠正
+
+### 2026-08-18 — owner-approved correction
+
+项目所有者于 **2026-08-18** 明确批准本项纠正：未知 JSON-RPC method 继续使用标准 `-32601`（Method Not Found）；请求 method 为合法 `tools/call` 但 tool name 不在四个允许工具中时，使用 Invalid Params `-32602`。该分类适用于协议响应和 R4 验收，不改变工具业务错误的 `isError` 分层。
+
+**影响记录**：本项只更正 MCP 协议错误映射及对应文档/测试表述；不改变工具集合、stdio transport、任何数据 Schema、服务、Python CLI、持久化行为、release 语义或 MCP 只读边界。
+
+## D-047：MCP 输入与工具执行错误分层纠正
+
+### 2026-08-18 — owner-approved correction
+
+项目所有者于 **2026-08-18** 明确批准本项纠正，并确认现有 `mcp-error.v1` 的 `error_code` enum 是唯一权威且保持不变：非法 `block_id` 格式、compare 数量和其它 input shape 错误在工具执行前返回 JSON-RPC `-32602`；格式合法但 release 中不存在的 block ID 仍返回 `BLOCK_NOT_FOUND`。正常空搜索是 `isError=false` 成功；`rerank=auto` 的 provider failure 返回 warning 和 `reranked_by_llm=false`；`rerank=required` 失败返回顶层 `RERANK_REQUIRED_UNAVAILABLE`，具体 provider code 只写入 `details.provider_error_code`。
+
+**影响记录**：本项只收敛文档和 R4 验收的错误分层；不修改 `mcp-error.v1` 或其它 Schema、fixtures、roadmap、代码、工具集合、transport、服务、CLI、持久化、release 语义或 MCP 只读边界。`VERSION_REQUIRED`、`NO_CANDIDATES`、`BLOCK_ID_INVALID`、`COMPARE_COUNT_INVALID` 及 provider-specific codes 均不得作为顶层 `mcp-error.v1.error_code`。
+
+## D-048：R4/R5 fresh-only `release-index.v2.sql` 投影
+
+### 2026-08-18 — owner-approved correction
+
+项目所有者于 **2026-08-18** 明确批准为未来 R4/R5 candidate 增加 fresh-only `release-index.v2.sql`。现有 R3 Phase C `release-index.v1.sql` candidate 保持有效、不可变并继续作为 R3 evidence，但不具备 MCP 或 activation 资格；不得迁移、原地改写或将其伪装成 v2。v2 保留 v1 的 scalar/indexed columns 和 indexes，新增经过校验的 `blocks.record_json TEXT NOT NULL`、`states.record_json TEXT NOT NULL`、`visual_variants.record_json TEXT NOT NULL`、`visual_variants.feature_json TEXT NOT NULL`，并固定 `schema_meta.format_version=2`。R4 fixture 与未来 R4/R5 candidates 只使用 v2；MCP/activation 遇 v1 必须以 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"` fail closed。
+
+**影响记录**：本项只增加未来 release index 的 fresh projection format，不改变现有 JSON Schema inventory、`workspace.v1.sql`、R3 evidence、工具集合、transport、服务、CLI、持久状态、release immutability 或 MCP 只读边界；不提供通用 migration，不重写旧 release。
+
+## D-049：MCP Minecraft version input pattern
+
+### 2026-08-18 — owner-approved correction
+
+项目所有者于 **2026-08-18** 明确批准 MCP tool input 的 `minecraft_version` 使用现有严格版本格式 pattern `^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$`，不再使用 `const: 26.2`。格式非法的输入在协议层返回 JSON-RPC `-32602`；格式合法但没有发布 current 的版本返回 `VERSION_NOT_AVAILABLE`，列出可用版本且不得回退。该输入校验放宽的是请求格式，不增加当前 Minecraft 版本支持，冻结 baseline 仍为 Java 26.2。
+
+**影响记录**：本项只修正文档中的 MCP input/resolver/test 语义，不改变持久记录的精确版本约束、current-pointer/release Schema、JSON Schema inventory、fixture 资产、服务、CLI、状态、release 语义或 MCP 只读边界。
+
+## D-050：R4 family context 确定性 no-op
+
+### 2026-08-18 — owner-approved correction
+
+项目所有者于 **2026-08-18** 明确批准当前 R4 的 family 语义收敛：现有 release projection 没有 schema-owned `family_id` 或 family catalog，`context.family` 不能引用不存在的发布元数据。`context.family=null` 是当前唯一可执行值，并且是确定性 no-op；非 null 值在 input shape 有效后按业务规则返回 `QUERY_INVALID`。本项不允许实现推断 family、由模型创建 family ID 或把 family 元数据加入响应。
+
+搜索顺序固定为 Top-24 后保持既有稳定顺序，再生成联系表；不执行 family 分组、默认最多 2 个限制、放宽或任何 family warning/metadata。`compare_states=true` 与 `compare_blocks` 的显式 block ID 比较不解除不存在的 family limit。
+
+**影响记录**：本项只收敛当前 R4 文档和验收语义，不新增或修改 JSON Schema、release/workspace 数据字段、family 数据 owner、服务、Python CLI、SQLite migration、fixture 资产或 MCP 工具边界；未来若需要 family metadata，必须另行取得 owner 批准并更新相应数据契约。

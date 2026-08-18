@@ -2110,16 +2110,17 @@ class ReleaseBuilder:
             connection.execute("PRAGMA journal_mode=DELETE")
             connection.execute("PRAGMA synchronous=FULL")
             connection.executescript(sql.decode("utf-8"))
-            connection.execute("INSERT INTO schema_meta(format_version) VALUES (1)")
+            connection.execute("INSERT INTO schema_meta(format_version) VALUES (2)")
             blocks = {str(row["block_id"]): row for row in snapshot.blocks}
             states = {str(row["state_id"]): row for row in snapshot.states}
+            features = {str(row["variant_id"]): row for row in snapshot.features}
             for block_id in sorted(blocks, key=lambda value: value.encode("utf-8")):
                 block = blocks[block_id]
                 names = block.get("official_names", {})
-                connection.execute("INSERT INTO blocks(block_id,minecraft_version,translation_key,name_zh,name_en,default_state_id,machine_facts_json) VALUES (?,?,?,?,?,?,?)", (block_id, snapshot.run["minecraft_version"], block.get("translation_key"), names.get("zh_cn"), names.get("en_us"), block["default_state_id"], canonical_json(block.get("machine_facts", {}))))
+                connection.execute("INSERT INTO blocks(block_id,minecraft_version,translation_key,name_zh,name_en,default_state_id,machine_facts_json,record_json) VALUES (?,?,?,?,?,?,?,?)", (block_id, snapshot.run["minecraft_version"], block.get("translation_key"), names.get("zh_cn"), names.get("en_us"), block["default_state_id"], canonical_json(block.get("machine_facts", {})), canonical_json(block)))
             for state_id in sorted(states, key=lambda value: value.encode("utf-8")):
                 state = states[state_id]
-                connection.execute("INSERT INTO states(state_id,block_id,properties_json,is_default) VALUES (?,?,?,?)", (state_id, state["block_id"], canonical_json(state.get("properties", {})), int(bool(state.get("is_default")))))
+                connection.execute("INSERT INTO states(state_id,block_id,properties_json,is_default,record_json) VALUES (?,?,?,?,?)", (state_id, state["block_id"], canonical_json(state.get("properties", {})), int(bool(state.get("is_default"))), canonical_json(state)))
 
             annotations_by_subject: dict[str, list[dict[str, Any]]] = {}
             for annotation in snapshot.annotations:
@@ -2129,7 +2130,10 @@ class ReleaseBuilder:
             for variant_id in sorted(variants_by_id, key=lambda value: value.encode("utf-8")):
                 variant = variants_by_id[variant_id]
                 suffix = variant_id.removeprefix("minecraft:")
-                connection.execute("INSERT INTO visual_variants(variant_id,block_id,canonical_state_id,represented_state_ids_json,preview_path,mask_path,render_metadata_path,image_sha256,mask_sha256,render_metadata_sha256,candidate_qualification,warnings_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (variant_id, variant["block_id"], variant["canonical_state_id"], canonical_json(variant["represented_state_ids"]), f"previews/minecraft/{suffix}/preview.png", f"previews/minecraft/{suffix}/mask.png", f"previews/minecraft/{suffix}/render.json", variant["render"]["image_sha256"], variant["render"]["mask_sha256"], variant["render"]["render_metadata_sha256"], variant["candidate_qualification"], canonical_json(variant.get("warnings", []))))
+                feature_row = features.get(variant_id)
+                if not isinstance(feature_row, dict) or not isinstance(feature_row.get("feature"), dict):
+                    raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED")
+                connection.execute("INSERT INTO visual_variants(variant_id,block_id,canonical_state_id,represented_state_ids_json,preview_path,mask_path,render_metadata_path,image_sha256,mask_sha256,render_metadata_sha256,candidate_qualification,warnings_json,record_json,feature_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (variant_id, variant["block_id"], variant["canonical_state_id"], canonical_json(variant["represented_state_ids"]), f"previews/minecraft/{suffix}/preview.png", f"previews/minecraft/{suffix}/mask.png", f"previews/minecraft/{suffix}/render.json", variant["render"]["image_sha256"], variant["render"]["mask_sha256"], variant["render"]["render_metadata_sha256"], variant["candidate_qualification"], canonical_json(variant.get("warnings", [])), canonical_json(variant), canonical_json(feature_row["feature"])))
                 semantic = _effective_semantics_from_rows(annotations_by_subject.get(variant_id, []) + annotations_by_subject.get(str(variant["block_id"]), []), snapshot.overrides, variant_id)
                 connection.execute("INSERT INTO annotations(variant_id,semantic_json) VALUES (?,?)", (variant_id, canonical_json(semantic)))
 
@@ -2237,25 +2241,32 @@ class ReleaseBuilder:
                 raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED", after_commit=after_commit)
             if manifest.get("fts_mode") == "normalized_like" and ("search_text" not in table_names or "search_fts" in table_names):
                 raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED", after_commit=after_commit)
-            if connection.execute("SELECT format_version FROM schema_meta").fetchall() != [(1,)]:
+            if connection.execute("SELECT format_version FROM schema_meta").fetchall() != [(2,)]:
                 raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED", after_commit=after_commit)
             expected_blocks = {
                 str(row["block_id"]): (
                     str(row["minecraft_version"]), row.get("translation_key"), row.get("official_names", {}).get("zh_cn"),
-                    row.get("official_names", {}).get("en_us"), str(row["default_state_id"]), canonical_json(row.get("machine_facts", {}))
+                    row.get("official_names", {}).get("en_us"), str(row["default_state_id"]), canonical_json(row.get("machine_facts", {})), canonical_json(row)
                 ) for row in snapshot.blocks
             }
             actual_blocks = {
-                str(row[0]): tuple(row[1:]) for row in connection.execute("SELECT block_id,minecraft_version,translation_key,name_zh,name_en,default_state_id,machine_facts_json FROM blocks")
+                str(row[0]): tuple(row[1:]) for row in connection.execute("SELECT block_id,minecraft_version,translation_key,name_zh,name_en,default_state_id,machine_facts_json,record_json FROM blocks")
             }
             if actual_blocks != expected_blocks:
                 raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED", after_commit=after_commit)
             expected_states = {
-                str(row["state_id"]): (str(row["block_id"]), canonical_json(row.get("properties", {})), int(bool(row.get("is_default"))))
+                str(row["state_id"]): (str(row["block_id"]), canonical_json(row.get("properties", {})), int(bool(row.get("is_default"))), canonical_json(row))
                 for row in snapshot.states
             }
-            actual_states = {str(row[0]): tuple(row[1:]) for row in connection.execute("SELECT state_id,block_id,properties_json,is_default FROM states")}
+            actual_states = {str(row[0]): tuple(row[1:]) for row in connection.execute("SELECT state_id,block_id,properties_json,is_default,record_json FROM states")}
             if actual_states != expected_states:
+                raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED", after_commit=after_commit)
+            feature_records = {
+                str(row["variant_id"]): row.get("feature")
+                for row in snapshot.features
+            }
+            expected_variant_ids = {str(row["variant_id"]) for row in snapshot.variants}
+            if len(feature_records) != len(snapshot.features) or set(feature_records) != expected_variant_ids or any(not isinstance(value, dict) for value in feature_records.values()):
                 raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED", after_commit=after_commit)
             expected_variants = {
                 str(row["variant_id"]): (
@@ -2264,10 +2275,10 @@ class ReleaseBuilder:
                     f"previews/minecraft/{str(row['variant_id']).removeprefix('minecraft:')}/mask.png",
                     f"previews/minecraft/{str(row['variant_id']).removeprefix('minecraft:')}/render.json",
                     row["render"]["image_sha256"], row["render"]["mask_sha256"], row["render"]["render_metadata_sha256"],
-                    row["candidate_qualification"], canonical_json(row.get("warnings", []))
+                    row["candidate_qualification"], canonical_json(row.get("warnings", [])), canonical_json(row), canonical_json(feature_records[str(row["variant_id"])])
                 ) for row in snapshot.variants
             }
-            actual_variants = {str(row[0]): tuple(row[1:]) for row in connection.execute("SELECT variant_id,block_id,canonical_state_id,represented_state_ids_json,preview_path,mask_path,render_metadata_path,image_sha256,mask_sha256,render_metadata_sha256,candidate_qualification,warnings_json FROM visual_variants")}
+            actual_variants = {str(row[0]): tuple(row[1:]) for row in connection.execute("SELECT variant_id,block_id,canonical_state_id,represented_state_ids_json,preview_path,mask_path,render_metadata_path,image_sha256,mask_sha256,render_metadata_sha256,candidate_qualification,warnings_json,record_json,feature_json FROM visual_variants")}
             if actual_variants != expected_variants:
                 raise ReleaseBuildFailure("RELEASE_BUILD_INTEGRITY_FAILED", after_commit=after_commit)
             annotations_by_subject: dict[str, list[dict[str, Any]]] = {}

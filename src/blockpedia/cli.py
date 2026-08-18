@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from typing import Sequence
 
 import uvicorn
@@ -11,7 +10,6 @@ import uvicorn
 
 WEB_HOST = "127.0.0.1"
 WEB_PORT = 8765
-MCP_NOT_IMPLEMENTED_R4 = "MCP_NOT_IMPLEMENTED_R4"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,15 +27,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     web_parser.set_defaults(handler=_run_web)
 
-    mcp_parser = subparsers.add_parser("mcp", help="MCP stdio entry point reserved for R4")
+    mcp_parser = subparsers.add_parser("mcp", help="start the read-only MCP stdio server")
     mcp_parser.add_argument("--data-root", default=None, help="override the local data root")
     mcp_parser.set_defaults(handler=_run_mcp)
     return parser
 
 
 def _run_web(args: argparse.Namespace) -> int:
-    # Import lazily so the R4 placeholder does not require a Web adapter just
-    # to report that MCP is not implemented.
     from .web import create_app
 
     app = create_app(data_root=args.data_root)
@@ -46,9 +42,10 @@ def _run_web(args: argparse.Namespace) -> int:
 
 
 def _run_mcp(args: argparse.Namespace) -> int:
-    del args
-    print(MCP_NOT_IMPLEMENTED_R4, file=sys.stderr)
-    return 2
+    from .mcp_server import run_stdio
+
+    run_stdio(args.data_root)
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -56,4 +53,4 @@ def main(argv: Sequence[str] | None = None) -> int:
     return int(args.handler(args))
 
 
-__all__ = ["MCP_NOT_IMPLEMENTED_R4", "WEB_HOST", "WEB_PORT", "build_parser", "main"]
+__all__ = ["WEB_HOST", "WEB_PORT", "build_parser", "main"]

@@ -65,11 +65,19 @@ def test_cli_web_uses_fixed_loopback_even_with_host_port_environment(monkeypatch
     assert uvicorn_calls[0][1] == {"host": "127.0.0.1", "port": 8765, "log_level": "debug", "access_log": False}
 
 
-def test_cli_mcp_is_a_quiet_nonzero_r4_placeholder(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["mcp"]) != 0
+def test_cli_mcp_runs_stdio_without_cli_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from blockpedia import mcp_server
+
+    calls: list[str | None] = []
+    monkeypatch.setattr(mcp_server, "run_stdio", lambda data_root: calls.append(data_root))
+
+    assert cli.main(["mcp", "--data-root", str(tmp_path)]) == 0
+    assert calls == [str(tmp_path)]
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "MCP_NOT_IMPLEMENTED_R4\n"
+    assert captured.err == ""
 
 
 def test_pyproject_declares_script_and_local_assets() -> None:

@@ -29,6 +29,7 @@ EXPECTED_PROJECT_DEPS = {
     "jsonschema==4.26.0",
     "httpx==0.28.1",
     "keyring==25.7.0",
+    "mcp==2.0.0",
 }
 EXPECTED_PACKAGE_DATA = {
     "sql/*.sql",

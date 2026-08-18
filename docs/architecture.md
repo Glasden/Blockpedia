@@ -261,6 +261,8 @@ FTS5 优先使用可用的 `trigram` tokenizer；若目标 SQLite 不支持，�
 
 Phase C 的架构边界只有：WebUI 同步执行 `POST /api/releases/check` 和 `POST /api/releases/build`；check/build 的 cache、逻辑 snapshot fingerprint、staging、独立 `release-index.v1.sql`、hash DAG 和文件安全由 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md) 定义；12 项质量报告由 [`quality-and-testing.md`](quality-and-testing.md) 定义；原始人工记录包由 [`data-and-schemas.md`](data-and-schemas.md) 定义；文件 durability 和链接拒绝由 [`security-and-distribution.md`](security-and-distribution.md) 定义；路由 body/status/error 由 [`webui-and-operations.md`](webui-and-operations.md) 定义。本架构文档不复制这些字段、SQL 列或报告 item。
 
+Phase C 的 `release-index.v1.sql` 只属于现有 R3 candidate：它保持有效、不可变并作为 R3 evidence，但不具备 R4 MCP 或 activation 资格。R4/R5 future candidates 必须从 fresh `release-index.v2.sql` projection 构建；v2 的字段 owner、fresh-build-only 规则和 v1/v2 接受边界只在 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md) 的 release-index section 定义，本架构不重复 SQL 列。
+
 Phase C 只允许生成一个不可变 candidate，并在成功后留下 `R3_CANDIDATE_BUILT_ACTIVATION_PENDING` 边界。Phase C **MUST NOT** 实现或要求 activation、`current.json`、MCP 或第二个 release；这些仅是后续阶段的边界引用，不是本阶段拓扑、依赖或验收项。
 
 ```text
@@ -292,7 +294,7 @@ candidate-build gate 检查内容完整性：
 
 ### 7.2 临时 R4 测试和 activation gate
 
-R4 必须把通过 candidate-build gate 的 candidate 放入临时测试 data-root，并生成临时 `current.json` fixture 做 MCP 四工具 smoke；不得激活生产 current，MCP 测试不得写任何持久化状态。
+R4 必须把通过 candidate-build gate 的 fresh v2 candidate 放入临时测试 data-root，并生成临时 `current.json` fixture 做 MCP 四工具 smoke；历史 v1 candidate 必须由 MCP/activation 以 `RELEASE_INTEGRITY_FAILED` 和 `details.integrity_component="index"` 拒绝。不得激活生产 current，MCP 测试不得写任何持久化状态。
 
 R5 先构建至少两个独立通过 candidate-build gate 的 release，再执行 activation gate：
 
@@ -324,9 +326,9 @@ provider 层使用 protocol-neutral `OpenAIProvider`，其现有 profile `adapte
 
 ### 9.1 传输和 release 解析
 
-`block-index mcp` 仅使用 stdio。启动后 stdout 第一字节起只能出现 MCP 协议消息；日志、诊断、异常详情写 stderr，不写日志文件。MCP 读取根 `current.json`，校验 pointer schema、default 版本、指定版本（如有）、manifest 哈希、release checksums 和质量门状态，再以只读方式打开 `releases/{minecraft_version}/{release_id}`。不读取 workspace、exports 或 cache。
+`block-index mcp` 仅使用 stdio。启动后 stdout 第一字节起只能出现 MCP 协议消息；日志、诊断、异常详情写 stderr，不写日志文件。MCP 读取根 `current.json`，校验 pointer schema、default 版本、指定版本（如有）、manifest 哈希、release checksums、`index.sqlite3` 的 fresh v2 format 和质量门状态，再以只读方式打开 `releases/{minecraft_version}/{release_id}`。历史 v1 index 必须返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`，不得迁移或降级读取。不读取 workspace、exports 或 cache。
 
-省略 `minecraft_version` 时使用 `default_minecraft_version` 对应 current；显式版本时使用对应版本 current；未知、未发布或 hash 不匹配失败且不回退。MCP 不接受显式历史 `release_id` selector；历史 release 只能由 WebUI rollback 改变 current 指向。MCP 不写数据库、文件、cache、logs、release 或 current。
+省略 `minecraft_version` 时使用 `default_minecraft_version` 对应 current；显式输入必须匹配严格版本格式 `^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$`，格式非法返回 JSON-RPC `-32602`；格式合法但未发布或没有 current 的版本返回 `VERSION_NOT_AVAILABLE` 且不回退。MCP 不接受显式历史 `release_id` selector；历史 release 只能由 WebUI rollback 改变 current 指向。MCP 不写数据库、文件、cache、logs、release 或 current。
 
 ### 9.2 四个工具
 
@@ -347,7 +349,7 @@ provider 层使用 protocol-neutral `OpenAIProvider`，其现有 profile `adapte
 2. exporter 负责选择状态和渲染；Studio 只验证这些产物并提取特征，不跨版本复用未经哈希验证的图片或状态。
 3. Studio 在临时目录构建 release layout，执行 candidate-build gate，写 manifest、`release.json`、`schemas.sha256` 和 `checksums.sha256`。
 4. 通过 candidate-build gate 后将临时目录原子移动为新的不可变 release；不通过则保留失败报告但不写 current。
-5. R3 可留下至少一个未激活 candidate，R4 用临时 data-root/current fixture 做 MCP 测试；不激活生产 current。
+5. R3 可留下至少一个未激活 v1 candidate 作为历史 evidence，R4 必须用 fresh v2 candidate 和临时 data-root/current fixture 做 MCP 测试；v1 不得作为 MCP/activation 输入，也不激活生产 current。
 6. R5 先生成两个独立 candidate-build 通过的 release，再执行 activation gate；通过后由用户在 WebUI 人工激活/切换 current。
 7. current 切换只原子替换根 `current.json` 的目标版本指针，保留其他版本和 default；rollback 只指向已有完整 release，不修改 release 内容。
 8. MCP 下一次请求重新读取并验证指针；在切换前已经打开的只读连接继续指向旧 release，不能读到半成品。

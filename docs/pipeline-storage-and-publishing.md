@@ -205,7 +205,7 @@ AI_ANNOTATE 的 item `needs_review` 不会阻塞该阶段 drain，也不会阻�
 
 ### 5.9 `BUILD_RELEASE`
 
-Worker 在用户 WebUI 显式请求后，只能从工作库构建单个 release candidate。candidate-build gate 只检查该 release 的内容完整性：100% registry、合法状态、skip/excluded 审计、图片、全部 Schema、AI/人工语义、高优审核为零、FTS、功能输入/产物 hash、禁止 symlink/hardlink 和完整 release layout。它不检查 MCP smoke、两个 release 或 current 切换。candidate check/build 的前置只要求 R0-R3 与 candidate-build gate；通过后复制文件到 staging，逐文件 hash、flush/fsync，再原子 rename 为 `<data_root>/releases/{minecraft_version}/{release_id}` 并冻结；首次 release 可以构建但不能激活。`release_build_id` 在 release check 根据 `run_id` 创建并返回，不是 `POST /api/runs` 的前置输入。
+Worker 在用户 WebUI 显式请求后，只能从工作库构建单个 release candidate。candidate-build gate 只检查该 release 的内容完整性：100% registry、合法状态、skip/excluded 审计、图片、全部 Schema、AI/人工语义、高优审核为零、FTS、功能输入/产物 hash、禁止 symlink/hardlink 和完整 release layout。它不检查 MCP smoke、两个 release 或 current 切换。candidate check/build 的前置只要求 R0-R3 与 candidate-build gate；R3 Phase C 保留使用 v1 index 的历史 candidate，未来 R4/R5 candidate 必须 fresh-build v2 index。通过后复制文件到 staging，逐文件 hash、flush/fsync，再原子 rename 为 `<data_root>/releases/{minecraft_version}/{release_id}` 并冻结；首次 release 可以构建但不能激活。`release_build_id` 在 release check 根据 `run_id` 创建并返回，不是 `POST /api/runs` 的前置输入。
 
 唯一 release layout（`schemas.sha256` 必须列出实际使用的真实 Schema 文件摘要，`checksums.sha256` 再覆盖 release 内其它普通文件）：
 
@@ -258,9 +258,9 @@ fingerprint 明确排除：`work.sqlite3`/WAL/SHM 原始 bytes、mtime/ctime、w
 
 check 读取 workspace 时必须在只读一致性事务中取得 allowlisted 逻辑行和 artifact 引用，并对每个 artifact 做安全 `lstat`/open/hash；每个文件在读取前后重新检查身份、大小和链接属性。build 在开始 staging 前、完成 staging hash 后各重算一次 fingerprint；任一结果不同、出现新 check、目标版本/源 export 改变或任何引用被替换，必须只清理本次 staging、将 state 标为 `stale`，且返回 `RELEASE_CHECK_STALE`，绝不 rename 半成品。check cache 报告不因 TOCTOU 重写。
 
-#### 独立 release index、layout 与 preview mapping
+#### Release index projection versions, layout 与 preview mapping
 
-release 使用独立的 `release-index.v1.sql` 投影契约；它不是 JSON Schema ID，不改变 `workspace.v1.sql`，也不通过通用 migration 从工作库升级。新建 `index.sqlite3` 时 `schema_meta` 必须恰有 `format_version=1`；该列/值是 release index 格式版本，不得写成 `schema_version` 或伪装成 D-030 Schema。最小表、列和索引固定为：
+R3 Phase C 使用独立的 `release-index.v1.sql` 投影契约；它不是 JSON Schema ID，不改变 `workspace.v1.sql`，也不通过通用 migration 从工作库升级。现有 R3 v1 candidate 保持有效、不可变，但不具备 R4 MCP 或 activation 资格。v1 新建 `index.sqlite3` 时 `schema_meta` 必须恰有 `format_version=1`；该列/值是 release index 格式版本，不得写成 `schema_version` 或伪装成 D-030 Schema。以下是 v1 的既有 scalar/indexed columns 和 indexes：
 
 ```sql
 CREATE TABLE schema_meta (
@@ -305,9 +305,21 @@ CREATE INDEX visual_variants_qualification_idx
   ON visual_variants(candidate_qualification);
 ```
 
+未来 R4/R5 candidate 只允许 fresh-build `release-index.v2.sql`，不得对 v1 执行 migration 或原地补列。v2 保留上方 v1 的全部 scalar/indexed columns 和 indexes，并在 fresh CREATE 中增加以下 validated columns；这些列的字段 owner 只在本节定义：
+
+```text
+schema_meta.format_version = 2
+blocks.record_json TEXT NOT NULL
+states.record_json TEXT NOT NULL
+visual_variants.record_json TEXT NOT NULL
+visual_variants.feature_json TEXT NOT NULL
+```
+
+`blocks.record_json`、`states.record_json` 和 `visual_variants.record_json` 必须分别保存对应完整 `block-record.v1`、`state-record.v1` 和 `visual-variant-record.v1` 记录，并在 build 时逐条 strict 校验；`feature_json` 必须通过现有确定性 feature validation。v2 不新增 JSON Schema ID、表外服务、CLI、状态或 migration。R4 fixture、MCP 和 activation 只接受 `format_version=2`；v1 必须 fail closed 为 `RELEASE_INTEGRITY_FAILED`，并将 `details.integrity_component` 固定为 `index`。
+
 FTS 只有一个实现分支：SQLite 支持时建立 `search_fts(variant_id UNINDEXED, normalized_text)` 的 FTS5 `trigram` virtual table；不支持时不建该 virtual table，改建 `search_text(variant_id PRIMARY KEY, normalized_text)` 和 `search_text_normalized_idx` 普通索引。两种分支都必须由 Gate C 的 `FTS_READY` 证明，不能增加 vector 列或外部服务。release index 只保存上述发布投影，不复制三类原始审核记录；原始记录包由 [`data-and-schemas.md`](data-and-schemas.md) 定义。
 
-candidate staging 与最终 release 都只能拥有以下八类顶层项，`release-index.v1.sql` 是构建时的独立格式契约，不是 release 内第九个文件：
+candidate staging 与最终 release 都只能拥有以下八类顶层项，`release-index.v1.sql`/`release-index.v2.sql` 是构建时的独立格式契约，不是 release 内第九个文件：R3 candidate 使用 v1，R4/R5 future candidate 使用 fresh v2。
 
 ```text
 release.json
@@ -332,7 +344,7 @@ checksums.sha256
 
 ### 5.10 `ACTIVATE_RELEASE`（R4/R5 后续边界，不属于 Phase C）
 
-activation gate 才检查目标版本已有至少两个独立、均通过 candidate-build gate 的不可变 release；activation-check/apply 的前置才要求 R0-R4、activation gate 和用户确认。它使用临时测试 data-root/current fixture 完成四工具 MCP smoke，复核 candidate 报告及其 hash，并检查 current 原子切换准备，但不把测试指针写入生产根，也不首次补做资格审计。通过后由 WebUI 用户人工确认 ACTIVATE；WebUI 才能原子更新根 `current.json`。R3 可以提供未激活 candidate 给 R4，R5 完成第二个 candidate、MCP smoke 和激活。
+activation gate 才检查目标版本已有至少两个独立、均通过 candidate-build gate 且使用 fresh v2 index 的不可变 release；activation-check/apply 的前置才要求 R0-R4、activation gate 和用户确认。它使用临时测试 data-root/current fixture 完成四工具 MCP smoke，复核 candidate 报告及其 hash，并检查 current 原子切换准备，但不把测试指针写入生产根，也不首次补做资格审计。通过后由 WebUI 用户人工确认 ACTIVATE；WebUI 才能原子更新根 `current.json`。R3 v1 candidate 只能作为历史 evidence，R4 必须用 fresh v2 fixture，R5 完成第二个 v2 candidate、MCP smoke 和激活。
 
 ## 6. 任务模型、状态和游标
 

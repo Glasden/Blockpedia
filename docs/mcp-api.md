@@ -16,6 +16,21 @@ MVP 的 MCP 只能由以下 Python 命令启动：
 block-index mcp [--data-root <path>]
 ```
 
+以下是非特定客户端的说明性配置形状；`<local-data-root>` 只是用户本地数据根占位符：
+
+```json
+{
+  "mcpServers": {
+    "blockpedia": {
+      "command": "block-index",
+      "args": ["mcp", "--data-root", "<local-data-root>"]
+    }
+  }
+}
+```
+
+使用现有默认数据根时，可省略 `--data-root` 及其参数。该示例不引入额外命令、host/port、HTTP 或 transport selector。
+
 进程 **MUST** 只使用 `stdio` JSON-RPC/MCP transport。MVP **MUST NOT** 提供 Streamable HTTP、HTTP endpoint、MCP `resources`、MCP `prompts`、任意 SQL、任意文件读取、写入工具、索引修改工具或 provider 配置工具。Python 产品命令完整边界见 [`webui-and-operations.md`](webui-and-operations.md)；不得新增 `block-index search`、`block-index publish` 等命令。
 
 stdout 从首字节开始 **MUST** 只输出 MCP 协议 JSON-RPC 消息；日志、诊断、堆栈、启动提示和调试信息 **MUST** 只输出 stderr，**MUST NOT** 写 data-root `logs/`、cache、临时文件或其他本地持久化位置。进程不能把图片 base64 直接写成独立 stdout 行，图片只能作为协议响应 content。
@@ -25,12 +40,12 @@ stdout 从首字节开始 **MUST** 只输出 MCP 协议 JSON-RPC 消息；日志
 MCP 每次启动或打开查询都必须：
 
 1. 从数据根读取 `current.json`，解析 `current-pointer.v1` 的 `default_minecraft_version` 和 `versions` map；
-2. 校验 `minecraft_version`、`release_id`、相对路径安全性、`manifest_sha256`、release `checksums` 和质量门状态，并读取 release 冻结的 provider snapshot（包括 `adapter`）；
-3. 只读打开不可变 `releases/<minecraft_version>/<release_id>/index.sqlite3` 及同目录 PNG/metadata；
+2. 校验 `minecraft_version`、`release_id`、相对路径安全性、`manifest_sha256`、release `checksums`、`index.sqlite3` 的 fresh v2 format 和质量门状态，并读取 release 冻结的 provider snapshot（包括 `adapter`）；
+3. 只读打开不可变且 `schema_meta.format_version=2` 的 `releases/<minecraft_version>/<release_id>/index.sqlite3` 及同目录 PNG/metadata；v1 index 必须以 `RELEASE_INTEGRITY_FAILED`、`details.integrity_component="index"` 拒绝，不得迁移或降级读取；
 4. 拒绝 `workspace`、cache、导出源目录、任意用户路径和未完整 release；
 5. 在一次请求中固定解析结果，不能跨版本或在同一响应中混用 release。
 
-MCP 请求的 `minecraft_version` 可以省略；省略时使用 `current-pointer.v1.default_minecraft_version`，显式版本时读取该版本的 current release。未知、未发布、哈希不匹配或不可变标志缺失时失败，并列出可用精确版本，**MUST NOT** 自动回退。MCP input 不支持 `release`/`release_id` selector；历史 release 选择只能由 WebUI rollback 完成。响应只返回 `resolved_release_id` 和 manifest hash，不返回 selector 歧义。
+MCP 请求的 `minecraft_version` 可以省略；省略时使用 `current-pointer.v1.default_minecraft_version`，显式输入必须匹配严格版本格式 `^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$`，格式非法返回 JSON-RPC `-32602`。格式合法但未知、未发布或没有 current 的版本返回 `VERSION_NOT_AVAILABLE`，列出可用精确版本且 **MUST NOT** 自动回退。哈希不匹配、index v1、index format 非 2 或不可变标志缺失时返回 `RELEASE_INTEGRITY_FAILED`；MCP input 不支持 `release`/`release_id` selector；历史 release 选择只能由 WebUI rollback 完成。响应只返回 `resolved_release_id` 和 manifest hash，不返回 selector 歧义。
 
 MCP 进程 **MUST NOT** 写 SQLite、图片、release、cache、日志、data-root logs、临时文件、`current.json` 或任何任务状态。即使调用 provider 进行 QuerySpec/重排，也只能按已解析 release 冻结的 `adapter`、`profile_id`、`model_id`、`base_url_stable_id` 和 `secret_reference` 使用 snapshot；`adapter` 只能是 `openai_responses` 或 `openai_chat_completions`，决定唯一 wire codec；不得读取或比较可变 active profile，也不得跨协议 fallback。provider 结果只能在内存中使用。secret 无法解析或运行时能力不满足 snapshot 时，必须返回 warning 并使用确定性本地降级。联系表必须在内存构造，图片以进程内 bytes 直接形成 `ImageContent`，在线查询失败不能写缓存或生成联系表到持久目录。
 
@@ -73,7 +88,7 @@ compare_blocks
 
 当响应有图片时，`content` 还必须包含由同一 `structuredContent` 的 `images` metadata 顺序生成的 `ImageContent`；二者的 `content_index`、`image_id` 和 candidate/tile 映射必须一致。TextContent 必须是等价 JSON，不得只写摘要而省略结构化字段。`structuredContent` 本身不得包含绝对路径或图片 base64；图片 bytes 只出现在 ImageContent。
 
-成功但 provider 不可用、QuerySpec 未调用或视觉重排失败时仍为 `isError=false`，返回确定性本地结果、warning 和 `reranked_by_llm=false`。硬过滤正常得到空集也是 `isError=false` 的成功空结果；未知 ID、release unavailable、图片读取失败等工具执行失败使用 `isError=true`，见第 6 节。
+`rerank=auto` 中 provider 不可用、QuerySpec 未调用或视觉重排失败时仍为 `isError=false`，返回确定性本地结果、warning 和 `reranked_by_llm=false`；`rerank=required` 无法重排时使用 `isError=true` 的 `RERANK_REQUIRED_UNAVAILABLE` 工具错误。硬过滤正常得到空集也是 `isError=false` 的成功空结果；未知 ID、release unavailable、图片读取失败等工具执行失败使用 `isError=true`，见第 6 节。
 
 ### 2.3 图片 metadata
 
@@ -106,12 +121,12 @@ compare_blocks
   "additionalProperties": false,
   "required": [],
   "properties": {
-    "minecraft_version": {"type": "string", "const": "26.2"}
+    "minecraft_version": {"type": "string", "pattern": "^[0-9]{1,3}\\.[0-9]{1,3}(?:\\.[0-9]{1,3})?$"}
   }
 }
 ```
 
-省略 `minecraft_version` 时必须使用 default version；显式版本必须严格查找其 current pointer。任何 `release`、`release_id`、`selector` 输入均为未知字段并返回 `-32602`。未来版本不能通过把 `const` 改为范围来静默支持；新增 Minecraft 版本需生成对应契约/Schema 和显式发布数据。
+省略 `minecraft_version` 时必须使用 default version；显式输入必须匹配上述严格版本格式并查找其 current pointer。格式非法、类型错误或其它 input shape 错误返回 JSON-RPC `-32602`；格式合法但未发布版本返回 `VERSION_NOT_AVAILABLE` 且不回退。任何 `release`、`release_id`、`selector` 输入均为未知字段并返回 `-32602`。该 pattern 不增加当前版本支持，Minecraft baseline 仍为 `26.2`；新增 Minecraft 版本需生成对应发布数据和契约收敛。
 
 ## 4. `index_info`
 
@@ -187,13 +202,13 @@ compare_blocks
 |---|---|
 | `query` | 必填，1–2000 Unicode 字符；不得是 SQL 或路径指令 |
 | `limit` | 可选整数 1–12，默认 8；它不改变 Top-24 阶段 |
-| `context.family` | null 或 release 中已存在 family |
+| `context.family` | 当前 R4 只能为 null；非 null 在 input shape 有效后返回 `QUERY_INVALID` |
 | `context.compare_states` | boolean，默认 false |
 | `context.rerank` | `auto`、`local_only`、`required`，默认 `auto` |
 
 ### 5.2 处理和输出 `mcp-search-blocks-output.v1`
 
-处理必须严格遵守 [`search-and-ranking.md`](search-and-ranking.md)：解析 release → hard filter → FTS/字段评分 → Top-24 → family 去重（默认最多 2 个）→ 8–12 联系表 → 同一个 `adapter`/`model_id` 的 strict visual rerank。输出 `data` 至少包含：
+处理必须严格遵守 [`search-and-ranking.md`](search-and-ranking.md)：解析 release → hard filter → FTS/字段评分 → Top-24 → 保持稳定顺序 → 8–12 联系表 → 同一个 `adapter`/`model_id` 的 strict visual rerank。当前 R4 不执行 family 分组或限额，也不在输出中加入 family metadata；非 null `context.family` 返回 `QUERY_INVALID`。输出 `data` 至少包含：
 
 ```json
 {
@@ -205,7 +220,6 @@ compare_blocks
     {"field": "behavior.redstone_related", "operator": "exclude", "value": true, "source": "user_explicit"}
   ],
   "top_24": {"count": 0, "candidate_ids": []},
-  "family_dedupe": {"max_per_family": 2, "relaxed": false, "reason": null},
   "candidates": [
     {
       "candidate_id": "A1",
@@ -237,9 +251,9 @@ compare_blocks
 }
 ```
 
-`top_24` 是本地召回事实，不得因 `limit` 只记录最终候选。`candidate_id` 只在本次响应内稳定，图片映射、结构对象和 TextContent 必须一一对应。LLM 失败、未配置或不要求时，`reranked_by_llm=false`，并在 warnings 中给出 `PROVIDER_*`/`RERANK_SKIPPED`；不允许伪装成模型已重排。
+`top_24` 是本地召回事实，不得因 `limit` 只记录最终候选。`candidate_id` 只在本次响应内稳定，图片映射、结构对象和 TextContent 必须一一对应。LLM 失败、未配置或不要求时，`rerank=auto` 必须返回 `isError=false`、warning 和 `reranked_by_llm=false`，并使用确定性本地结果；不得伪装成模型已重排。
 
-硬过滤后为空是正常的成功业务结果：`isError=false`，返回空 `candidates`/联系表、已应用约束、排除摘要和建议追问；不得返回通过放宽 hard constraint 得到的候选。`NO_CANDIDATES` 只能作为兼容诊断字段，不能把正常空集升级为工具错误。
+硬过滤后为空是正常的成功业务结果：`isError=false`，返回空 `candidates`/联系表、已应用约束、排除摘要和建议追问；不得返回通过放宽 hard constraint 得到的候选。不得为正常空集生成 `mcp-error.v1`，`NO_CANDIDATES` 也不是该 Schema 的顶层 `error_code`。
 
 ## 6. `get_block_details`
 
@@ -254,7 +268,7 @@ compare_blocks
 }
 ```
 
-`block_id` 必须匹配 `^minecraft:[a-z0-9_./-]+$`，只能作为 release 查找键，不能拼接 SQL 或路径。未知 ID 返回 `BLOCK_NOT_FOUND`，不能让模型猜 ID。
+`block_id` 必须匹配 `^minecraft:[a-z0-9_./-]+$`，只能作为 release 查找键，不能拼接 SQL 或路径。格式非法属于 input shape 错误，必须在工具执行前返回 JSON-RPC `-32602`；格式合法但 ID 不在 release 时才返回 `BLOCK_NOT_FOUND`，不能让模型猜 ID。
 
 ### 6.2 输出 `mcp-block-details-output.v1`
 
@@ -311,7 +325,7 @@ details 必须为每个主要可发布视觉变体返回四视角 PNG `ImageCont
 }
 ```
 
-`block_ids` 必须为 2–6 个不重复的合法 `minecraft:` ID；所有 ID 必须在同一 release。`context` 可为 0–1000 字符；`compare_states=true` 时允许输出多状态/多变体并解除 family 去重限制，但不能超出给定 block IDs。未知 ID 返回明确 `BLOCK_NOT_FOUND` 及所有无效 ID，不部分成功或替换候选。
+`block_ids` 必须为 2–6 个不重复的合法 `minecraft:` ID；所有 ID 必须在同一 release。数量、重复项、ID 格式、类型或其它 input shape 不合法时，必须在工具执行前返回 JSON-RPC `-32602`，不得生成 `mcp-error.v1` 工具结果。`context` 可为 0–1000 字符；`compare_states=true` 时允许输出给定 block IDs 的多状态/多变体，但不解除不存在的 family limit，也不生成 family metadata。格式合法但未知 ID 返回明确 `BLOCK_NOT_FOUND` 及所有无效 ID，不部分成功或替换候选。
 
 ### 7.2 输出 `mcp-compare-blocks-output.v1`
 
@@ -350,11 +364,11 @@ JSON-RPC/MCP 协议错误表示请求没有正确调用工具，使用标准 `er
 |---:|---|
 | `-32700` | JSON 无法解析 |
 | `-32600` | JSON-RPC envelope 非法 |
-| `-32601` | 方法不存在；工具集合之外的调用 |
-| `-32602` | inputSchema/参数非法、未知字段、类型或范围错误 |
+| `-32601` | JSON-RPC method 不存在（不是已支持的协议 method） |
+| `-32602` | inputSchema/参数非法、未知字段、类型或范围错误；合法 `tools/call` 中的 tool name 不存在 |
 | `-32603` | 未分类 server 内部错误；详情写 stderr，不回显秘密 |
 
-`tools/call` 的工具名不是四个允许值时使用 `-32601`；参数不符合工具 inputSchema 使用 `-32602`。协议错误不能伪装为 `isError=true` 工具业务对象。
+未知 JSON-RPC method 使用 `-32601`；method 为合法 `tools/call` 但 tool name 不是四个允许值时使用 Invalid Params `-32602`；参数不符合工具 inputSchema 也使用 `-32602`。协议错误不能伪装为 `isError=true` 工具业务对象。
 
 ### 8.2 工具执行错误
 
@@ -375,39 +389,30 @@ JSON-RPC/MCP 协议错误表示请求没有正确调用工具，使用标准 `er
 }
 ```
 
-稳定业务错误码至少包括：
+稳定业务错误码（`mcp-error.v1.error_code` 的现有 enum）如下：
 
 | `error_code` | 条件 | `retryable` |
 |---|---|---:|
 | `DATA_ROOT_INVALID` | data root 不存在/不安全 | 否 |
 | `CURRENT_POINTER_MISSING` | current 缺失 | 否 |
 | `CURRENT_POINTER_INVALID` | current JSON/路径/hash 非法 | 否 |
-| `VERSION_REQUIRED` | 保留为 WebUI/API 兼容错误；MCP 省略 `minecraft_version` 使用 default | 否 |
 | `VERSION_NOT_AVAILABLE` | 未知、未发布或未配置版本；列可用版本 | 否 |
 | `RELEASE_NOT_FOUND` | current pointer 指向的 release 不存在 | 否 |
 | `RELEASE_NOT_BUILT` | release 未通过 candidate-build gate | 否 |
-| `RELEASE_INTEGRITY_FAILED` | manifest/checksum/quality hash 失败 | 否 |
+| `RELEASE_INTEGRITY_FAILED` | manifest/checksum/quality hash、index format 或 immutable release 校验失败；v1 index 的 `details.integrity_component` 为 `index` | 否 |
 | `INDEX_OPEN_FAILED` | 只读数据库无法打开 | 否 |
 | `INDEX_INFO_UNAVAILABLE` | index metadata 缺失 | 否 |
-| `QUERY_INVALID` | 搜索输入业务非法 | 否 |
+| `QUERY_INVALID` | input shape 有效但搜索业务规则非法，包括非 null 的 `context.family` | 否 |
 | `QUERY_PARSE_FAILED` | 无法得到安全 QuerySpec | 否 |
-| `NO_CANDIDATES` | 兼容诊断码；正常 hard filter 空集返回成功空结果 | 否 |
+| `HARD_CONSTRAINT_UNSUPPORTED` | 请求包含当前 release 不支持的硬约束 | 否 |
 | `BLOCK_NOT_FOUND` | ID 不在 release | 否 |
-| `BLOCK_ID_INVALID` | ID 格式非法 | 否 |
-| `COMPARE_COUNT_INVALID` | compare 少于 2 或多于 6 | 否 |
 | `IMAGE_READ_FAILED` | release PNG 不可读 | 否 |
 | `IMAGE_MAPPING_INVALID` | 图片和结构 mapping 不一致 | 否 |
-| `PROVIDER_NOT_CONFIGURED` | release snapshot 的 secret 无法解析；仅 auto 搜索可降级 | 否 |
-| `PROVIDER_CAPABILITY_MISSING` | release snapshot 要求的图片/strict 能力在运行时不满足；仅 auto 搜索可降级 | 否 |
-| `PROVIDER_AUTH_FAILED` | release snapshot provider 认证失败；仅 auto 搜索可降级 | 否 |
-| `PROVIDER_REFUSAL` | 所选 adapter refusal；仅 auto 搜索可降级 | 否 |
-| `PROVIDER_INCOMPLETE` | 所选 adapter incomplete/non-stop；仅 auto 搜索可降级 | 否 |
-| `PROVIDER_SCHEMA_INVALID` | strict 结果 Schema 失败；仅 auto 搜索可降级 | 否 |
 | `RERANK_REQUIRED_UNAVAILABLE` | `rerank=required` 但重排不可用 | 否 |
 | `READ_ONLY_VIOLATION` | 代码尝试写 release/workspace/current | 否 |
 | `MCP_INTERNAL_ERROR` | 未分类执行错误 | 否 |
 
-在线 `auto` 降级不是错误：应返回 `isError=false`、本地候选、warnings 和 `reranked_by_llm=false`。`required` 无法重排时必须 `isError=true`，不得把 warning 当成功。错误消息不能包含 API key、Authorization、完整 response、绝对路径或 SQL。
+`mcp-error.v1.error_code` 只能使用上表中现有 Schema enum 值。`VERSION_REQUIRED` 不适用于 MCP，因为省略版本使用 default；`NO_CANDIDATES` 不是错误，正常空搜索直接成功；非法 `block_id`、compare 数量和其它 input shape 在工具执行前使用 JSON-RPC `-32602`，不使用 `BLOCK_ID_INVALID` 或 `COMPARE_COUNT_INVALID` 工具错误。provider-specific code 也不得作为顶层 `error_code`：`rerank=auto` 的 provider failure 返回 `isError=false`、warning、本地结果和 `reranked_by_llm=false`；`rerank=required` 只能返回顶层 `RERANK_REQUIRED_UNAVAILABLE`，底层 provider code 只放在同一 `mcp-error.v1` 对象的 `details.provider_error_code`。错误消息不能包含 API key、Authorization、完整 response、绝对路径或 SQL。
 
 ## 9. 只读和 stdout 验收
 
@@ -415,10 +420,10 @@ JSON-RPC/MCP 协议错误表示请求没有正确调用工具，使用标准 `er
 
 1. `tools/list` 严格只有四个工具；不存在 HTTP、resources、任意 SQL/文件读写接口。
 2. 每行 stdout 可独立解析为 JSON-RPC/MCP 消息；stderr 可有诊断但不进入 stdout。
-3. 省略版本使用 `default_minecraft_version`，显式版本使用该版本 current；未知/未发布版本和 hash mismatch 均符合错误表，不回退；历史 `release_id` selector 被拒绝。
+3. 省略版本使用 `default_minecraft_version`；malformed `minecraft_version` 返回 JSON-RPC `-32602`，格式合法但未发布版本返回 `VERSION_NOT_AVAILABLE` 且不回退；显式版本使用该版本 current；未知/未发布版本和 hash mismatch 均符合错误表；非法 `block_id`、compare 数量和其它 input shape 返回 JSON-RPC `-32602`，非 null 的 `context.family` 返回 `QUERY_INVALID`，格式合法但未知 ID 才返回 `BLOCK_NOT_FOUND`；历史 `release_id` selector 被拒绝。
 4. 四工具只读不可变 release；运行所有成功、失败、降级和图片路径分支后，SQLite、文件、cache、logs 和 current hash 不变。
-5. `structuredContent` 与 TextContent JSON 深相等；成功降级 `isError=false`，工具执行错误 `isError=true`，协议错误使用标准 JSON-RPC error。
+5. `structuredContent` 与 TextContent JSON 深相等；成功降级 `isError=false`，工具执行错误 `isError=true`，协议错误使用标准 JSON-RPC error；未知 RPC method 返回 `-32601`，合法 `tools/call` 的未知 tool name 返回 Invalid Params `-32602`。
 6. `search_blocks`/`compare_blocks` 返回稳定编号 PNG 联系表 ImageContent；`get_block_details` 返回四视角 PNG；`index_info` 无图片。
 7. 图片 metadata 含 ID、MIME、尺寸、hash、purpose、content index 和映射，不含绝对路径；mapping 与 PNG 联系表、结构候选 100% 一致。
-8. provider 不可用不改变候选事实，返回 warnings 和 `reranked_by_llm=false`；`rerank=required` 正确报错。
-9. 无真实 Minecraft 资产的原创 PNG/SQLite fixture 通过协议测试；缺少真实本地 release 只能报告 `SKIPPED_LOCAL_RELEASE_MISSING`，不得伪造通过。
+8. provider 不可用不改变候选事实；`rerank=auto` 返回 `isError=false`、warning 和 `reranked_by_llm=false`，`rerank=required` 返回顶层 `RERANK_REQUIRED_UNAVAILABLE`，且 provider code 仅在 `details.provider_error_code`。
+9. 仅使用 `schema_meta.format_version=2` 的原创 PNG/SQLite release fixture 通过协议测试；v1 fixture/release 返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`；缺少真实本地 release 只能报告 `SKIPPED_LOCAL_RELEASE_MISSING`，不得伪造通过。

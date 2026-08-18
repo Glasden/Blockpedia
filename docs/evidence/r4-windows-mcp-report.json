@@ -1,0 +1,176 @@
+{
+  "evidence_type": "windows_r4_mcp",
+  "status": "passed",
+  "generated_at": "2026-08-17T22:21:16Z",
+  "summary": "Windows R4 MCP stdio, release/query core, protocol, integrity, and safety evidence passed. Oracle Gate 1 and final Oracle Gate 2 are PASS with no blockers. R4 closes on its required Windows evidence; Linux MCP/runtime obligations remain deferred to R5.",
+  "environment": {
+    "os": "Windows 11",
+    "build": "10.0.26200",
+    "architecture": "AMD64",
+    "python_implementation": "CPython",
+    "python_version": "3.14.7",
+    "verification_venv": "%TEMP%/opencode/r4-mcp-venv"
+  },
+  "artifacts": {
+    "requirements_lock": {
+      "path": "requirements.lock",
+      "sha256": "sha256:ec533a5b8692c05215ad13f751e0d4bebaf1e2ac043c58be394a4e59c82925a2"
+    },
+    "implementation_paths": [
+      "src/blockpedia/mcp_release.py",
+      "src/blockpedia/mcp_query.py",
+      "src/blockpedia/mcp_server.py",
+      "src/blockpedia/cli.py",
+      "src/blockpedia/sql/release-index.v2.sql",
+      "src/blockpedia/sql/release-index.v2.sha256"
+    ],
+    "test_paths": [
+      "tests/r4/fixture_builder.py",
+      "tests/r4/test_release_projection.py",
+      "tests/r4/test_mcp_core.py",
+      "tests/r4/test_mcp_stdio.py"
+    ],
+    "documentation_paths": [
+      "docs/mcp-api.md"
+    ]
+  },
+  "checks": {
+    "lock_generation": {
+      "status": "passed",
+      "command": "pip-compile --allow-unsafe --generate-hashes --output-file=requirements.lock requirements.in",
+      "python_version": "3.14.7",
+      "pip_tools_version": "7.6.1",
+      "summary": "requirements.lock was generated with exact hashes under CPython 3.14.7."
+    },
+    "client_configuration_documentation": {
+      "status": "passed",
+      "path": "docs/mcp-api.md",
+      "section": "1.1 唯一传输和命令",
+      "summary": "Generic mcpServers configuration example documents block-index mcp, a user-local data-root placeholder, and omission of --data-root for the existing default."
+    },
+    "hash_locked_install": {
+      "status": "passed",
+      "command": "python -m pip install --no-cache-dir --require-hashes -r requirements.lock",
+      "exit_code": 0,
+      "summary": "Fresh verification venv installation completed successfully; imported distribution mcp==2.0.0."
+    },
+    "pip_check": {
+      "status": "passed",
+      "command": "python -m pip check",
+      "exit_code": 0,
+      "summary": "No broken requirements found."
+    },
+    "r4_focused_pytest": {
+      "status": "passed",
+      "command": "PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/r4",
+      "exit_code": 0,
+      "summary": "Final post-remediation result: 26 passed in 14.21s; no R4 test was skipped."
+    },
+    "r4_final_remediation": {
+      "status": "passed",
+      "py_compile_command": "python -m py_compile src/blockpedia/mcp_query.py src/blockpedia/mcp_server.py",
+      "py_compile_exit_code": 0,
+      "oracle_result": "Gate 2: PASS; blocking findings none.",
+      "summary": "Final remediation verified explicit null context, nested rerank, invalid compare ID types mapping to JSON-RPC -32602, with D-050 unchanged."
+    },
+    "full_pytest": {
+      "status": "passed",
+      "command": "PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider",
+      "exit_code": 0,
+      "summary": "Pre-final-remediation regression evidence: 407 passed, 3 skipped in 641.43s (0:10:41). The three skips are existing platform-conditional branches; no R4 test was skipped. The final changed R4 path is covered by the post-remediation focused 26-pass result and Oracle Gate 2."
+    },
+    "r2_acceptance_closure": {
+      "status": "passed",
+      "command": "python -m pytest -q -p no:cacheprovider tests/test_r2_acceptance.py",
+      "exit_code": 0,
+      "summary": "3 passed in 0.54s; validate_r2.validate_repository(...) returned status=passed and issues=[] under CPython 3.14.7."
+    },
+    "python_compile": {
+      "status": "passed",
+      "command": "python -m py_compile src/blockpedia/cli.py src/blockpedia/mcp_server.py src/blockpedia/mcp_release.py src/blockpedia/mcp_query.py",
+      "exit_code": 0,
+      "summary": "R4 MCP and CLI modules compiled successfully."
+    },
+    "git_diff_check": {
+      "status": "passed",
+      "command": "git diff --check",
+      "exit_code": 0,
+      "summary": "Passed; only Git CRLF conversion warnings were emitted."
+    }
+  },
+  "protocol_coverage": {
+    "tools_order": [
+      "index_info",
+      "search_blocks",
+      "get_block_details",
+      "compare_blocks"
+    ],
+    "covered": [
+      "real subprocess CLI main and stdio initialize",
+      "exact four ordered tools",
+      "strict input and output schemas",
+      "structuredContent and TextContent parity",
+      "PNG ImageContent with one-based mapping",
+      "unknown JSON-RPC method -32601",
+      "unknown tool and invalid arguments -32602",
+      "business isError responses",
+      "clean EOF and clean stdout",
+      "before/after zero-write checks",
+      "current/default/explicit version resolution",
+      "malformed and unpublished version handling",
+      "historical selector rejection and v1 index rejection",
+      "local provider downgrade",
+      "deterministic ranking, integrity, and TOCTOU"
+    ],
+    "test_paths": [
+      "tests/r4/test_mcp_core.py",
+      "tests/r4/test_mcp_stdio.py",
+      "tests/r4/test_release_projection.py"
+    ]
+  },
+  "safety": {
+    "runtime_fixture": {
+      "original": true,
+      "generated_in_temp": true,
+      "fresh_v2_index": true,
+      "committed": false,
+      "real_minecraft_assets": false
+    },
+    "production_current_activated": false,
+    "production_current_modified": false,
+    "real_index_committed": false,
+    "previews_committed": false,
+    "secrets_committed": false,
+    "non_empty_database_committed": false,
+    "absolute_paths_in_report": false,
+    "usernames_in_report": false,
+    "temp_payloads_in_report": false
+  },
+  "oracle_gate_1": {
+    "status": "passed",
+    "result": "PASS",
+    "scope": "release/query core",
+    "blockers": 0
+  },
+  "oracle_gate_2": {
+    "status": "passed",
+    "result": "PASS",
+    "scope": "final R4 input-validation remediation and Windows MCP Gate 2",
+    "blockers": 0,
+    "verified": [
+      "explicit null context mapping",
+      "nested rerank mapping",
+      "invalid compare ID types mapping to JSON-RPC -32602",
+      "D-050 unchanged"
+    ]
+  },
+  "linux_status": "deferred_to_r5_by_owner_decision",
+  "linux_validation_stage": "R5",
+  "deferred_obligations": [
+    "R4_MCP_STDIO",
+    "LINUX_WHEEL_ABI",
+    "LINUX_JAVA_RUNTIME_EXPORTER",
+    "FINAL_DUAL_PLATFORM_REPRODUCTION"
+  ],
+  "packaging_note": "Editable-package smoke was not used as R4 evidence because the build frontend packaging path is outside this R4 gate; no wheel or package-install claim is made."
+}

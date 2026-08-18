@@ -78,7 +78,7 @@ Schema 变更时，旧 release 只读不改；工作库以新版本从导出包�
 
 ### 2.2 通用标识和引用
 
-- `minecraft_version` 必须是精确字符串 `26.2`，不得写范围或别名。
+- 持久化业务记录中的 `minecraft_version` 必须是精确字符串 `26.2`，不得写范围或别名；MCP tool input 是独立的请求契约，使用 `mcp-api.md` 定义的严格版本格式 pattern，不改变该持久化基线。
 - `block_id` 必须匹配 `^minecraft:[a-z0-9_./-]+$`，且存在于运行时注册表。
 - `state_id` 就是 canonical state string；`properties` 必须逐项匹配该 block 的合法属性值。不能在某些记录使用 hash、在另一些记录使用字符串。
 - R1 的 `variant_id` 等于其 `block_id`；它不是连续数组下标，也不再使用哈希身份。
@@ -363,7 +363,7 @@ release 根的 `manual-overrides.json` 是 Phase C 的记录归档文件，不�
 
 三个数组必须分别只包含原样、完整、通过对应真实 Schema 的 `manual-override.v1`、`skip-review.v1`、`qualification-review.v1` 记录；不得扁平化、删字段、改字段名、把有效值合并成机器列，或加入 release index 专用字段。数组稳定排序分别按 `override_id`、`review_id`、`review_id` 的 UTF-8 字节序；同 ID 的异常重复也必须阻断，不能以最后一条覆盖前一条。`format_version` 是文件格式版本，`version` 是精确 `minecraft_version` 的 owner 字段；这两个字段均不是 Schema ID。
 
-写入 release 前必须重新逐条校验三类原始记录：未知字段、Schema 不通过、`minecraft_version` 不等于 `version`、目标不存在、跨版本目标、`machine_failure_ref` 不存在或不属于当前 export、以及任何 orphan review 都必须阻断 build。不得因为记录无法投影到 release index 就静默丢弃。人工记录的完整值只在本文件保留；release index 的有效语义/资格/搜索 projection 只能引用 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md) 的独立 `release-index.v1.sql` 边界，不在本文复制 SQL 表或列，也不能把 SQL projection 当作人工审计来源。
+写入 release 前必须重新逐条校验三类原始记录：未知字段、Schema 不通过、`minecraft_version` 不等于 `version`、目标不存在、跨版本目标、`machine_failure_ref` 不存在或不属于当前 export、以及任何 orphan review 都必须阻断 build。不得因为记录无法投影到 release index 就静默丢弃。人工记录的完整值只在本文件保留；R3 Phase C 的 release index 使用独立 `release-index.v1.sql`，未来 R4/R5 使用 fresh-only `release-index.v2.sql`，其有效语义/资格/搜索 projection 边界由 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md) 拥有；本文不复制 SQL 表或列，也不能把 SQL projection 当作人工审计来源。
 
 ## 8. 数据不变量和发布视图
 

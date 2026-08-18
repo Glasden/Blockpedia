@@ -135,14 +135,14 @@ Provider 测试必须使用本地 fake endpoint 或脱敏协议 fixture，不发
 
 使用原创小型 release fixture 验证：
 
-1. MCP 省略版本使用 `default_minecraft_version` 的 current，显式版本使用对应 current；WebUI/API 显式版本只查 current；历史 `release_id` selector 被拒绝；精确未知/未发布版本失败并列可用版本，绝不回退；release-bound provider snapshot 使用冻结 adapter/profile/model/base URL/secret reference，不能读取或比较可变 active profile；
+1. R4 fixture 使用 fresh `release-index.v2.sql`；历史 R3 v1 index 返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`。MCP 省略版本使用 `default_minecraft_version` 的 current；显式 `minecraft_version` 必须匹配严格版本 pattern，malformed input 为 JSON-RPC `-32602`，格式合法但未发布版本为 `VERSION_NOT_AVAILABLE` 且不回退；WebUI/API 显式版本只查 current；历史 `release_id` selector 被拒绝；release-bound provider snapshot 使用冻结 adapter/profile/model/base URL/secret reference，不能读取或比较可变 active profile；
 2. 版本、current release 完整性、legal state、资格、明确排除行为、明确必须支撑/透明/发光/方向/形状先于评分；`unknown` 不能满足硬约束；
 3. FTS5 `trigram` 与无 trigram 时 `normalized_like` fallback 均覆盖名称/同义词、颜色、几何、用途、风格和行为；
 4. `search-ranking.v1` 权重精确为 shape `.35`、color `.30`、use `.15`、name-synonym `.10`、style `.05`、behavior `.05`，未出现维度按规则归一化；
-5. Top-24 → family 默认最多 2 个 → 8–12 联系表；显式 family/state comparison 才可解除；
+5. Top-24 后执行确定性 family no-op：`context.family=null` 不分组、不限额并保持稳定顺序，再生成 8–12 联系表；非 null 的 `context.family` 返回 `QUERY_INVALID`；`compare_states`/`compare_blocks` 不解除不存在的 family limit，也不生成 family metadata；
 6. 相同 release、QuerySpec、config 和 fixture 的排序、candidate ID、tile mapping 可重复；
-7. provider 不可用时本地降级、warning、`reranked_by_llm=false`，不放宽 hard；`required` 正确失败；
-8. 正常硬过滤空集是 `isError=false` 的空成功结果，含硬过滤原因和建议追问；未知 block/release 才是 `isError=true`；歧义含 `needs_user_choice`、歧义点、建议追问；
+7. provider 不可用时 `rerank=auto` 必须本地降级、返回 warning、`isError=false` 和 `reranked_by_llm=false`，不放宽 hard；`rerank=required` 必须以顶层 `RERANK_REQUIRED_UNAVAILABLE` 失败，底层 provider code 只能位于 `details.provider_error_code`；
+8. 正常硬过滤空集是 `isError=false` 的空成功结果，含硬过滤原因和建议追问；非法 `block_id`、compare 数量、`minecraft_version` 和其它 input shape 使用 JSON-RPC `-32602`，不产生 `mcp-error.v1` 工具结果；格式合法但未知 block/release 等工具执行错误使用 `isError=true`；歧义含 `needs_user_choice`、歧义点、建议追问；
 9. 未验证视觉条件使用 warning/`visual_constraints_verified=false`，不伪称满足；
 10. LLM 不能新增、删除、改写候选 ID、block/state、图片或机器事实。
 
@@ -152,12 +152,12 @@ Provider 测试必须使用本地 fake endpoint 或脱敏协议 fixture，不发
 
 1. stdout 每条消息可作为 JSON-RPC/MCP 解析，stderr 诊断不污染 stdout；MCP 不写 data-root logs、cache、临时文件或其他持久化状态；
 2. `tools/list` 只有 `index_info`、`search_blocks`、`get_block_details`、`compare_blocks`，不存在 HTTP/resources/任意 SQL/写工具；
-3. 每项暴露 strict inputSchema/outputSchema；未知字段/非法参数为 `-32602`，未知方法为 `-32601`；
+3. 每项暴露 strict inputSchema/outputSchema；严格 version pattern、未知字段/其它非法参数为 `-32602`，合法 `tools/call` 中的未知 tool name 为 Invalid Params `-32602`，未知 JSON-RPC method 为 `-32601`；
 4. `structuredContent` 与同一对象产生的 TextContent JSON 深相等；
 5. `index_info` 无图；search/compare 有稳定编号 PNG 联系表 ImageContent；details 有四视角 PNG；
 6. 图片 metadata 包含 ID、MIME、尺寸、hash、purpose、content index 和 mapping，不含绝对路径；
 7. 工具错误 `isError=true` 与成功降级 `isError=false + warnings` 分层；协议错误使用 JSON-RPC error；
-8. current/default version、显式版本、禁止历史 selector、未知版本/ID、空搜索、图片失败符合 [`mcp-api.md`](mcp-api.md)；
+8. current/default version、strict version pattern、显式未发布版本、v1 index rejection、禁止历史 selector、未知 ID、空搜索、非 null `context.family` 的 `QUERY_INVALID`、图片失败符合 [`mcp-api.md`](mcp-api.md)；
 9. MCP 进程执行全部路径后不写 SQLite、文件、cache、logs 或 current；联系表和 ImageContent 使用内存 bytes，provider 降级也成立。
 
 ## 8. R2/R3/R5 WebUI、任务和安全测试

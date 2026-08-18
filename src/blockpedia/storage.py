@@ -17,10 +17,10 @@ class DatabaseSchemaMismatch(RuntimeError):
 
 
 def packaged_release_index_schema() -> tuple[bytes, str]:
-    """Return the checked, standalone immutable release-index schema."""
+    """Return the checked, standalone immutable v2 release-index schema."""
 
-    sql = _resource_bytes("release-index.v1.sql")
-    expected = _resource_bytes("release-index.v1.sha256").decode("ascii").strip()
+    sql = _resource_bytes("release-index.v2.sql")
+    expected = _resource_bytes("release-index.v2.sha256").decode("ascii").strip()
     actual = "sha256:" + hashlib.sha256(sql).hexdigest()
     if expected != actual:
         raise DatabaseSchemaMismatch("packaged release index schema hash mismatch")

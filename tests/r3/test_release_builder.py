@@ -142,7 +142,7 @@ def test_candidate_build_layout_index_hashes_and_boundary(tmp_path: Path) -> Non
         try:
             assert index.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert index.execute("PRAGMA foreign_key_check").fetchone() is None
-            assert index.execute("SELECT format_version FROM schema_meta").fetchall() == [(1,)]
+            assert index.execute("SELECT format_version FROM schema_meta").fetchall() == [(2,)]
             tables = {row[0] for row in index.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             assert not tables.intersection({"jobs", "provider_requests", "logs", "review_tasks", "audit_events"})
             assert "search_fts" in tables or "search_text" in tables

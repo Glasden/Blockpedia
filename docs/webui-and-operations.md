@@ -119,7 +119,7 @@ MVP **MUST NOT** 使用通用 SQLite migration framework。schema 在 R0 冻结�
 | `Pipeline` | run/pause/resume/status、heartbeat、失败恢复、手动逐批默认、计划确认后的有界顺序提交、单项/批量 Provider retry | 无限自动重试、无审计后台写入、越过 approved barrier 或超过冻结/全局上限的并发发送 |
 | `Review` | normal/high 队列、机器事实只读、语义编辑、声明式 override、skip | 修改机器事实、无原因 skip、静默发布 |
 | `Release` | check/build/activation-check/apply/rollback/cleanup、hash、审计 | 原地改 release、删除回滚证据 |
-| `Search test` | QuerySpec、hard filter、Top-24、family 去重、联系表、降级结果 | 持久化测试 query、隐藏 warning、放宽 hard |
+| `Search test` | QuerySpec、hard filter、Top-24、`context.family` 的 R4 no-op/校验、联系表、降级结果 | 持久化测试 query、隐藏 warning、放宽 hard 或展示不存在的 family metadata |
 | `Settings/Logs` | data root、日志级别/保留、脱敏日志 | 远程遥测、秘密查看、Token/成本仪表盘 |
 
 Provider 页面可以保存多个非活动 profile，但全局最多一个 active profile；每个 profile 必须显式选择 `openai_responses` 或 `openai_chat_completions`，并显示所选 endpoint、请求字段和隐私边界。页面必须显示简短警告：`model_id` 是发送的 requested identity，第三方 gateway 可能改写 response model；Blockpedia 不验证或声称远端实际模型身份。active 只控制 Studio 新写任务和新 release；既有 Responses profile/release 继续有效。release-bound MCP 使用已解析 release 冻结的 provider snapshot，不读取或比较可变 active profile。每个 profile 在 enable 前必须通过所选 adapter 的图片、strict Structured Outputs、错误分类、requested model/auth 和协议 wire 形状能力门；Responses 发送 `store=false`、Chat 省略 `store`，两者都不证明远端 retention。任一能力失败都禁止 enable；不得提供协议 fallback、retention/模型身份确认或绕过字段。具体字段见 [`openai-provider.md`](openai-provider.md)。
@@ -298,7 +298,7 @@ WebUI 可以提供 strict pristine same-run reconfiguration，但只在 run/stag
 }
 ```
 
-`override` 只能修改 AI 语义、受控 qualification、warnings 和 skip 决定；不得出现 `block_id`、state、合法状态、机器几何、颜色原始测量、透明度、发光、支撑事实、图片、版本或发布状态。普通 override 按 `manual-override.v1` 保存；skip 和 qualification 审计必须分别使用 `skip-review.v1` 与 `qualification-review.v1`，字段至少为 `target_id`、`minecraft_version`、`reviewer`、`reviewed_at`、`reason_code`、`note`、`evidence`、`source_version`，skip 另加 `machine_failure_ref`。`request_reexport` 和 `request_exporter_rerender` 只生成外部 Fabric exporter 重新导出要求，Python 不选择状态或渲染图片。每条 override/review 必须独立保存 `operator_id`/reviewer、时间、原因、来源版本和目标 ID。`family` 应展开为每个明确 target ID 的独立记录；无隐式全局魔法。
+`override` 只能修改 AI 语义、受控 qualification、warnings 和 skip 决定；不得出现 `block_id`、state、合法状态、机器几何、颜色原始测量、透明度、发光、支撑事实、图片、版本或发布状态。普通 override 按 `manual-override.v1` 保存；skip 和 qualification 审计必须分别使用 `skip-review.v1` 与 `qualification-review.v1`，字段至少为 `target_id`、`minecraft_version`、`reviewer`、`reviewed_at`、`reason_code`、`note`、`evidence`、`source_version`，skip 另加 `machine_failure_ref`。`request_reexport` 和 `request_exporter_rerender` 只生成外部 Fabric exporter 重新导出要求，Python 不选择状态或渲染图片。每条 override/review 必须独立保存 `operator_id`/reviewer、时间、原因、来源版本和目标 ID。多目标人工操作必须展开为每个明确 target ID 的独立记录；R4 `context.family` 不得成为持久化 target 或隐式全局规则。
 
 qualification 只能是 `eligible`、`conditional`、`excluded`；`conditional` 必须有 warning。没有视觉变体的 Block 只有在 `skip-review.v1` 同时有完整字段和 `machine_failure_ref` 后才能通过 candidate-build gate；`excluded` 必须有独立 `qualification-review.v1` 的完整字段才能通过 candidate-build gate。activation gate 只复核 candidate report 及其 hash，不首次补做资格内容审计。人工不能把 override 写回机器事实。
 
@@ -422,7 +422,7 @@ cleanup 可以由 WebUI 人工删除未受保护的旧 release、workspace 临�
 }
 ```
 
-响应必须显示 resolved `minecraft_version`、`resolved_release_id`、`manifest_sha256`、QuerySpec、来源、hard filter、Top-24、family 去重、contact sheet mapping、本地/LLM 排序、warning、`reranked_by_llm` 和 MCP 等价结构化对象。release 只能由服务解析 current，客户端不能指定历史 release。不得展示 Token/cost、完整 provider response、绝对路径或自动写生产索引；图片/联系表只在请求生命周期内构造，测试 API 不得持久化。
+响应必须显示 resolved `minecraft_version`、`resolved_release_id`、`manifest_sha256`、QuerySpec、来源、hard filter、Top-24、`context.family` 的 R4 no-op/校验结果、contact sheet mapping、本地/LLM 排序、warning、`reranked_by_llm` 和 MCP 等价结构化对象。`context.family=null` 不改变候选顺序；非 null 返回 `QUERY_INVALID`，不展示或创建 family metadata。release 只能由服务解析 current，客户端不能指定历史 release。不得展示 Token/cost、完整 provider response、绝对路径或自动写生产索引；图片/联系表只在请求生命周期内构造，测试 API 不得持久化。
 
 ## 6. 发布前置和错误码
 

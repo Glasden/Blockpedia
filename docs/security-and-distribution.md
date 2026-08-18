@@ -157,6 +157,8 @@ workspace `work.sqlite3` 只能以只读连接读取逻辑 rows；WAL 模式下�
 
 最终 release 在应用层以 `immutable=true` 拒绝写入，并在最终完整 hash 验证后将普通文件和目录设置为只读权限/ACL；权限设置不得产生 release 内 marker 或内容改写。rename 后只允许更新 release 外的 check state、cache 和 workspace audit/status；不得修改 release 内任何文件、目录内容、SQLite 数据、权限语义或 hash 文件。Phase C 不执行 activation/current/MCP。
 
+R3 Phase C 的 `release-index.v1.sql` candidate 是有效且不可变的历史 R3 evidence，但不具备 MCP/activation 资格；R4/R5 只能消费 fresh `release-index.v2.sql`，MCP 或 activation 遇 v1 必须返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`，不得 migration、降级读取或原地补列。MCP 的 `minecraft_version` 输入必须匹配严格版本格式 `^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$`；格式非法为 JSON-RPC `-32602`，格式合法但未发布版本为 `VERSION_NOT_AVAILABLE`，不因安全兼容而回退到其它 current。
+
 ### 7.1 不可变 release
 
 发布目录固定为：
