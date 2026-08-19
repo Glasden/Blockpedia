@@ -3,7 +3,7 @@
 - **版本**：MVP 冻结版
 - **日期**：2026-08-17
 - **目标**：在 Windows 11 x86_64 和 Linux x86_64（`manylinux_2_17` / glibc `>=2.17`）上完成原版 Minecraft Java 26.2 的本地单机端到端闭环
-- **当前状态**：R0 契约冻结、R1 确定性导出和 R2 Index Studio/存储/任务均已有 Windows、静态与 fixture 证据；D-043 Gate 3/R1 P0 corrected-export closure 已由最终 pair evidence 验证，R1 P0 不再 open。D-040 的批次授权、D-041 的可扩展 aggregate authorization、D-042 的 `prompt.v2`/安全诊断、D-044 的 bounded concurrency 以及 D-045 的 targeted banner rerender/refresh 均已有 focused implementation 与 Windows runtime evidence。D-045 已将精确 32 个 banner targets 刷新到当前 R3 run，并完成 3 个新增 AI 批次；用户随后接受全部 1172 个 annotation reviews，并审核跳过剩余 15 个机器渲染失败项。真实 candidate-build gate 已通过，未激活 candidate `rel_357c6104fe8ccfc0f4b7823a68ccc84e` 已构建且根 `current.json` 不存在；R3 Windows 退出证据已满足，R4 可以开始但尚未实现。Linux CPython/Web、Linux MCP stdio、Linux wheel/ABI、Linux Java/runtime/exporter 和最终双平台复现统一 deferred 到 R5；正式支持平台与 Linux 基线不变，当前不声称 Linux 已通过。
+- **当前状态**：R0 契约冻结、R1 确定性导出和 R2 Index Studio/存储/任务均已有 Windows、静态与 fixture 证据；D-043 Gate 3/R1 P0 corrected-export closure 已由最终 pair evidence 验证，R1 P0 不再 open。D-040 的批次授权、D-041 的可扩展 aggregate authorization、D-042 的 `prompt.v2`/安全诊断、D-044 的 bounded concurrency 以及 D-045 的 targeted banner rerender/refresh 均已有 focused implementation 与 Windows runtime evidence。D-045 已将精确 32 个 banner targets 刷新到当前 R3 run，并完成 3 个新增 AI 批次；用户随后接受全部 1172 个 annotation reviews，并审核跳过剩余 15 个机器渲染失败项。真实 candidate-build gate 已通过，未激活 candidate `rel_357c6104fe8ccfc0f4b7823a68ccc84e` 已构建且根 `current.json` 不存在；既有 R4 Windows stdio/功能 evidence 已闭合。D-052 已于 2026-08-19 获 owner 批准为“仅构建时验证”契约；当前实现与聚焦验收进行中，未完成前不得勾选，其新增实现/验收不得据旧 R4 integrity evidence 推定完成。Linux CPython/Web、Linux MCP stdio、Linux wheel/ABI、Linux Java/runtime/exporter 和最终双平台复现统一 deferred 到 R5；正式支持平台与 Linux 基线不变，当前不声称 Linux 已通过。
 
 规范优先级和硬限制见 [`../AGENTS.md`](../AGENTS.md)；冻结决定集中见 [`decisions.md`](decisions.md)。冲突必须先更新高优先级文档，不能在实现中静默偏离。移入的原始设计稿仅是历史背景和最低优先级参考，不能与新文档一起作为执行规范；其中冲突内容禁止实现。
 
@@ -35,7 +35,7 @@
 
 ## 阶段依赖与退出门
 
-依赖链为 `R0 → R1 → R2 → R3 → R4 → R5`。每一阶段只以该阶段已经定义的最小交付物和验收为退出条件；后续阶段的平台、运行时、数据和发布证据不得倒灌阻塞前一阶段。R0、R1、R2 已退出，R3 可以开始；Linux 实际验证统一由 R5 承接，R3-R5 其余未完成项保持未勾选。
+依赖链为 `R0 → R1 → R2 → R3 → R4 → R5`。每一阶段只以该阶段已经定义的最小交付物和验收为退出条件；后续阶段的平台、运行时、数据和发布证据不得倒灌阻塞前一阶段。R0-R4 的既有阶段门均已退出；D-052 是尚待实现与聚焦验收的后续修订，R5 仍未完成。Linux 实际验证统一由 R5 承接，所有未完成项保持未勾选。
 
 ### R0：契约冻结
 
@@ -214,10 +214,11 @@ R3 candidate `rel_357c6104fe8ccfc0f4b7823a68ccc84e` 的 release projection 使�
 - [x] 实现仅 `stdio` 的 `block-index mcp`，stdout 只输出 MCP 协议消息，诊断只写 stderr；证据为 `tests/r4/test_mcp_stdio.py` 的真实子进程/stdio、clean EOF、clean stdout 和 zero-write 覆盖。
 - [x] 实现且仅实现 `index_info`、`search_blocks`、`get_block_details`、`compare_blocks` 四个工具；测试确认四工具顺序和四工具调用。
 - [x] 实现 `current-pointer.v1` 解析：省略 `minecraft_version` 时使用 `default_minecraft_version` 对应 current；显式输入必须匹配严格版本 pattern，malformed input 返回 JSON-RPC `-32602`，格式合法但未知或未发布版本返回 `VERSION_NOT_AVAILABLE` 且不回退。
-- [x] R4 fixture 使用 fresh-only `release-index.v2.sql`；历史 R3 `release-index.v1.sql` candidate 保持有效但不具备 MCP/activation 资格，MCP 遇 v1 以 `RELEASE_INTEGRITY_FAILED` 和 `details.integrity_component="index"` 拒绝；未来 R4/R5 candidate 仍须遵守 fresh-only 边界。
+- [x] R4 fixture 使用 fresh-only `release-index.v2.sql`；历史 R3 `release-index.v1.sql` candidate 保持有效但不具备 activation 资格；future R4/R5 candidate 的 fresh-only index 边界由 build/activation gate 负责，D-052 后 MCP 运行时不检查 index format 或建立 v1 专用完整性错误路径。
 - [x] 禁止 MCP 显式历史 `release_id` selector；历史切换只由 WebUI rollback 完成。
 - [x] 使用临时测试 data-root/current fixture 做 MCP 测试，不激活生产 current，不写数据库、文件、cache、logs 或 release 指针。
 - [x] 实现确定性硬过滤/评分；本地 provider downgrade 保持确定性结果并返回 `reranked_by_llm=false`。
+- [x] 实现并提供 D-052 owner-approved 最小运行时契约：仅构建时验证、pointer snapshot/cache 切换、路径/reparse 安全边界、按需 index/PNG 读取、strict advertised `outputSchema` `oneOf`、55/15/30 秒 provider budget、请求资源复用及同步查询移出 event loop；锁定环境聚焦测试与最终 Oracle 复核均已通过。
 
 #### 交付物
 
@@ -227,8 +228,8 @@ R3 candidate `rel_357c6104fe8ccfc0f4b7823a68ccc84e` 的 release projection 使�
 
 #### 验证与退出条件
 
-- [x] 四工具均只能读取不可变 release，不能写数据库、文件、日志、cache 或 `current.json`；协议测试记录执行前后 zero-write。
-- [x] 候选/图片结构化映射、状态和 release 查询通过 strict output、PNG ImageContent、one-based mapping 与 release/query core tests 验证；模型不得改变结构化事实。
+- [x] 四工具均只能读取 pointer-resolved release，不能写数据库、文件、日志、cache 或 `current.json`；协议测试记录执行前后 zero-write；release 完整性不由本项运行时复核。
+- [x] 候选/图片结构化映射、状态和 release 查询通过 strict output、PNG ImageContent、one-based mapping 与 release/query core tests 验证；模型不得改变结构化事实；不将历史测试解释为 D-052 的 runtime integrity evidence。
 - [x] stdout 纯净检查、默认版本、无效版本/ID/未发布版本错误检查和本地降级检查通过。
 - [x] Windows 11 x86_64 的 stdio 启动和关闭、四工具功能门通过；Oracle Gate 1 和最终 Oracle Gate 2 均为 `PASS`、blocking findings 为 `0`，R4 Windows evidence closed。
 
@@ -236,10 +237,12 @@ R3 candidate `rel_357c6104fe8ccfc0f4b7823a68ccc84e` 的 release projection 使�
 
 - Windows evidence report：[`evidence/r4-windows-mcp-report.json`](evidence/r4-windows-mcp-report.json)，`evidence_type=windows_r4_mcp`、`status=passed`、SHA-256 为 `sha256:0e282d0e606befdd6736b6ea62683a7cbf81cd3eedf000d51210b681b13fbd7f`；环境为 Windows 11 build `10.0.26200` AMD64、CPython `3.14.7`。
 - 依赖与静态证据：`requirements.lock` SHA-256 为 `sha256:ec533a5b8692c05215ad13f751e0d4bebaf1e2ac043c58be394a4e59c82925a2`；hash-locked install 和 `python -m pip check` 均 exit `0`，导入 `mcp==2.0.0`；`python -m py_compile src/blockpedia/cli.py src/blockpedia/mcp_server.py src/blockpedia/mcp_release.py src/blockpedia/mcp_query.py` exit `0`；`git diff --check` exit `0`，仅有 Git CRLF conversion warnings。
-- R4 focused evidence：最终 remediation 后 `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/r4` 为 `26 passed in 14.21s`、zero skips；`python -m py_compile src/blockpedia/mcp_query.py src/blockpedia/mcp_server.py` passed，Oracle Gate 2 verified explicit null context/nested rerank/invalid compare ID types 为 JSON-RPC `-32602` 且 D-050 unchanged。既有 full command `407 passed, 3 skipped in 641.43s (0:10:41)` 是 final remediation 之前的 regression evidence；final changed R4 path 由 post-remediation focused 26-pass 和 Oracle Gate 2 覆盖，三项 skip 是既有 platform-conditional branches，R4 tests 无 skip。R2 old-validator closure 为 `python -m pytest -q -p no:cacheprovider tests/test_r2_acceptance.py` 的 `3 passed in 0.54s`，`validate_r2.validate_repository(...)` 返回 `status=passed`、`issues=[]`。
-- R4 evidence paths：实现为 `src/blockpedia/mcp_release.py`、`src/blockpedia/mcp_query.py`、`src/blockpedia/mcp_server.py`、`src/blockpedia/cli.py`、`src/blockpedia/sql/release-index.v2.sql`、`src/blockpedia/sql/release-index.v2.sha256`；测试为 `tests/r4/fixture_builder.py`、`tests/r4/test_release_projection.py`、`tests/r4/test_mcp_core.py`、`tests/r4/test_mcp_stdio.py`。协议覆盖真实 stdio subprocess、exact four ordered tools、strict schemas、structured/Text parity、PNG ImageContent/one-based mapping、`-32601`/`-32602`、business `isError`、clean EOF/stdout 和 before/after zero writes；core 覆盖 version resolution、malformed/unpublished/v1 rejection、historical selector rejection、local downgrade、ranking、integrity 和 TOCTOU。
+- R4 focused evidence：最终 remediation 后 `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/r4` 为 `26 passed in 14.21s`、zero skips；`python -m py_compile src/blockpedia/mcp_query.py src/blockpedia/mcp_server.py` passed，Oracle Gate 2 verified explicit null context/nested rerank/invalid compare ID types 为 JSON-RPC `-32602` 且 D-050 unchanged。既有 full command `407 passed, 3 skipped in 641.43s (0:10:41)` 是 final remediation 之前的 regression evidence；final changed R4 path 由 post-remediation focused 26-pass 和 Oracle Gate 2 覆盖，三项 skip 是既有 platform-conditional branches，R4 tests 无 skip。R2 old-validator closure 为 `python -m pytest -q -p no:cacheprovider tests/test_r2_acceptance.py` 的 `3 passed in 0.54s`，`validate_r2.validate_repository(...)` 返回 `status=passed`、`issues=[]`。以上是 D-052 之前的既有 evidence，本次不声称它覆盖 D-052 新运行时契约。
+- R4 evidence paths：实现为 `src/blockpedia/mcp_release.py`、`src/blockpedia/mcp_query.py`、`src/blockpedia/mcp_server.py`、`src/blockpedia/cli.py`、`src/blockpedia/sql/release-index.v2.sql`、`src/blockpedia/sql/release-index.v2.sha256`；测试为 `tests/r4/fixture_builder.py`、`tests/r4/test_release_projection.py`、`tests/r4/test_mcp_core.py`、`tests/r4/test_mcp_stdio.py`。协议覆盖真实 stdio subprocess、exact four ordered tools、strict schemas、structured/Text parity、PNG ImageContent/one-based mapping、`-32601`/`-32602`、business `isError`、clean EOF/stdout 和 before/after zero writes；core 覆盖 version resolution、malformed/unpublished、historical selector rejection、local downgrade、ranking 和 TOCTOU。旧 evidence 中的 integrity/v1 rejection 断言不再是 D-052 当前 runtime 契约。
 - Fixture/safety boundary：runtime fixture 为原创、临时目录生成、fresh v2 index，未提交；没有真实 Minecraft assets/index/previews/secrets/non-empty DB 提交。生产 `current.json` 未激活、未修改。R4 不构建或声称真实 candidate/release，也不使用 editable-package smoke 作为 evidence；Oracle Gate 1 和 Gate 2 均为 `PASS`、blocking findings 为 `0`。
 - R4 Windows required evidence 已闭合；Linux MCP/runtime、Linux wheel/ABI、Linux Java/runtime/exporter 和最终双平台复现继续 deferred 到 R5。不得以本报告声称 Linux 已通过、生产 activation 已完成或真实 candidate/release 已构建。
+
+- D-052 最小聚焦证据：CPython `3.14.7`、锁定 `mcp==2.0.0` 环境中，`python -m pytest -q -p no:cacheprovider tests/r4/test_mcp_stdio.py tests/r4/test_mcp_core.py tests/r4/test_release_projection.py tests/r3/test_provider_core.py` 在 remediation 后为 `114 passed`；最终仅修改 provider timeout 与 stdio thread-isolation 路径后，`python -m pytest -q -p no:cacheprovider tests/r3/test_provider_core.py tests/r4/test_mcp_stdio.py` 为 `84 passed`。相关 `py_compile` 与 `git diff --check` 通过，最终 Oracle 复核为 `PASS`。未新增 evidence report、真实基数 fixture 或全量测试矩阵；owner 明确接受的离线篡改/损坏风险不被包装成等价安全。
 
 ### R5：完整性收敛与首发
 

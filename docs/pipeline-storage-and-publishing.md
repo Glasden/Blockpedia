@@ -260,7 +260,7 @@ check 读取 workspace 时必须在只读一致性事务中取得 allowlisted �
 
 #### Release index projection versions, layout 与 preview mapping
 
-R3 Phase C 使用独立的 `release-index.v1.sql` 投影契约；它不是 JSON Schema ID，不改变 `workspace.v1.sql`，也不通过通用 migration 从工作库升级。现有 R3 v1 candidate 保持有效、不可变，但不具备 R4 MCP 或 activation 资格。v1 新建 `index.sqlite3` 时 `schema_meta` 必须恰有 `format_version=1`；该列/值是 release index 格式版本，不得写成 `schema_version` 或伪装成 D-030 Schema。以下是 v1 的既有 scalar/indexed columns 和 indexes：
+R3 Phase C 使用独立的 `release-index.v1.sql` 投影契约；它不是 JSON Schema ID，不改变 `workspace.v1.sql`，也不通过通用 migration 从工作库升级。现有 R3 v1 candidate 保持有效、不可变；build/activation gate 不把它作为 R4/R5 candidate 或 activation input，这一资格约束不由 MCP runtime 执行。v1 新建 `index.sqlite3` 时 `schema_meta` 必须恰有 `format_version=1`；该列/值是 release index 格式版本，不得写成 `schema_version` 或伪装成 D-030 Schema。以下是 v1 的既有 scalar/indexed columns 和 indexes：
 
 ```sql
 CREATE TABLE schema_meta (
@@ -315,7 +315,7 @@ visual_variants.record_json TEXT NOT NULL
 visual_variants.feature_json TEXT NOT NULL
 ```
 
-`blocks.record_json`、`states.record_json` 和 `visual_variants.record_json` 必须分别保存对应完整 `block-record.v1`、`state-record.v1` 和 `visual-variant-record.v1` 记录，并在 build 时逐条 strict 校验；`feature_json` 必须通过现有确定性 feature validation。v2 不新增 JSON Schema ID、表外服务、CLI、状态或 migration。R4 fixture、MCP 和 activation 只接受 `format_version=2`；v1 必须 fail closed 为 `RELEASE_INTEGRITY_FAILED`，并将 `details.integrity_component` 固定为 `index`。
+`blocks.record_json`、`states.record_json` 和 `visual_variants.record_json` 必须分别保存对应完整 `block-record.v1`、`state-record.v1` 和 `visual-variant-record.v1` 记录，并在 build 时逐条 strict 校验；`feature_json` 必须通过现有确定性 feature validation。v2 不新增 JSON Schema ID、表外服务、CLI、状态或 migration。fresh v2 的资格与完整性只由 build/activation gate 保证：R4/R5 fixture 和 future candidate 必须由 gate 产出或接受 fresh v2；MCP 运行时不检查 `format_version`，不因 v1 本身拒绝 release，也不为此返回 `RELEASE_INTEGRITY_FAILED`。MCP 只信任 `current.json` 的 pointer，按需打开 pointer 指定的 release/index 并读取响应 PNG；实际打开、查询或读取失败时 fail closed，且不得回退到其它 release。
 
 FTS 只有一个实现分支：SQLite 支持时建立 `search_fts(variant_id UNINDEXED, normalized_text)` 的 FTS5 `trigram` virtual table；不支持时不建该 virtual table，改建 `search_text(variant_id PRIMARY KEY, normalized_text)` 和 `search_text_normalized_idx` 普通索引。两种分支都必须由 Gate C 的 `FTS_READY` 证明，不能增加 vector 列或外部服务。release index 只保存上述发布投影，不复制三类原始审核记录；原始记录包由 [`data-and-schemas.md`](data-and-schemas.md) 定义。
 
@@ -587,7 +587,7 @@ release 创建成功后目录内容和数据库权限/应用层均视为只读�
 3. 写入完整 JSON、fsync 文件后，对临时文件执行原子 replace 为 `<data_root>/current.json`；不得跨文件系统 rename，不得先删除旧指针。
 4. 读取回目标版本指针做一次验证，记录 `CURRENT_SWITCHED` 和 workspace activation audit（操作者、时间、目标版本、release、`set_as_default`、原因）；审计不写回 release。
 
-失败时保留旧 current，临时文件可由 WebUI 清理；绝不允许 current 指向半成品。MCP 每次启动/打开索引都校验指定版本的 current 指针和 manifest hash；指定固定 release 或版本时同样只打开完整不可变目录。
+失败时保留旧 current，临时文件可由 WebUI 清理；绝不允许 current 指向半成品。MCP 启动/查询只读取并解析 `current.json`，按 pointer 的版本、release ID 和相对路径打开指定 release，执行必要的相对路径安全与明显 link/reparse 拒绝，并按需打开 index、读取响应 PNG；MCP 不验证 manifest hash、`checksums.sha256`、Schema inventory、quality report 或 index format，也不因 v1 本身返回 `RELEASE_INTEGRITY_FAILED`，读取失败时 fail closed 且不得回退。
 
 ## 11. 保留、清理和回滚
 

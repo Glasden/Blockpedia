@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -1243,6 +1243,9 @@ class OpenAIProvider:
         repair: bool,
         repair_context: str | None = None,
         body_override: Mapping[str, Any] | None = None,
+        timeout_seconds: float | None = None,
+        attempt_number: int = 1,
+        attempt_timeout_factory: Callable[[int], float | None] | None = None,
     ) -> _Attempt:
         secret = self.secret_resolver._secret_for_request(self.profile)
         if not secret:
@@ -1251,12 +1254,18 @@ class OpenAIProvider:
         request_id: str | None = None
         try:
             endpoint = "/responses" if self.profile.adapter == "openai_responses" else "/chat/completions"
-            response = self.client.post(
-                self.profile.base_url.rstrip("/") + endpoint,
-                headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
-                json=body,
-                follow_redirects=False,
-            )
+            request_kwargs: dict[str, Any] = {
+                "headers": {"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
+                "json": body,
+                "follow_redirects": False,
+            }
+            if attempt_timeout_factory is not None:
+                timeout_seconds = attempt_timeout_factory(attempt_number)
+                if timeout_seconds is None or timeout_seconds < 1.0:
+                    return self._error("PROVIDER_TIMEOUT", error_class="timeout")
+            if timeout_seconds is not None:
+                request_kwargs["timeout"] = timeout_seconds
+            response = self.client.post(self.profile.base_url.rstrip("/") + endpoint, **request_kwargs)
             request_id = _redact_request_id(response.headers.get("x-request-id"))
         except httpx.TimeoutException:
             return self._error("PROVIDER_TIMEOUT", error_class="timeout", retryable=True, request_id=request_id)
@@ -1640,6 +1649,7 @@ class OpenAIProvider:
         source_images: Mapping[str, bytes] | None = None,
         query_text: str | None = None,
         cache_parts: Mapping[str, Any] | object = _CACHE_PARTS_MISSING,
+        attempt_timeout_factory: Callable[[int], float | None] | None = None,
     ) -> ProviderResult:
         schema_id, _ = _stage_schema_name(stage)
         profile = self._effective_profile()
@@ -1674,6 +1684,7 @@ class OpenAIProvider:
         if not secret_info.configured:
             return self._zero_result(stage, schema_id, "PROVIDER_NOT_CONFIGURED", cache_key_value=cache)
         last: _Attempt | None = None
+        attempts_made = 0
         for attempt_number in (1, 2):
             repair = bool(last and last.repairable)
             current = self._post(
@@ -1682,8 +1693,13 @@ class OpenAIProvider:
                 image_png,
                 repair=repair,
                 repair_context=last.repair_context if repair and last else None,
+                attempt_number=attempt_number,
+                attempt_timeout_factory=attempt_timeout_factory,
             )
             last = current
+            if current.error_code == "PROVIDER_TIMEOUT" and not current.retryable:
+                break
+            attempts_made += 1
             if current.artifact is not None:
                 return ProviderResult(
                     "succeeded",
@@ -1691,7 +1707,7 @@ class OpenAIProvider:
                     schema_id,
                     current.artifact,
                     current.request_id_redacted,
-                    attempt_number,
+                    attempts_made,
                     None,
                     None,
                     cache,
@@ -1700,7 +1716,7 @@ class OpenAIProvider:
             if current.storage_unsupported or (not current.retryable and not current.repairable) or attempt_number == 2:
                 break
         assert last is not None
-        if attempt_number == 2 and last.error_code == "PROVIDER_SCHEMA_INVALID_REPAIRABLE":
+        if attempts_made == 2 and last.error_code == "PROVIDER_SCHEMA_INVALID_REPAIRABLE":
             last = replace(last, error_code="PROVIDER_SCHEMA_INVALID", error_class="validation", repairable=False)
         failed = last.error_code in {
             "PROVIDER_AUTH_FAILED",
@@ -1717,7 +1733,7 @@ class OpenAIProvider:
             schema_id,
             None,
             last.request_id_redacted,
-            attempt_number,
+            attempts_made,
             last.error_code,
             last.error_class,
             cache,
@@ -1728,14 +1744,14 @@ class OpenAIProvider:
 
     call = request
 
-    def annotate(self, input_text: str, *, image_png: bytes | None = None, machine_metadata_hash: str | None = None, image_hash: str | None = None, context: Mapping[str, Any] | None = None, envelope: Mapping[str, Any] | None = None, machine_metadata: Mapping[str, Any] | None = None, query_spec: Mapping[str, Any] | None = None, candidate_records: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None, source_images: Mapping[str, bytes] | None = None, query_text: str | None = None, cache_parts: Mapping[str, Any] | object = _CACHE_PARTS_MISSING) -> ProviderResult:
-        return self.request("offline_annotation", input_text=input_text, image_png=image_png, machine_metadata_hash=machine_metadata_hash, image_hash=image_hash, context=context, envelope=envelope, machine_metadata=machine_metadata, query_spec=query_spec, candidate_records=candidate_records, source_images=source_images, query_text=query_text, cache_parts=cache_parts)
+    def annotate(self, input_text: str, *, image_png: bytes | None = None, machine_metadata_hash: str | None = None, image_hash: str | None = None, context: Mapping[str, Any] | None = None, envelope: Mapping[str, Any] | None = None, machine_metadata: Mapping[str, Any] | None = None, query_spec: Mapping[str, Any] | None = None, candidate_records: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None, source_images: Mapping[str, bytes] | None = None, query_text: str | None = None, cache_parts: Mapping[str, Any] | object = _CACHE_PARTS_MISSING, attempt_timeout_factory: Callable[[int], float | None] | None = None) -> ProviderResult:
+        return self.request("offline_annotation", input_text=input_text, image_png=image_png, machine_metadata_hash=machine_metadata_hash, image_hash=image_hash, context=context, envelope=envelope, machine_metadata=machine_metadata, query_spec=query_spec, candidate_records=candidate_records, source_images=source_images, query_text=query_text, cache_parts=cache_parts, attempt_timeout_factory=attempt_timeout_factory)
 
-    def query_spec(self, input_text: str, *, image_png: bytes | None = None, machine_metadata_hash: str | None = None, image_hash: str | None = None, context: Mapping[str, Any] | None = None, envelope: Mapping[str, Any] | None = None, machine_metadata: Mapping[str, Any] | None = None, query_spec: Mapping[str, Any] | None = None, candidate_records: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None, source_images: Mapping[str, bytes] | None = None, query_text: str | None = None, cache_parts: Mapping[str, Any] | object = _CACHE_PARTS_MISSING) -> ProviderResult:
-        return self.request("query_spec", input_text=input_text, image_png=image_png, machine_metadata_hash=machine_metadata_hash, image_hash=image_hash, context=context, envelope=envelope, machine_metadata=machine_metadata, query_spec=query_spec, candidate_records=candidate_records, source_images=source_images, query_text=query_text, cache_parts=cache_parts)
+    def query_spec(self, input_text: str, *, image_png: bytes | None = None, machine_metadata_hash: str | None = None, image_hash: str | None = None, context: Mapping[str, Any] | None = None, envelope: Mapping[str, Any] | None = None, machine_metadata: Mapping[str, Any] | None = None, query_spec: Mapping[str, Any] | None = None, candidate_records: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None, source_images: Mapping[str, bytes] | None = None, query_text: str | None = None, cache_parts: Mapping[str, Any] | object = _CACHE_PARTS_MISSING, attempt_timeout_factory: Callable[[int], float | None] | None = None) -> ProviderResult:
+        return self.request("query_spec", input_text=input_text, image_png=image_png, machine_metadata_hash=machine_metadata_hash, image_hash=image_hash, context=context, envelope=envelope, machine_metadata=machine_metadata, query_spec=query_spec, candidate_records=candidate_records, source_images=source_images, query_text=query_text, cache_parts=cache_parts, attempt_timeout_factory=attempt_timeout_factory)
 
-    def visual_rerank(self, input_text: str, *, image_png: bytes | None = None, machine_metadata_hash: str | None = None, image_hash: str | None = None, context: Mapping[str, Any] | None = None, envelope: Mapping[str, Any] | None = None, machine_metadata: Mapping[str, Any] | None = None, query_spec: Mapping[str, Any] | None = None, candidate_records: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None, source_images: Mapping[str, bytes] | None = None, query_text: str | None = None, cache_parts: Mapping[str, Any] | object = _CACHE_PARTS_MISSING) -> ProviderResult:
-        return self.request("visual_rerank", input_text=input_text, image_png=image_png, machine_metadata_hash=machine_metadata_hash, image_hash=image_hash, context=context, envelope=envelope, machine_metadata=machine_metadata, query_spec=query_spec, candidate_records=candidate_records, source_images=source_images, query_text=query_text, cache_parts=cache_parts)
+    def visual_rerank(self, input_text: str, *, image_png: bytes | None = None, machine_metadata_hash: str | None = None, image_hash: str | None = None, context: Mapping[str, Any] | None = None, envelope: Mapping[str, Any] | None = None, machine_metadata: Mapping[str, Any] | None = None, query_spec: Mapping[str, Any] | None = None, candidate_records: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None, source_images: Mapping[str, bytes] | None = None, query_text: str | None = None, cache_parts: Mapping[str, Any] | object = _CACHE_PARTS_MISSING, attempt_timeout_factory: Callable[[int], float | None] | None = None) -> ProviderResult:
+        return self.request("visual_rerank", input_text=input_text, image_png=image_png, machine_metadata_hash=machine_metadata_hash, image_hash=image_hash, context=context, envelope=envelope, machine_metadata=machine_metadata, query_spec=query_spec, candidate_records=candidate_records, source_images=source_images, query_text=query_text, cache_parts=cache_parts, attempt_timeout_factory=attempt_timeout_factory)
 
     def probe(self, image_png: bytes, *, probed_at: str | None = None) -> ProbeResult:
         if not isinstance(image_png, (bytes, bytearray)) or not image_png:

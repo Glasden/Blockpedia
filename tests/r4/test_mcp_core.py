@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
+import stat
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
 from blockpedia.mcp_query import MCPInputError, MCPQueryService, MCPToolResult, _Intent, deterministic_score, parse_query
-from blockpedia.mcp_release import MCPReleaseError, MCPReleaseResolver
+from blockpedia import mcp_release
+from blockpedia.mcp_release import MCPReleaseError, MCPReleaseResolver, ReleaseHandle
 from blockpedia.schema import validate_record
 
 from .fixture_builder import build_fixture
@@ -16,24 +18,6 @@ from .fixture_builder import build_fixture
 
 def _write_json(path: Path, value: object) -> None:
     path.write_bytes((json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
-
-
-def _rehash_fixture(fixture: object, *, index_changed: bool) -> None:
-    release = fixture.release  # type: ignore[union-attr]
-    root = fixture.root  # type: ignore[union-attr]
-    manifest = json.loads((release / "manifest.json").read_text(encoding="utf-8"))
-    manifest["quality_report_sha256"] = "sha256:" + hashlib.sha256((release / "quality_report.json").read_bytes()).hexdigest()
-    if index_changed:
-        manifest["functional_artifacts"]["index.sqlite3"] = "sha256:" + hashlib.sha256((release / "index.sqlite3").read_bytes()).hexdigest()
-    _write_json(release / "manifest.json", manifest)
-    release_json = json.loads((release / "release.json").read_text(encoding="utf-8"))
-    release_json["manifest_sha256"] = "sha256:" + hashlib.sha256((release / "manifest.json").read_bytes()).hexdigest()
-    _write_json(release / "release.json", release_json)
-    files = sorted(path.relative_to(release).as_posix() for path in release.rglob("*") if path.is_file() and path.name != "checksums.sha256")
-    (release / "checksums.sha256").write_bytes("".join(f"{hashlib.sha256((release / relative).read_bytes()).hexdigest()}  {relative}\n" for relative in files).encode("ascii"))
-    pointer = json.loads((root / "current.json").read_text(encoding="utf-8"))
-    pointer["versions"]["26.2"]["manifest_sha256"] = release_json["manifest_sha256"]
-    _write_json(root / "current.json", pointer)
 
 
 def _inventory(root: Path) -> dict[str, str]:
@@ -91,26 +75,41 @@ def test_current_default_explicit_unknown_and_malformed_version_boundaries(tmp_p
     assert missing.is_error and missing["error_code"] == "BLOCK_NOT_FOUND"
 
 
-def test_v1_index_hash_quality_and_sidecar_fail_closed(tmp_path: Path) -> None:
+def test_current_pointer_rejects_malformed_version_keys_and_default(tmp_path: Path) -> None:
+    build_fixture(tmp_path)
+    current = json.loads((tmp_path / "current.json").read_text(encoding="utf-8"))
+    current["versions"]["26"] = current["versions"]["26.2"]
+    _write_json(tmp_path / "current.json", current)
+    result = MCPQueryService(tmp_path).index_info()
+    assert result.is_error and result["error_code"] == "CURRENT_POINTER_INVALID"
+
+    build_fixture(tmp_path / "default")
+    default_current = json.loads((tmp_path / "default" / "current.json").read_text(encoding="utf-8"))
+    default_current["default_minecraft_version"] = "26"
+    _write_json(tmp_path / "default" / "current.json", default_current)
+    result = MCPQueryService(tmp_path / "default").index_info()
+    assert result.is_error and result["error_code"] == "CURRENT_POINTER_INVALID"
+
+
+def test_runtime_does_not_prevalidate_index_quality_or_sidecars(tmp_path: Path) -> None:
     v1 = tmp_path / "v1"
     build_fixture(v1, index_version=1)
     result = MCPQueryService(v1).index_info()
-    assert result.is_error and result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "index"
+    assert not result.is_error
 
     corrupt = tmp_path / "corrupt"
     build_fixture(corrupt)
     quality = corrupt / "releases" / "26.2" / "rel_11111111111111111111111111111111" / "quality_report.json"
     quality.write_bytes(quality.read_bytes() + b"x")
     result = MCPQueryService(corrupt).index_info()
-    assert result.is_error and result["error_code"] == "RELEASE_INTEGRITY_FAILED"
+    assert not result.is_error
 
     sidecar = tmp_path / "sidecar"
     build_fixture(sidecar)
     index = sidecar / "releases" / "26.2" / "rel_11111111111111111111111111111111" / "index.sqlite3-wal"
     index.write_bytes(b"sidecar")
     result = MCPQueryService(sidecar).index_info()
-    assert result.is_error and result["error_code"] == "RELEASE_INTEGRITY_FAILED"
+    assert not result.is_error
 
 
 def test_like_branch_empty_success_and_unknown_hard_fact(tmp_path: Path) -> None:
@@ -215,6 +214,140 @@ def test_provider_query_spec_precedes_visual_rerank_and_family_string_is_noop(tm
     assert with_family["data"] == without_family["data"]
     assert with_family["warnings"] == without_family["warnings"]
     assert not any("family" in warning.casefold() for warning in with_family["warnings"])
+
+
+def test_search_reuses_owned_provider_and_closes_it_once(tmp_path: Path) -> None:
+    build_fixture(tmp_path)
+
+    class _Owned(_Reranker):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.closed = 0
+
+        def query_spec(self, _query: str, **kwargs: object) -> dict[str, object]:
+            self.calls.append("query_spec")
+            return super().query_spec(_query, **kwargs)
+
+        def visual_rerank(self, _query: str, **kwargs: object) -> dict[str, object]:
+            self.calls.append("visual_rerank")
+            return super().visual_rerank(_query, **kwargs)
+
+        def close(self) -> None:
+            self.closed += 1
+
+    provider = _Owned()
+    created: list[object] = []
+
+    def factory(*_args: object) -> _Owned:
+        created.append(provider)
+        return provider
+
+    result = MCPQueryService(tmp_path, provider_factory=factory).search_blocks({"query": "stone", "context": {"rerank": "auto"}})
+    assert not result.is_error
+    assert created == [provider]
+    assert provider.calls == ["query_spec", "visual_rerank"]
+    assert provider.closed == 1
+
+
+def test_search_reuses_preview_bytes_and_decoded_image_across_stages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    build_fixture(tmp_path)
+    calls: list[str] = []
+    original = ReleaseHandle.read_image
+
+    def read_image(handle: ReleaseHandle, relative_ref: str) -> tuple[bytes, object]:
+        calls.append(relative_ref)
+        return original(handle, relative_ref)
+
+    monkeypatch.setattr(ReleaseHandle, "read_image", read_image)
+    result = MCPQueryService(tmp_path, provider=_Reranker()).search_blocks({"query": "stone", "context": {"rerank": "auto"}})
+    assert not result.is_error
+    assert len(calls) == len(set(calls))
+
+
+def test_snapshot_is_cached_for_same_release_handle(tmp_path: Path) -> None:
+    build_fixture(tmp_path)
+    service = MCPQueryService(tmp_path)
+    with service.resolver.resolve() as handle:
+        first = service._snapshot(handle)
+        second = service._snapshot(handle)
+    assert first is second
+    assert len(service._snapshots) == 1
+
+
+def test_search_does_not_start_provider_request_inside_final_five_seconds(tmp_path: Path) -> None:
+    build_fixture(tmp_path)
+    provider = _Reranker()
+    calls: list[str] = []
+    original_query_spec = provider.query_spec
+
+    def query_spec(query: str, **kwargs: object) -> dict[str, object]:
+        calls.append("query_spec")
+        return original_query_spec(query, **kwargs)
+
+    provider.query_spec = query_spec  # type: ignore[method-assign]
+    clock = iter((0.0, 0.0, 50.1))
+    result = MCPQueryService(tmp_path, provider=provider, monotonic=lambda: next(clock)).search_blocks({"query": "stone", "context": {"rerank": "auto"}})
+    assert not result.is_error
+    assert calls == []
+    assert any("deterministic local ranking" in warning for warning in result["warnings"])
+
+
+def test_stage_timeout_factory_enforces_stage_caps_profile_cutoff_and_minimum() -> None:
+    now = 100.0
+    service = MCPQueryService(".", monotonic=lambda: now)
+    provider = SimpleNamespace(profile=SimpleNamespace(request_timeout_ms=60000))
+    query_factory = service._stage_timeout_factory(provider, 155.0, 100.0, 15.0, (10.0, 5.0))
+    assert query_factory(1) == 10.0
+    now = 106.0
+    assert query_factory(2) == 5.0
+    now = 114.2
+    assert query_factory(2) is None
+
+    rerank_factory = service._stage_timeout_factory(provider, 155.0, 100.0, 30.0, (20.0, 10.0))
+    now = 100.0
+    assert rerank_factory(1) == 20.0
+    now = 110.0
+    assert rerank_factory(2) == 10.0
+    now = 129.2
+    assert rerank_factory(2) is None
+
+    limited = SimpleNamespace(profile=SimpleNamespace(request_timeout_ms=7000))
+    now = 100.0
+    assert service._stage_timeout_factory(limited, 155.0, 100.0, 15.0, (10.0, 5.0))(1) == 7.0
+    now = 149.2
+    assert service._stage_timeout_factory(provider, 155.0, 100.0, 15.0, (10.0, 5.0))(1) is None
+
+
+def test_local_only_does_not_load_provider(tmp_path: Path) -> None:
+    build_fixture(tmp_path)
+    created = 0
+
+    def factory(*_args: object) -> object:
+        nonlocal created
+        created += 1
+        raise AssertionError("local_only must not create a provider")
+
+    result = MCPQueryService(tmp_path, provider_factory=factory).search_blocks({"query": "stone", "context": {"rerank": "local_only"}})
+    assert not result.is_error
+    assert created == 0
+
+
+def test_provider_type_error_is_not_retried_without_kwargs(tmp_path: Path) -> None:
+    build_fixture(tmp_path)
+
+    class _TypeErrorProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def query_spec(self, _query: str, **_kwargs: object) -> dict[str, object]:
+            self.calls += 1
+            raise TypeError("fixture provider failure")
+
+    provider = _TypeErrorProvider()
+    result = MCPQueryService(tmp_path, provider=provider).search_blocks({"query": "stone", "context": {"rerank": "auto"}})
+    assert not result.is_error
+    assert provider.calls == 1
+    assert result["data"]["reranked_by_llm"] is False
 
 
 def test_provider_query_spec_hard_constraint_filters_before_rerank(tmp_path: Path) -> None:
@@ -433,363 +566,65 @@ def test_audit_ids_require_explicit_targets() -> None:
     assert MCPQueryService._audit_ids({"skip_reviews": [{"review_id": "missing-target"}]}, "skip_reviews", "minecraft:stone") == []
 
 
-def _remove_glass_variant(fixture: object) -> None:
-    index = sqlite3.connect(fixture.release / "index.sqlite3")  # type: ignore[union-attr]
-    try:
-        state_row = index.execute("SELECT record_json FROM states WHERE state_id='minecraft:glass'").fetchone()
-        state = json.loads(state_row[0])
-        state["variant_ids"] = []
-        state["mapping_status"] = "skipped"
-        state["failure_id"] = "failure_glass"
-        index.execute(
-            "UPDATE states SET record_json=? WHERE state_id='minecraft:glass'",
-            (json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":")),),
-        )
-        index.execute("DELETE FROM annotations WHERE variant_id='minecraft:glass'")
-        index.execute("DELETE FROM visual_variants WHERE variant_id='minecraft:glass'")
-        index.execute("DELETE FROM search_fts WHERE variant_id='minecraft:glass'")
-        index.commit()
-    finally:
-        index.close()
-    for relative in (
-        "previews/minecraft/glass/preview.png",
-        "previews/minecraft/glass/mask.png",
-        "previews/minecraft/glass/render.json",
-    ):
-        (fixture.release / relative).unlink()  # type: ignore[union-attr]
+def test_pointer_switch_loads_a_new_snapshot(tmp_path: Path) -> None:
+    import shutil
 
-
-def test_audited_visual_variant_skip_without_published_variant_resolves(tmp_path: Path) -> None:
     fixture = build_fixture(tmp_path)
-    manual = json.loads((fixture.release / "manual-overrides.json").read_text(encoding="utf-8"))
-    manual["skip_reviews"] = [{
-        "schema_version": "skip-review.v1",
-        "review_id": "skip-glass",
-        "target_type": "visual_variant",
-        "target_id": "minecraft:glass",
-        "minecraft_version": "26.2",
-        "reviewer": "fixture",
-        "reviewed_at": "2026-08-18T12:00:00Z",
-        "reason_code": "MISSING_TEXTURE",
-        "note": "Fixture block has no publishable visual variant.",
-        "evidence": ["index.sqlite3"],
-        "source_version": "fixture.v1",
-        "machine_failure_ref": "failure_glass",
-    }]
-    _write_json(fixture.release / "manual-overrides.json", manual)
-    _remove_glass_variant(fixture)
-    _rehash_fixture(fixture, index_changed=True)
-
-    result = MCPQueryService(tmp_path).index_info()
-    assert not result.is_error
+    second_id = "rel_" + "2" * 32
+    second_release = fixture.release.parent / second_id
+    shutil.copytree(fixture.release, second_release)
+    for name in ("release.json", "manifest.json"):
+        value = json.loads((second_release / name).read_text(encoding="utf-8"))
+        value["release_id"] = second_id
+        _write_json(second_release / name, value)
+    service = MCPQueryService(tmp_path)
+    first = service.index_info()
+    current = json.loads((tmp_path / "current.json").read_text(encoding="utf-8"))
+    current["versions"]["26.2"].update({"release_id": second_id, "relative_path": f"releases/26.2/{second_id}"})
+    _write_json(tmp_path / "current.json", current)
+    second = service.index_info()
+    assert first["resolved_release_id"] != second["resolved_release_id"]
+    assert len(service._snapshots) == 2
 
 
-def test_no_published_variant_without_exact_audited_skip_is_rejected(tmp_path: Path) -> None:
+def test_path_and_index_open_failures_are_mapped_without_integrity_validation(tmp_path: Path) -> None:
+    import shutil
+
     fixture = build_fixture(tmp_path)
-    _remove_glass_variant(fixture)
-    _rehash_fixture(fixture, index_changed=True)
+    current = json.loads((tmp_path / "current.json").read_text(encoding="utf-8"))
+    current["versions"]["26.2"]["relative_path"] = "releases/26.2/../escape"
+    _write_json(tmp_path / "current.json", current)
+    path_result = MCPQueryService(tmp_path).index_info()
+    assert path_result.is_error and path_result["error_code"] == "CURRENT_POINTER_INVALID"
 
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error
-    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "index"
-
-
-def test_orphan_visual_variant_skip_target_remains_rejected(tmp_path: Path) -> None:
-    fixture = build_fixture(tmp_path)
-    manual = json.loads((fixture.release / "manual-overrides.json").read_text(encoding="utf-8"))
-    manual["skip_reviews"] = [{
-        "schema_version": "skip-review.v1",
-        "review_id": "skip-missing",
-        "target_type": "visual_variant",
-        "target_id": "minecraft:missing",
-        "minecraft_version": "26.2",
-        "reviewer": "fixture",
-        "reviewed_at": "2026-08-18T12:00:00Z",
-        "reason_code": "MISSING_TEXTURE",
-        "note": "Fixture orphan target.",
-        "evidence": ["index.sqlite3"],
-        "source_version": "fixture.v1",
-        "machine_failure_ref": "failure_missing",
-    }]
-    _write_json(fixture.release / "manual-overrides.json", manual)
-    _rehash_fixture(fixture, index_changed=False)
-
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error
-    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "index"
+    missing = build_fixture(tmp_path / "missing")
+    missing_release_id = "rel_" + "3" * 32
+    missing_release = missing.release.parent / missing_release_id
+    shutil.copytree(missing.release, missing_release)
+    (missing_release / "index.sqlite3").unlink()
+    missing_current = json.loads((missing.root / "current.json").read_text(encoding="utf-8"))
+    missing_current["versions"]["26.2"].update({"release_id": missing_release_id, "relative_path": f"releases/26.2/{missing_release_id}"})
+    _write_json(missing.root / "current.json", missing_current)
+    open_result = MCPQueryService(missing.root).index_info()
+    assert open_result.is_error and open_result["error_code"] == "INDEX_OPEN_FAILED"
 
 
-def test_verified_handle_rejects_file_replacement_after_resolution(tmp_path: Path) -> None:
-    fixture = build_fixture(tmp_path)
-    resolver = MCPReleaseResolver(tmp_path)
-    with resolver.resolve() as handle:
-        manual = fixture.release / "manual-overrides.json"
-        manual.write_bytes(manual.read_bytes() + b" ")
-        with pytest.raises(MCPReleaseError) as error:
-            handle.read_bytes("manual-overrides.json")
-        assert error.value.code == "RELEASE_INTEGRITY_FAILED"
-
-
-def test_deferred_db_reads_fail_closed_after_index_mutation(tmp_path: Path) -> None:
-    build_fixture(tmp_path)
-    resolver = MCPReleaseResolver(tmp_path)
-    index = tmp_path / "releases" / "26.2" / "rel_11111111111111111111111111111111" / "index.sqlite3"
-    with resolver.resolve() as handle:
-        payload = bytearray(index.read_bytes())
-        payload[-1] ^= 1
-        index.write_bytes(payload)
-        with pytest.raises(MCPReleaseError) as error:
-            handle.execute("SELECT block_id FROM blocks")
-        assert error.value.code == "RELEASE_INTEGRITY_FAILED"
-
-
-def test_rehashed_quality_report_is_still_rejected(tmp_path: Path) -> None:
-    fixture = build_fixture(tmp_path)
-    quality = json.loads((fixture.release / "quality_report.json").read_text(encoding="utf-8"))
-    quality["unexpected"] = True
-    _write_json(fixture.release / "quality_report.json", quality)
-    _rehash_fixture(fixture, index_changed=False)
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error and result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "quality_report"
-
-
-@pytest.mark.parametrize("mutation", ["missing_machine_schema", "failed_ai_schema"])
-def test_rehashed_quality_schema_evidence_is_required_and_passed(tmp_path: Path, mutation: str) -> None:
-    fixture = build_fixture(tmp_path)
-    quality = json.loads((fixture.release / "quality_report.json").read_text(encoding="utf-8"))
-    if mutation == "missing_machine_schema":
-        quality["items"] = [item for item in quality["items"] if item["code"] != "MACHINE_SCHEMA_VALID"]
-    else:
-        next(item for item in quality["items"] if item["code"] == "AI_SCHEMA_VALID")["status"] = "failed"
-    _write_json(fixture.release / "quality_report.json", quality)
-    _rehash_fixture(fixture, index_changed=False)
-
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error
-    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "quality_report"
-
-
-def test_schema_inventory_requires_record_schema_entries(tmp_path: Path) -> None:
-    fixture = build_fixture(tmp_path)
-    inventory = fixture.release / "schemas.sha256"
-    lines = inventory.read_text(encoding="ascii").splitlines(keepends=True)
-    inventory.write_text("".join(line for line in lines if "  block-record.v1  " not in line), encoding="ascii")
-    _rehash_fixture(fixture, index_changed=False)
-
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error
-    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "manifest"
-
-
-@pytest.mark.parametrize("projection", ["block", "state", "variant"])
-def test_rehashed_canonical_row_record_mismatch_is_rejected(tmp_path: Path, projection: str) -> None:
-    fixture = build_fixture(tmp_path)
-    index = sqlite3.connect(fixture.release / "index.sqlite3")
-    try:
-        if projection == "block":
-            index.execute("UPDATE blocks SET translation_key='corrupt' WHERE block_id='minecraft:stone'")
-        elif projection == "state":
-            index.execute("UPDATE states SET properties_json=? WHERE state_id='minecraft:stone'", (json.dumps({"tampered": True}, separators=(",", ":")),))
-        else:
-            index.execute("UPDATE visual_variants SET candidate_qualification='excluded' WHERE variant_id='minecraft:stone'")
-        index.commit()
-    finally:
-        index.close()
-    _rehash_fixture(fixture, index_changed=True)
-
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error
-    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "index"
-
-
-@pytest.mark.parametrize("mutation", ["missing_key", "root_container", "nested_container"])
-def test_removed_record_schema_shapes_fail_as_release_integrity(tmp_path: Path, mutation: str) -> None:
-    fixture = build_fixture(tmp_path)
-    index = sqlite3.connect(fixture.release / "index.sqlite3")
-    try:
-        if mutation == "missing_key":
-            row = index.execute("SELECT record_json FROM blocks WHERE block_id='minecraft:stone'").fetchone()
-            record = json.loads(row[0])
-            del record["default_state_id"]
-            index.execute("UPDATE blocks SET record_json=? WHERE block_id='minecraft:stone'", (json.dumps(record, sort_keys=True, separators=(",", ":")),))
-        elif mutation == "root_container":
-            index.execute("UPDATE states SET record_json='[]' WHERE state_id='minecraft:stone'")
-        else:
-            row = index.execute("SELECT record_json FROM visual_variants WHERE variant_id='minecraft:stone'").fetchone()
-            record = json.loads(row[0])
-            record["machine_facts"] = []
-            index.execute("UPDATE visual_variants SET record_json=? WHERE variant_id='minecraft:stone'", (json.dumps(record, sort_keys=True, separators=(",", ":")),))
-        index.commit()
-    finally:
-        index.close()
-    _rehash_fixture(fixture, index_changed=True)
-
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error
-    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "index"
-
-
-@pytest.mark.parametrize("mode", ["zero", "multiple"])
-def test_default_state_cardinality_is_rejected_after_grouping(tmp_path: Path, mode: str) -> None:
-    fixture = build_fixture(tmp_path)
-    index = sqlite3.connect(fixture.release / "index.sqlite3")
-    try:
-        row = index.execute("SELECT state_id,block_id,record_json FROM states WHERE state_id='minecraft:stone'").fetchone()
-        state = json.loads(row[2])
-        if mode == "zero":
-            state["is_default"] = False
-            index.execute("UPDATE states SET is_default=0,record_json=? WHERE state_id='minecraft:stone'", (json.dumps(state, sort_keys=True, separators=(",", ":")),))
-        else:
-            state["state_id"] = "minecraft:stone_extra"
-            index.execute(
-                "INSERT INTO states(state_id,block_id,properties_json,is_default,record_json) VALUES (?,?,?,?,?)",
-                (state["state_id"], state["block_id"], "{}", 1, json.dumps(state, sort_keys=True, separators=(",", ":"))),
-            )
-        index.commit()
-    finally:
-        index.close()
-    _rehash_fixture(fixture, index_changed=True)
-
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error
-    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "index"
-
-
-@pytest.mark.parametrize("mutation", ["missing_state", "cross_block"])
-def test_missing_or_cross_block_variant_references_are_rejected(tmp_path: Path, mutation: str) -> None:
-    fixture = build_fixture(tmp_path)
-    index = sqlite3.connect(fixture.release / "index.sqlite3")
-    try:
-        row = index.execute("SELECT record_json FROM visual_variants WHERE variant_id='minecraft:stone'").fetchone()
-        variant = json.loads(row[0])
-        if mutation == "missing_state":
-            variant["canonical_state_id"] = "minecraft:missing_state"
-            index.execute("UPDATE visual_variants SET canonical_state_id=?,record_json=? WHERE variant_id='minecraft:stone'", (variant["canonical_state_id"], json.dumps(variant, sort_keys=True, separators=(",", ":"))))
-        else:
-            variant["block_id"] = "minecraft:glass"
-            index.execute("UPDATE visual_variants SET block_id=?,record_json=? WHERE variant_id='minecraft:stone'", (variant["block_id"], json.dumps(variant, sort_keys=True, separators=(",", ":"))))
-        index.commit()
-    finally:
-        index.close()
-    _rehash_fixture(fixture, index_changed=True)
-
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error
-    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "index"
-
-
-@pytest.mark.parametrize("projection", ["fts", "feature", "render"])
-def test_rehashed_projection_corruption_reaches_strict_validators(tmp_path: Path, projection: str) -> None:
-    fixture = build_fixture(tmp_path)
-    index = fixture.release / "index.sqlite3"
-    connection = sqlite3.connect(index)
-    try:
-        if projection == "fts":
-            connection.execute("UPDATE search_fts SET normalized_text='corrupt' WHERE variant_id='minecraft:stone'")
-        elif projection == "feature":
-            row = connection.execute("SELECT feature_json FROM visual_variants WHERE variant_id='minecraft:stone'").fetchone()
-            feature = json.loads(row[0])
-            feature["unexpected"] = True
-            connection.execute("UPDATE visual_variants SET feature_json=? WHERE variant_id='minecraft:stone'", (json.dumps(feature, sort_keys=True, separators=(",", ":")),))
-        else:
-            connection.execute("UPDATE visual_variants SET render_metadata_path='previews/minecraft/stone/missing.json' WHERE variant_id='minecraft:stone'")
-        connection.commit()
-    finally:
-        connection.close()
-    _rehash_fixture(fixture, index_changed=True)
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error and result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "index"
-
-
-def test_rehashed_malformed_png_is_rejected_by_bulk_image_validation(tmp_path: Path) -> None:
+def test_malformed_png_fails_only_when_requested(tmp_path: Path) -> None:
     fixture = build_fixture(tmp_path)
     preview = fixture.release / "previews/minecraft/stone/preview.png"
-    malformed = bytearray(preview.read_bytes())
-    malformed[0] ^= 1
-    preview.write_bytes(malformed)
-    image_hash = "sha256:" + hashlib.sha256(malformed).hexdigest()
-    index = sqlite3.connect(fixture.release / "index.sqlite3")
-    try:
-        row = index.execute("SELECT record_json FROM visual_variants WHERE variant_id='minecraft:stone'").fetchone()
-        variant = json.loads(row[0])
-        variant["render"]["image_sha256"] = image_hash
-        index.execute(
-            "UPDATE visual_variants SET image_sha256=?, record_json=? WHERE variant_id='minecraft:stone'",
-            (image_hash, json.dumps(variant, ensure_ascii=False, sort_keys=True, separators=(",", ":"))),
-        )
-        index.commit()
-    finally:
-        index.close()
-    _rehash_fixture(fixture, index_changed=True)
-
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error
-    assert result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "index"
+    payload = bytearray(preview.read_bytes())
+    payload[0] ^= 1
+    preview.write_bytes(payload)
+    assert not MCPQueryService(tmp_path).index_info().is_error
+    details = MCPQueryService(tmp_path).get_block_details({"block_id": "minecraft:stone"})
+    assert details.is_error and details["error_code"] == "IMAGE_READ_FAILED"
 
 
-def test_rehashed_manual_package_order_is_rejected(tmp_path: Path) -> None:
-    fixture = build_fixture(tmp_path)
-    manual = json.loads((fixture.release / "manual-overrides.json").read_text(encoding="utf-8"))
-    reviews = []
-    for review_id in ("q2", "q1"):
-        reviews.append({
-            "schema_version": "qualification-review.v1",
-            "review_id": review_id,
-            "target_type": "visual_variant",
-            "target_id": "minecraft:stone",
-            "minecraft_version": "26.2",
-            "reviewer": "fixture",
-            "reviewed_at": "2026-08-18T12:00:00Z",
-            "reason_code": "QUALIFICATION_CONFIRMED",
-            "note": "Fixture qualification review.",
-            "evidence": ["index.sqlite3"],
-            "source_version": "fixture.v1",
-            "qualification": "eligible",
-            "warnings": [],
-        })
-    manual["qualification_reviews"] = reviews
-    _write_json(fixture.release / "manual-overrides.json", manual)
-    connection = sqlite3.connect(fixture.release / "index.sqlite3")
-    try:
-        row = connection.execute("SELECT record_json FROM visual_variants WHERE variant_id='minecraft:stone'").fetchone()
-        variant = json.loads(row[0])
-        variant["qualification_review_refs"] = ["q2", "q1"]
-        connection.execute("UPDATE visual_variants SET record_json=? WHERE variant_id='minecraft:stone'", (json.dumps(variant, ensure_ascii=False, sort_keys=True, separators=(",", ":")),))
-        connection.commit()
-    finally:
-        connection.close()
-    _rehash_fixture(fixture, index_changed=True)
-    result = MCPQueryService(tmp_path).index_info()
-    assert result.is_error and result["error_code"] == "RELEASE_INTEGRITY_FAILED"
-    assert result["details"]["integrity_component"] == "index"
+def test_reparse_point_is_rejected_before_release_read() -> None:
+    class _ReparsePath:
+        def lstat(self) -> object:
+            return SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=0x400)
 
-
-def test_resolver_reads_current_each_request_and_rejects_current_corruption(tmp_path: Path) -> None:
-    build_fixture(tmp_path)
-    resolver = MCPReleaseResolver(tmp_path)
-    first = resolver.resolve()
-    first.close()
-    current = tmp_path / "current.json"
-    value = json.loads(current.read_text(encoding="utf-8"))
-    value["versions"]["26.2"]["manifest_sha256"] = "sha256:" + "f" * 64
-    current.write_bytes((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
     with pytest.raises(MCPReleaseError) as error:
-        resolver.resolve()
-    assert error.value.code == "RELEASE_INTEGRITY_FAILED"
-
-    malformed = tmp_path / "malformed"
-    build_fixture(malformed)
-    (malformed / "current.json").write_bytes(b"not-json")
-    malformed_result = MCPQueryService(malformed).index_info()
-    assert malformed_result.is_error and malformed_result["error_code"] == "CURRENT_POINTER_INVALID"
+        mcp_release._lstat(_ReparsePath(), directory=False)  # type: ignore[arg-type]
+    assert error.value.code == "CURRENT_POINTER_INVALID"

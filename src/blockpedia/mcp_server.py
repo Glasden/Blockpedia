@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.shared.exceptions import MCPError
+try:
+    from mcp.shared.exceptions import MCPError
+except ImportError:  # pragma: no cover - compatibility with the legacy SDK spelling
+    from mcp.shared.exceptions import McpError as MCPError
 from mcp.types import (
     INVALID_PARAMS,
     CallToolRequestParams,
@@ -91,7 +95,7 @@ def _input_schema(tool_name: str) -> dict[str, Any]:
 
 
 def _output_schema(tool_name: str) -> dict[str, Any]:
-    return load_schema(
+    success_schema = load_schema(
         {
             "index_info": "mcp-index-info-output.v1",
             "search_blocks": "mcp-search-blocks-output.v1",
@@ -99,6 +103,14 @@ def _output_schema(tool_name: str) -> dict[str, Any]:
             "compare_blocks": "mcp-compare-blocks-output.v1",
         }[tool_name]
     )
+    # The advertised result is a protocol-level union.  Each existing branch
+    # remains closed and its schema_version const makes the oneOf branches
+    # mutually exclusive; no new persisted/output Schema ID is introduced.
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "oneOf": [success_schema, load_schema("mcp-error.v1")],
+    }
 
 
 def _tool(name: str) -> Tool:
@@ -169,8 +181,20 @@ def make_handlers(data_root: str | Path | None) -> tuple[Any, Any]:
         return ListToolsResult(tools=list(TOOLS))
 
     async def call_tool(_ctx: Any, params: CallToolRequestParams) -> CallToolResult:
+        deadline = time.monotonic() + 55.0
         try:
-            result = service.call_tool(params.name, params.arguments or {})
+            remaining = max(0.0, deadline - time.monotonic())
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    service.call_tool,
+                    params.name,
+                    params.arguments or {},
+                    deadline=deadline,
+                ),
+                timeout=remaining,
+            )
+        except asyncio.TimeoutError:
+            result = _internal_result()
         except (MCPInputError, MCPProtocolError) as exc:
             raise _invalid_params(str(exc))
         except Exception:

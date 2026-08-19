@@ -16,7 +16,7 @@
 
 ## 1. 检索输入和版本边界
 
-每次检索 **MUST** 解析到一个精确的、完整性通过的不可变 `release`。WebUI/API 搜索测试必须显式提供 `minecraft_version`；MCP 的 `minecraft_version` 可以省略，省略时使用 `current-pointer.v1.default_minecraft_version` 对应的 current release，显式输入必须匹配严格版本格式 `^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$`，格式非法返回 JSON-RPC `-32602`。格式合法但未知或未发布版本返回 `VERSION_NOT_AVAILABLE` 并列出可用精确版本，**MUST NOT** 回退到其他版本。MCP 不支持历史 `release_id` selector；历史选择只由 WebUI rollback 完成。MCP/activation 只接受 fresh `release-index.v2.sql` projection；历史 v1 index 返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`。
+每次检索 **MUST** 解析到一个由 WebUI build/activation gate 产生并由 current pointer 指向的精确 release；MCP 运行时不重新证明该 release 的完整性。WebUI/API 搜索测试必须显式提供 `minecraft_version`；MCP 的 `minecraft_version` 可以省略，省略时使用 `current-pointer.v1.default_minecraft_version` 对应的 current release，显式输入必须匹配严格版本格式 `^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$`，格式非法返回 JSON-RPC `-32602`。格式合法但未知或未发布版本返回 `VERSION_NOT_AVAILABLE` 并列出可用精确版本，**MUST NOT** 回退到其他版本。MCP 不支持历史 `release_id` selector；历史选择只由 WebUI rollback 完成。release-index 的 fresh/v2 资格只由 build/activation gate 负责；MCP 不在运行时验证 index format、manifest/checksum/schema/quality/PNG 完整性。
 
 搜索只读发布投影，不读取 `workspace`、草稿、未审核 annotation 或正在生成的图片。`excluded`、无发布变体和未审核高优先级记录不得进入默认候选；详情可在 release 允许时展示审计事实。所有返回的 `block_id`、`variant_id`、状态、图片映射和 release 元数据必须来自该 release。
 
@@ -111,6 +111,8 @@ resolve current release
   → 8–12 contact-sheet candidates (stable order)
   → optional visual rerank
 ```
+
+MCP 的 `search_blocks` 外层 hard deadline 为 **55 秒**；进入最后 **5 秒** 后不得启动新的 provider 请求。QuerySpec stage 总预算为 **15 秒**（首次 10 秒、最多一次重试 5 秒），visual rerank stage 总预算为 **30 秒**（首次 20 秒、最多一次重试 10 秒）。实际单次 timeout 取 profile 配置、stage 剩余预算和 request 剩余时间的最小值，少于 1 秒不得发送。每个 logical provider request 最多两次尝试且无 fallback；`auto` 失败必须确定性本地降级，`required` 失败使用顶层 `RERANK_REQUIRED_UNAVAILABLE`。同一请求复用 provider/client 与 preview bytes；同步 provider/SQLite 查询工作移出 event loop。
 
 发布候选默认只允许 `eligible` 和带 warnings 的 `conditional`；`excluded` 不进入默认召回。`conditional` 必须随候选返回 warnings，不能被静默隐藏。硬过滤后为空时必须返回空结果，不得自动删除硬条件、把 `unknown` 当满足或换版本。
 
@@ -265,7 +267,7 @@ server-side `query_spec` generation 失败时，本地 parser 只能使用真实
 | `VERSION_REQUIRED` | WebUI/API 缺少 `minecraft_version`；MCP 省略不报错 | 否 |
 | `VERSION_NOT_AVAILABLE` | 未知或未发布版本 | 否 |
 | `RELEASE_NOT_FOUND` | current pointer 指向不存在 release | 否 |
-| `RELEASE_INTEGRITY_FAILED` | manifest/hash/质量门/index format 失败；历史 v1 index 的 MCP details component 为 `index` | 否 |
+| `RELEASE_INTEGRITY_FAILED` | 仅由 build/activation gate 或其报告使用；MCP 运行时不验证 manifest/hash/质量门/index format/immutable | 否 |
 | `QUERY_INVALID` | input shape 已有效但 query/context/host QuerySpec 的语义或 invariant 非法 | 否 |
 | `QUERY_PARSE_FAILED` | 无法得到安全 QuerySpec | 仅返回安全空结果 |
 | `HARD_CONSTRAINT_UNSUPPORTED` | 请求硬条件不在机器或 bounded semantic fields 能力内 | 否，须追问 |
@@ -291,7 +293,9 @@ server-side `query_spec` generation 失败时，本地 parser 只能使用真实
 4. `search-ranking.v1` 权重精确为 `.35/.30/.15/.10/.05/.05`；未出现维度按规则归一化；结果可复现。
 5. Top-24 后 family dedupe 必须是确定性 no-op：`context.family=null` 或任意通过 input schema 的 string 都不分组、不限额、保持稳定顺序并生成 8–12 联系表；非 string 且非 null 的 `context.family` 返回 JSON-RPC `-32602`。`compare_states`/`compare_blocks` 不引入 family 分组、限制、metadata 或虚假候选。
 6. provider 重排只允许已有 candidate ID；只有实际成功的 visual rerank 才能设置 `reranked_by_llm=true`/`score_source=llm_rerank`，host QuerySpec consumption 不得设置，失败降级明确 `false`，不改变硬过滤。
-7. 图像编号、结构化映射和 `block_id`/state 全部来自 release，图片不可读或映射不一致时失败。
+7. 图像编号、结构化映射和 `block_id`/state 全部来自 pointer-resolved release，图片不可读或映射不一致时失败；不以此声称 MCP 做过 PNG 全量预验证。
 8. 歧义按 input invariant 校验 `needs_user_choice`/`ambiguities` coherence；MCP output 仍只使用闭合 Schema 字段并可使用现有 `warnings`，不增加歧义、追问或视觉验证字段。
+
+9. D-052 focused tests 只覆盖 55 秒外层 deadline、最后 5 秒不启动新 provider 请求、15 秒 QuerySpec/30 秒 visual rerank stage budgets、profile/stage/request timeout 取最小值、少于 1 秒不发送、最多两次尝试且无 fallback、同请求 provider/client/preview bytes 复用和同步查询移出 event loop；不新增真实基数 fixture、全量矩阵或 evidence report。
 
 黄金查询集不少于 100 条、`Top-5>=90%`、硬约束违反率 `<2%`、映射一致率 `100%` 以及权重调优均属于 MVP 后置质量工作，定义和真实报告要求见 [`quality-and-testing.md`](quality-and-testing.md)，不得伪装成 MVP roadmap 必做退出条件。

@@ -574,6 +574,65 @@ def test_query_spec_missing_or_empty_image_fails_before_http() -> None:
     assert calls == 0
 
 
+def test_dynamic_attempt_timeout_path_skips_subsecond_and_never_fallbacks() -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503)
+
+    p = profile(adapter="openai_chat_completions", enabled=True, capability_status="verified")
+    provider = OpenAIProvider(
+        p,
+        secret_resolver=SecretResolver(keyring_backend=Keyring("secret")),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    no_send = provider.query_spec(**request_args("query_spec", text="subsecond", p=p), attempt_timeout_factory=lambda _attempt: None)
+    assert no_send.error_code == "PROVIDER_TIMEOUT" and no_send.attempts_used == 0
+    assert calls == 0
+
+    attempts = iter((2.5, None))
+    bounded = provider.query_spec(**request_args("query_spec", text="bounded", p=p), attempt_timeout_factory=lambda _attempt: next(attempts))
+    assert bounded.error_code == "PROVIDER_TIMEOUT" and bounded.attempts_used == 1
+    assert calls == 1
+
+
+def test_dynamic_timeout_is_recomputed_after_local_preparation(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    now = 100.0
+    absolute_deadline = 101.0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=chat_response(query()))
+
+    p = profile(adapter="openai_chat_completions", enabled=True, capability_status="verified")
+    provider = OpenAIProvider(
+        p,
+        secret_resolver=SecretResolver(keyring_backend=Keyring("secret")),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    original_body = provider._body
+
+    def prepared_body(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal now
+        body = original_body(*args, **kwargs)
+        now = 100.2
+        return body
+
+    monkeypatch.setattr(provider, "_body", prepared_body)
+
+    def timeout_factory(_attempt: int) -> float:
+        return min(p.request_timeout_ms / 1000, 10.0, absolute_deadline - now)
+
+    result = provider.query_spec(**request_args("query_spec", text="late timeout", p=p), attempt_timeout_factory=timeout_factory)
+    assert result.error_code == "PROVIDER_TIMEOUT"
+    assert result.attempts_used == 0
+    assert calls == 0
+
+
 def test_chat_query_spec_invalid_enum_is_rejected_locally() -> None:
     invalid_query = copy.deepcopy(query())
     invalid_query["hard"]["release_status"]["value"] = "not-current"  # type: ignore[index]

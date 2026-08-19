@@ -37,17 +37,16 @@ stdout 从首字节开始 **MUST** 只输出 MCP 协议 JSON-RPC 消息；日志
 
 ### 1.2 release 只读解析
 
-MCP 每次启动或打开查询都必须：
+D-052 冻结为“仅构建时验证”。release 完整性、Schema/checksum/manifest/quality/index/PNG 预验证由 WebUI build/activation gate 负责；MCP **MUST NOT** 在启动或查询时首次全量验证，也 **MUST NOT** 逐请求验证 current/manifest/checksum/schema/file identity/hash、复算质量门或全量验证 PNG/index projection。MCP 不得声称运行时验证 immutable、manifest hash、checksums、schema inventory、quality report 或 index format。
 
-1. 从数据根读取 `current.json`，解析 `current-pointer.v1` 的 `default_minecraft_version` 和 `versions` map；
-2. 校验 `minecraft_version`、`release_id`、相对路径安全性、`manifest_sha256`、release `checksums`、`index.sqlite3` 的 fresh v2 format 和质量门状态，并读取 release 冻结的 provider snapshot（包括 `adapter`）；host-supplied QuerySpec 只在内存中消费，不改变该 snapshot；
-3. 只读打开不可变且 `schema_meta.format_version=2` 的 `releases/<minecraft_version>/<release_id>/index.sqlite3` 及同目录 PNG/metadata；v1 index 必须以 `RELEASE_INTEGRITY_FAILED`、`details.integrity_component="index"` 拒绝，不得迁移或降级读取；
-4. 拒绝 `workspace`、cache、导出源目录、任意用户路径和未完整 release；
-5. 在一次请求中固定解析结果，不能跨版本或在同一响应中混用 release。
+MCP 每次请求只执行以下最小解析和读取：
 
-MCP 请求的 `minecraft_version` 可以省略；省略时使用 `current-pointer.v1.default_minecraft_version`，显式输入必须匹配严格版本格式 `^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$`，格式非法返回 JSON-RPC `-32602`。格式合法但未知、未发布或没有 current 的版本返回 `VERSION_NOT_AVAILABLE`，列出可用精确版本且 **MUST NOT** 自动回退。哈希不匹配、index v1、index format 非 2 或不可变标志缺失时返回 `RELEASE_INTEGRITY_FAILED`；MCP input 不支持 `release`/`release_id` selector；历史 release 选择只能由 WebUI rollback 完成。响应只返回 `resolved_release_id` 和 manifest hash，不返回 selector 歧义。
+1. 从数据根读取并解析 `current.json` 的 `current-pointer.v1`，按省略/显式 `minecraft_version` 取得 default/精确版本对应的 pointer、`release_id` 和 `relative_path`；下一请求必须重新观察 pointer，pointer 指向变化时载入新 snapshot；
+2. 严格校验 tool input/version 语义，拒绝 `release`/`release_id` 历史 selector；执行相对路径防逃逸、根外引用拒绝和明显 symlink/junction/reparse 拒绝。这些是安全边界，不是 release 完整性验证；
+3. 只打开 pointer 指定的 index，并在生成实际响应时按需读取所需 PNG/metadata；不得主动扫描 release 目录、复算 hash 或全量验证 projection。current、pointer、路径、index/SQLite 或 PNG 读取失败必须 fail closed，不得回退其它 release；
+4. 不读取 workspace、exports 或可变 active profile。需要 provider 时只使用 pointer-resolved release 的冻结 snapshot；host-supplied QuerySpec 只在内存中消费，不改变该 snapshot。
 
-MCP 进程 **MUST NOT** 写 SQLite、图片、release、cache、日志、data-root logs、临时文件、`current.json` 或任何任务状态。未提供 host-supplied QuerySpec 时，若调用 provider 生成 QuerySpec，也只能按已解析 release 冻结的 `adapter`、`profile_id`、`model_id`、`base_url_stable_id` 和 `secret_reference` 使用 snapshot；提供有效 host spec 后只可跳过该生成步骤。任何 visual rerank 仍只能使用同一 snapshot；`adapter` 只能是 `openai_responses` 或 `openai_chat_completions`，决定唯一 wire codec；不得读取或比较可变 active profile，也不得跨协议 fallback。provider 结果只能在内存中使用。secret 无法解析或运行时能力不满足 snapshot 时，必须返回 warning 并使用确定性本地降级。联系表必须在内存构造，图片以进程内 bytes 直接形成 `ImageContent`，在线查询失败不能写缓存或生成联系表到持久目录。
+MCP 可在进程内按 `minecraft_version+release_id` 缓存 snapshot，但缓存不能持久化；下一请求观察到 pointer 指向变化时必须载入新 snapshot。MCP 进程 **MUST NOT** 写 SQLite、图片、release、cache、日志、data-root logs、临时文件、`current.json` 或任何任务状态。`adapter` 只能是 `openai_responses` 或 `openai_chat_completions`，决定唯一 wire codec；不得读取或比较可变 active profile，也不得跨协议 fallback。secret 无法解析或运行时能力不满足 snapshot 时，必须返回 warning 并使用确定性本地降级。联系表必须在内存构造，图片以进程内 bytes 直接形成 `ImageContent`，在线查询失败不能写缓存或生成联系表到持久目录。
 
 ## 2. MCP 能力和响应 envelope
 
@@ -62,7 +61,7 @@ get_block_details
 compare_blocks
 ```
 
-每个工具必须暴露 strict `inputSchema` 和 strict `outputSchema`（JSON Schema Draft 2020-12，`additionalProperties=false`，未知字段拒绝）。四个工具的 output object 都必须包含 `schema_version`、`request_id`、resolved `minecraft_version`、`resolved_release_id`、`manifest_sha256`、`warnings` 和工具专属 `data`；`schema_version` 必须分别固定为 `mcp-index-info-output.v1`、`mcp-search-blocks-output.v1`、`mcp-block-details-output.v1` 或 `mcp-compare-blocks-output.v1`。`structuredContent` 与 TextContent 必须由同一个经过 Schema 校验的对象序列化产生。MCP Schema 属于 MCP 命名空间，不得复用 provider envelope 或持久记录 ID。
+每个工具必须暴露 strict `inputSchema`。advertised `outputSchema` 必须是 strict `oneOf`，组合该工具既有成功 Schema（分别为 `mcp-index-info-output.v1`、`mcp-search-blocks-output.v1`、`mcp-block-details-output.v1`、`mcp-compare-blocks-output.v1`）与既有 `mcp-error.v1`；这是协议广告组合，不新增 Schema ID 或修改任何真实 Schema。成功和工具错误的结构对象仍必须分别通过既有 Schema，`isError=false/true` 语义保持不变。四个成功 output object 都必须包含 `schema_version`、`request_id`、resolved `minecraft_version`、`resolved_release_id`、`manifest_sha256`、`warnings` 和工具专属 `data`；`structuredContent` 与 TextContent 必须由同一个经过 Schema 校验的对象序列化产生。MCP Schema 属于 MCP 命名空间，不得复用 provider envelope 或持久记录 ID。
 
 ### 2.2 成功响应
 
@@ -110,6 +109,12 @@ compare_blocks
 ```
 
 `mapping` 中的 ID 必须全部来自 release，不能由模型产生。`purpose`、MIME、尺寸、hash 和 content index 必须可由实际 PNG 重算；图片读取失败不能返回占位图。
+
+### 2.4 `search_blocks` deadline 与 provider 预算（D-052）
+
+`search_blocks` 的外层 hard deadline 为 **55 秒**。进入最后 **5 秒** 后不得启动新的 provider 请求；剩余时间只可用于已开始工作收敛、本地查询和响应封装。QuerySpec stage 的总预算为 **15 秒**（首次请求最多 10 秒，最多一次重试最多 5 秒）；visual rerank stage 的总预算为 **30 秒**（首次请求最多 20 秒，最多一次重试最多 10 秒）。实际单次请求 timeout 必须取 profile 配置、stage 剩余预算和本次 request 剩余时间的最小值；小于 1 秒时不得发送请求。
+
+每个 logical provider request 最多两次尝试，不得 fallback、自动切换协议、profile 或 model。`rerank=auto` 的超时、能力、secret 或 provider failure 必须返回确定性本地结果、warning 和 `reranked_by_llm=false`；`rerank=required` 失败必须返回顶层 `RERANK_REQUIRED_UNAVAILABLE`，provider code 只放在 `details.provider_error_code`。同一 `search_blocks` 请求复用一个 provider/client 和已构造的 preview bytes；同步 provider/SQLite 查询工作必须移出 event loop。`local_only` 不得发送任何 provider 请求。
 
 ## 3. 通用 inputSchema
 
@@ -177,7 +182,7 @@ compare_blocks
 }
 ```
 
-没有完整当前 release、质量门未通过或 hash 不匹配时不得返回半可信统计，使用 `isError=true`。产品身份声明必须原文出现，不得使用官方 logo/字体/素材。
+`quality_gate`、`quality_report_sha256` 和 `manifest_sha256` 若出现在 release-provided metadata 中，只能原样作为已构建 release 的声明性元数据返回，不能解释为 MCP 在运行时重新验证。MCP 不因未执行这些预验证而声称完整性；只有 current/pointer、index/SQLite 或实际响应 PNG 的读取失败才 fail closed。产品身份声明必须原文出现，不得使用官方 logo/字体/素材。
 
 ## 5. `search_blocks`
 
@@ -402,11 +407,11 @@ JSON-RPC/MCP 协议错误表示请求没有正确调用工具，使用标准 `er
 |---|---|---:|
 | `DATA_ROOT_INVALID` | data root 不存在/不安全 | 否 |
 | `CURRENT_POINTER_MISSING` | current 缺失 | 否 |
-| `CURRENT_POINTER_INVALID` | current JSON/路径/hash 非法 | 否 |
+| `CURRENT_POINTER_INVALID` | current JSON、版本/pointer shape、路径安全边界非法 | 否 |
 | `VERSION_NOT_AVAILABLE` | 未知、未发布或未配置版本；列可用版本 | 否 |
 | `RELEASE_NOT_FOUND` | current pointer 指向的 release 不存在 | 否 |
-| `RELEASE_NOT_BUILT` | release 未通过 candidate-build gate | 否 |
-| `RELEASE_INTEGRITY_FAILED` | manifest/checksum/quality hash、index format 或 immutable release 校验失败；v1 index 的 `details.integrity_component` 为 `index` | 否 |
+| `RELEASE_NOT_BUILT` | 仅由 build/activation gate 使用；MCP 运行时不推断 release 是否通过该门 | 否 |
+| `RELEASE_INTEGRITY_FAILED` | 仅由 build/activation gate 或其报告使用；MCP 运行时不验证 manifest/checksum/quality/index format/immutable，因此不得以这些预验证失败声称运行时发现该错误 | 否 |
 | `INDEX_OPEN_FAILED` | 只读数据库无法打开 | 否 |
 | `INDEX_INFO_UNAVAILABLE` | index metadata 缺失 | 否 |
 | `QUERY_INVALID` | input shape 有效但搜索业务规则非法，包括 host-supplied QuerySpec 的语义/不变量错误 | 否 |
@@ -425,12 +430,12 @@ JSON-RPC/MCP 协议错误表示请求没有正确调用工具，使用标准 `er
 
 必须以子进程执行 `block-index mcp` 和原创 fixture 检查：
 
-1. `tools/list` 严格只有四个工具；不存在 HTTP、resources、任意 SQL/文件读写接口。
+1. `tools/list` 严格只有四个工具；不存在 HTTP、resources、任意 SQL/文件写入接口；每个 advertised `outputSchema` 是成功 Schema 与 `mcp-error.v1` 的 strict `oneOf`，不新增 Schema ID。
 2. 每行 stdout 可独立解析为 JSON-RPC/MCP 消息；stderr 可有诊断但不进入 stdout。
-3. 省略版本使用 `default_minecraft_version`；malformed `minecraft_version` 返回 JSON-RPC `-32602`，格式合法但未发布版本返回 `VERSION_NOT_AVAILABLE` 且不回退；显式版本使用该版本 current；未知/未发布版本和 hash mismatch 均符合错误表；非法 `block_id`、compare 数量和其它 input shape 返回 JSON-RPC `-32602`，`search_blocks.query_spec` 及其 nested unknown fields 也按完整 `query-spec-output.v1` strict 校验并返回 `-32602`；Schema 有效但 QuerySpec 语义/不变量无效返回 `QUERY_INVALID`，`context.family=null` 或任意 string 均以 `isError=false` 的 `mcp-search-blocks-output.v1` 成功 no-op，非 string 且非 null 的 family 返回 JSON-RPC `-32602`，格式合法但未知 ID 才返回 `BLOCK_NOT_FOUND`；host spec 无效不得隐式调用 server-side QuerySpec，历史 `release_id` selector 被拒绝。
-4. 四工具只读不可变 release；运行所有成功、失败、降级和图片路径分支后，SQLite、文件、cache、logs 和 current hash 不变。
+3. 省略版本使用 `default_minecraft_version`；malformed `minecraft_version` 返回 JSON-RPC `-32602`，格式合法但未发布版本返回 `VERSION_NOT_AVAILABLE` 且不回退；显式版本使用该版本 current；current/pointer、路径、index/SQLite 或实际 PNG 读取失败均按错误表 fail closed；MCP 不做 hash mismatch、v1/index format、quality 或 immutable 的运行时完整性声称。非法 `block_id`、compare 数量和其它 input shape 返回 JSON-RPC `-32602`，`search_blocks.query_spec` 及其 nested unknown fields 也按完整 `query-spec-output.v1` strict 校验并返回 `-32602`；Schema 有效但 QuerySpec 语义/不变量无效返回 `QUERY_INVALID`，`context.family=null` 或任意 string 均以 `isError=false` 的 `mcp-search-blocks-output.v1` 成功 no-op，非 string 且非 null 的 family 返回 JSON-RPC `-32602`，格式合法但未知 ID 才返回 `BLOCK_NOT_FOUND`；host spec 无效不得隐式调用 server-side QuerySpec，历史 `release_id` selector 被拒绝。
+4. 四工具只读 pointer-resolved release；运行所有成功、失败、降级和图片路径分支后，SQLite、文件、cache、logs 和 current 不产生写入；允许进程内 snapshot cache，不得持久化。
 5. `structuredContent` 与 TextContent JSON 深相等；成功降级 `isError=false`，工具执行错误 `isError=true`，协议错误使用标准 JSON-RPC error；未知 RPC method 返回 `-32601`，合法 `tools/call` 的未知 tool name 返回 Invalid Params `-32602`。
-6. `search_blocks`/`compare_blocks` 返回稳定编号 PNG 联系表 ImageContent；`get_block_details` 返回四视角 PNG；`index_info` 无图片。
+6. `search_blocks`/`compare_blocks` 返回稳定编号 PNG 联系表 ImageContent；`get_block_details` 返回四视角 PNG；`index_info` 无图片；PNG 只在实际响应需要时按需读取。
 7. 图片 metadata 含 ID、MIME、尺寸、hash、purpose、content index 和映射，不含绝对路径；mapping 与 PNG 联系表、结构候选 100% 一致。
 8. provider 不可用不改变候选事实；`rerank=auto` 返回 `isError=false`、warning 和 `reranked_by_llm=false`，`rerank=required` 返回顶层 `RERANK_REQUIRED_UNAVAILABLE`，且 provider code 仅在 `details.provider_error_code`。host QuerySpec 仅抑制 QuerySpec generation，不得单独宣称 provider/model 已调用或验证；`local_only` 不得发生任何 provider call。
-9. 仅使用 `schema_meta.format_version=2` 的原创 PNG/SQLite release fixture 通过协议测试；v1 fixture/release 返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`；缺少真实本地 release 只能报告 `SKIPPED_LOCAL_RELEASE_MISSING`，不得伪造通过。
+9. focused fixture 只验证 pointer/default/显式版本切换、路径逃逸/明显链接或 reparse 拒绝、指定 index/按需 PNG 的读取失败 fail closed、outputSchema strict `oneOf` 与 parity、55/15/30 秒 budget、provider/client/preview bytes 复用和同步工作移出 event loop；不以 fixture 声称 MCP 运行时验证 v2/index format、manifest/checksum/schema/quality/PNG 全量完整性。缺少真实本地 release 只能报告 `SKIPPED_LOCAL_RELEASE_MISSING`，不得伪造通过。

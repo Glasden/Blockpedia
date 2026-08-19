@@ -7,7 +7,7 @@
 1. 开发者开始任何实现前 **MUST 先完整阅读** [`docs/roadmap.md`](docs/roadmap.md) 和 [`docs/decisions.md`](docs/decisions.md)，随后阅读 [`docs/product-scope.md`](docs/product-scope.md)、[`docs/architecture.md`](docs/architecture.md) 以及路线图列出的具体契约文档。
 2. 规范优先级固定为：本文件 > [`docs/roadmap.md`](docs/roadmap.md) 与 [`docs/decisions.md`](docs/decisions.md) > 具体设计文档 > [`docs/minecraft_vanilla_block_index_mcp_design.md`](docs/minecraft_vanilla_block_index_mcp_design.md)。
 3. 移入的原始设计稿仅是历史背景和最低优先级参考，不能与新文档一起作为执行规范；冲突内容禁止实现。发现冲突时 **MUST 先更新高优先级文档并留下影响记录**，**MUST NOT 静默偏离**。
-4. 所有复选框 **MUST** 以可复核路径、精确命令输出、哈希、测试报告或发布清单为依据；没有证据 **MUST NOT** 标记完成。当前仓库没有实现、真实导出数据、发布索引或测试报告，因此实现、测试、数据和发布相关复选框保持未勾选。
+4. 所有复选框 **MUST** 以可复核路径、精确命令输出、哈希、测试报告或发布清单为依据；没有证据 **MUST NOT** 标记完成。当前仓库已有 R0-R4 实现与对应证据；后续修订（包括 D-052）、R5、发布和跨平台事实仍必须分别以新增证据为准，**MUST NOT** 由既有证据推定完成。
 
 ## 冻结技术基线与替换控制
 
@@ -109,10 +109,12 @@ checksums.sha256
 ## MCP 边界、输出与公开白名单
 
 - `block-index mcp` **MUST** 只提供 `stdio`，且只提供四个工具：`index_info`、`search_blocks`、`get_block_details`、`compare_blocks`。
-- MCP 查询 **MUST** 解析到不可变 release 后再读取；除读取 release、`current.json` 和必要的 Keyring 秘密引用外不得产生本地写入，尤其不得写数据库、文件、cache、logs 或 release 指针。
+- MCP 查询 **MUST** 先读取并解析 `current.json`，按 default/显式版本取得 pointer 的 `release_id` 与 `relative_path`，再只读取该 pointer 指定的 release。release 完整性、Schema/checksum/manifest/quality/index/PNG 预验证只属于 WebUI build/activation gate；MCP 运行时 **MUST NOT** 首次全量验证、逐请求验证 current/manifest/checksum/schema/file identity/hash、复算质量门或全量验证 PNG/index projection。MCP 只保留必要的相对路径安全检查、明显链接/reparse 拒绝、指定 index 打开和响应所需 PNG 按需读取；读取失败必须 fail closed 且不得回退其它 release。MCP 可在进程内按 `minecraft_version+release_id` 缓存 snapshot；下一请求观察到 pointer 指向变化时必须载入新 snapshot。除读取 release、`current.json` 和必要的 Keyring 秘密引用外不得产生本地写入，尤其不得写数据库、文件、cache、logs 或 release 指针。
 - MCP 的 stdout **MUST** 只输出 MCP 协议消息；日志、诊断和堆栈 **MUST** 输出 stderr，**MUST NOT** 污染 stdout，也不得写本地日志文件。
 - MCP 返回的 `block_id`、状态、图片映射和 release 元数据 **MUST** 来自 release；模型不能新增候选或改写这些字段。模型不可用时可返回确定性本地候选并明确 `reranked_by_llm=false`，不得伪装为已重排。
 - D-051 的窄例外允许 `search_blocks` 接收可选顶层 `query_spec` 作为不可信、临时输入，并仅抑制服务端 QuerySpec 生成；它必须按既有 `query-spec-output.v1` 严格校验，不能持久化，也不能选择或改写 server-side provider profile、`model_id`、`base_url` 或 release-bound provider snapshot。Studio/provider 请求与 release-bound MCP visual rerank 的既有 provider 硬规则、`local_only` 禁止 provider 调用、`required` 重排失败即 fail closed 仍然有效。
+- D-052（2026-08-19 owner-approved amendment）进一步冻结 MCP 的运行时范围：四工具 advertised `outputSchema` 必须以 strict `oneOf` 组合既有各工具成功 Schema 与 `mcp-error.v1`，不新增 Schema ID，并保持 `isError=true` 与 structured/Text parity。`search_blocks` 外层 deadline 为 55 秒，最后 5 秒不得启动新的 provider 请求；QuerySpec stage 为 15 秒（10+5），visual rerank stage 为 30 秒（20+10），实际 timeout 取 profile/stage/request 剩余时间的最小值，少于 1 秒不得发送。`auto` 必须降级，`required` 失败使用 `RERANK_REQUIRED_UNAVAILABLE`，每个 logical provider request 最多两次尝试且无 fallback。单请求复用 provider/client 与 preview bytes，同步查询工作移出 event loop。D-052 不增加服务、依赖、Schema ID、SQL、migration、tool、transport 或 release manifest 字段。
+- D-052 明确是 owner 接受的安全检测削减，不是等价安全：MCP 不得声称运行时验证 immutable、manifest hash、checksums、schema inventory、quality report 或 index format；这些只信任构建/激活门。构建后的离线篡改或损坏不保证在查询前发现，只有实际打开、SQLite 查询或 PNG 读取失败时可能暴露。D-052 只允许最小 focused tests，不新增真实基数 fixture、全量矩阵或新的 evidence report。
 - 公开白名单只允许源码、文档、真实 JSON Schema、空数据库和 fixture 生成器源码；不得提交生成后的 PNG、非空数据库、真实索引、预览、导出包、人工覆盖或秘密。任何真实数据只能在本地生成或保存。
 
 ## 证据、测试与路线图纪律

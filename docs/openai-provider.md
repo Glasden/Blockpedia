@@ -168,6 +168,12 @@ Studio 三类新写调用都必须使用同一个活动 profile、同一个 `ada
 
 图片只能是为当前阶段裁剪的 PNG 或联系表；请求文本只能包含当前查询、短编号、当前 `prompt_version` 允许的必要机器元数据、Schema 允许的 bounded semantic fields 和约束。不得发送 SQLite、完整导出包、无关方块、文件系统路径、日志、人工秘密或 API key。`prompt.v1` 和其它历史 prompt version string 保持既有 legacy text；只有 exact `prompt.v2` 使用本节后述 slim model-visible projection。
 
+#### 3.1.1 MCP 在线查询预算与请求复用（D-052）
+
+MCP `search_blocks` 的外层 hard deadline 为 **55 秒**；进入最后 **5 秒** 后不得启动新的 provider 请求。QuerySpec stage 总预算为 **15 秒**（首次最多 10 秒、最多一次重试最多 5 秒），visual rerank stage 总预算为 **30 秒**（首次最多 20 秒、最多一次重试最多 10 秒）。每次实际 timeout 必须取 profile 配置、stage 剩余预算和 request 剩余时间的最小值；小于 1 秒时不得发送。每个 logical provider request 最多两次尝试且无 protocol/model/profile fallback；`auto` 失败走确定性本地降级，`required` 失败使用 `RERANK_REQUIRED_UNAVAILABLE`。
+
+同一 MCP `search_blocks` 请求必须复用一个 provider/client 和已构造的 preview bytes；提供有效 host-supplied QuerySpec 时只省略 QuerySpec provider call，visual rerank 仍沿用该请求上下文。同步 provider/SQLite 查询工作必须移出 event loop。该在线预算只作用于 MCP 请求生命周期，不新增 profile required field、Schema、SQL、migration、依赖、服务、CLI 或 release manifest 字段。
+
 ### 3.2 `offline_annotation`
 
 输入是 8–16 个已生成且可读的视觉变体联系表及其紧凑元数据。每个 tile 必须预先由本地生成唯一 `tile_id` 与 `variant_id` 映射。真实 wire 输出使用 `annotation-batch-output.v1`；其中 `items` 的元素语义结构为 `annotation-wire-item.v1`，落库后的持久记录为 `annotation-record.v1`。它们是 provider envelope，不是持久记录本身，只允许返回请求集合内每个 `variant_id` 恰好一次的语义对象：
@@ -413,5 +419,6 @@ MCP D-051 host-supplied QuerySpec 不构成 provider artifact，且不得写入�
 9. 两种 adapter 的 `prompt.v2` model-visible text 只含 trusted instruction、contact-sheet tile labels、`tile_id`/`variant_id` 和去重有界 `geometry_classes`；local envelope/hash checks 仍使用 full metadata。`prompt.v1` 与其它历史 version string 保持当前 legacy behavior，source change 触发 TOCTOU，v2 使用 fresh run。
 10. malformed JSON、missing required、wrong type、additional property 和 duplicate-array 的 final failure 只通过 internal `ProviderResult`/existing review evidence 保留六个 allowlisted diagnostic fields；successful repair 不保留 diagnostic，DB/API/UI 不出现 raw output/value/prefix/secret/path-like value。
 11. Provider-side/Worker-side full validation、ID/hash/cache/record/variant/`VALIDATE`/release gates、local uniqueItems、max-one-retry 和现有 Provider/Worker/release acceptance 不因 v2 或 diagnostic 放宽；prompt size comparison 仅作为 evidence。
+12. D-052 MCP focused tests 只验证 55 秒外层 deadline、最后 5 秒不启动新 provider 请求、15 秒 QuerySpec/30 秒 visual rerank stage budgets、timeout 取 profile/stage/request 剩余时间最小值、少于 1 秒不发送、最多两次尝试且无 fallback、同请求 provider/client/preview bytes 复用及同步查询移出 event loop；不新增真实基数 fixture、全量矩阵或 evidence report。
 
 精确测试分层和目标平台命令以 [`quality-and-testing.md`](quality-and-testing.md) 为准；本文件不把不存在的测试报告、真实数据或 provider 响应宣称为已完成。

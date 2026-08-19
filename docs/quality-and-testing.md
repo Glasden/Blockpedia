@@ -135,8 +135,8 @@ Provider 测试必须使用本地 fake endpoint 或脱敏协议 fixture，不发
 
 使用原创小型 release fixture 验证：
 
-1. R4 fixture 使用 fresh `release-index.v2.sql`；历史 R3 v1 index 返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`。MCP 省略版本使用 `default_minecraft_version` 的 current；显式 `minecraft_version` 必须匹配严格版本 pattern，malformed input 为 JSON-RPC `-32602`，格式合法但未发布版本为 `VERSION_NOT_AVAILABLE` 且不回退；WebUI/API 显式版本只查 current；历史 `release_id` selector 被拒绝；release-bound provider snapshot 使用冻结 adapter/profile/model/base URL/secret reference，不能读取或比较可变 active profile；
-2. 版本、current release 完整性、legal state、资格、明确排除行为、明确必须支撑/透明/发光/方向/形状先于评分；`unknown` 不能满足硬约束；
+1. R4 fixture 使用通过 build/activation gate 的 pointer-resolved release；fresh `release-index.v2.sql` 的资格由 gate 负责，MCP 运行时不检查 index format，也不对历史 v1 index 声称运行时完整性失败。MCP 省略版本使用 `default_minecraft_version` 的 current；显式 `minecraft_version` 必须匹配严格版本 pattern，malformed input 为 JSON-RPC `-32602`，格式合法但未发布版本为 `VERSION_NOT_AVAILABLE` 且不回退；WebUI/API 显式版本只查 current；历史 `release_id` selector 被拒绝；release-bound provider snapshot 使用冻结 adapter/profile/model/base URL/secret reference，不能读取或比较可变 active profile；
+2. pointer 解析出的版本/current release、legal state、资格、明确排除行为、明确必须支撑/透明/发光/方向/形状先于评分；MCP 不在运行时重新验证 release 完整性；`unknown` 不能满足硬约束；
 3. FTS5 `trigram` 与无 trigram 时 `normalized_like` fallback 均覆盖名称/同义词、颜色、几何、用途、风格和行为；
 4. `search-ranking.v1` 权重精确为 shape `.35`、color `.30`、use `.15`、name-synonym `.10`、style `.05`、behavior `.05`，未出现维度按规则归一化；
 5. Top-24 后执行确定性 family no-op：`context.family=null` 或任意通过 input schema 的 string 都不分组、不限额并保持稳定顺序，再生成 8–12 联系表，且不产生 family warning/metadata；非 string 且非 null 的 `context.family` 返回 JSON-RPC `-32602`；`compare_states`/`compare_blocks` 不引入 family 分组、限制或 family metadata；
@@ -157,8 +157,20 @@ Provider 测试必须使用本地 fake endpoint 或脱敏协议 fixture，不发
 5. `index_info` 无图；search/compare 有稳定编号 PNG 联系表 ImageContent；details 有四视角 PNG；
 6. 图片 metadata 包含 ID、MIME、尺寸、hash、purpose、content index 和 mapping，不含绝对路径；
 7. 工具错误 `isError=true` 与成功降级 `isError=false + warnings` 分层；协议错误使用 JSON-RPC error；
-8. current/default version、strict version pattern、显式未发布版本、v1 index rejection、禁止历史 selector、未知 ID、空搜索、null 与 string `context.family` 的成功 no-op、非 string 且非 null family 的 JSON-RPC `-32602`、图片失败符合 [`mcp-api.md`](mcp-api.md)；
-9. MCP 进程执行全部路径后不写 SQLite、文件、cache、logs 或 current；联系表和 ImageContent 使用内存 bytes，provider 降级也成立。
+8. current/default version、strict version pattern、显式未发布版本、禁止历史 selector、未知 ID、空搜索、null 与 string `context.family` 的成功 no-op、非 string 且非 null family 的 JSON-RPC `-32602`、pointer/path/index/按需图片读取失败符合 [`mcp-api.md`](mcp-api.md)；不把 manifest/checksum/schema/quality/index format/PNG 全量验证加入 MCP runtime test；
+9. MCP 进程执行全部路径后不写 SQLite、文件、cache、logs 或 current；联系表和 ImageContent 使用内存 bytes，provider 降级也成立；允许进程内 snapshot cache，但不产生持久化写入。
+
+### 7.1 D-052 最小 focused acceptance
+
+D-052 只允许最小 focused tests，不新增真实基数 fixture、全量矩阵或新的 evidence report。测试范围必须限于：
+
+1. 四工具 advertised `outputSchema` 是 strict `oneOf`，分别组合既有成功 Schema 与 `mcp-error.v1`；成功/错误的 `isError` 分层、structuredContent/TextContent parity 和既有 Schema 校验保持一致。
+2. MCP 读取/解析 `current.json`，正确执行 default/显式版本和严格 tool input/version 语义；下一请求观察 pointer 切换并载入新 `minecraft_version+release_id` snapshot；不接受历史 `release_id` selector。
+3. 相对路径防逃逸、明显 symlink/junction/reparse 拒绝、指定 index 打开失败、实际响应 PNG 按需读取失败均 fail closed，且不回退其它 release；测试不得把这些安全边界写成 release 完整性证明。
+4. `search_blocks` 55 秒外层 deadline、最后 5 秒禁止新 provider 请求、QuerySpec 15 秒（10+5）、visual rerank 30 秒（20+10）、实际 timeout 取 profile/stage/request 剩余时间最小值、少于 1 秒不发送、最多两次尝试且无 fallback。
+5. 单请求复用 provider/client 与 preview bytes，同步 provider/SQLite 查询工作移出 event loop；`auto` 确定性降级，`required` 使用 `RERANK_REQUIRED_UNAVAILABLE`。
+
+这些 focused tests 不验证、不声称 MCP 运行时验证 immutable、manifest hash、checksums、schema inventory、quality report、index format 或 PNG/index projection 全量完整性；构建后离线篡改/损坏只有实际打开、SQLite 查询或 PNG 读取时可能暴露。没有实现、命令和报告证据时，不得将本节写入路线图 `[x]`。
 
 ## 8. R2/R3/R5 WebUI、任务和安全测试
 

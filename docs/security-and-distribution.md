@@ -55,7 +55,13 @@ MVP 假设单用户本机运行：
 
 MCP stdout 只能是 JSON-RPC/MCP 消息，日志、诊断和堆栈只能到 stderr，不得写本地日志文件。MCP 查询不能写数据库、文件、cache 或 `current.json`，详细工具边界见 [`mcp-api.md`](mcp-api.md)。
 
-### 3.1 导出目录 chooser 与 import snapshot
+### 3.1 D-052：仅构建时验证的明确风险
+
+D-052 是 owner 于 2026-08-19 明确接受的安全检测削减，**不是等价安全**。release 完整性、Schema/checksum/manifest/quality/index/PNG 预验证只属于 WebUI build/activation gate；MCP 运行时不做首次全量验证，也不做每请求 current/manifest/checksum/schema/file identity/hash 校验、不复算质量门、不全量验证 PNG 或 index projection。MCP 只读取/解析 current 进行 default/显式版本选择，取得 pointer 的 `release_id`/`relative_path`，执行严格 input/version 语义、相对路径防逃逸和明显 symlink/junction/reparse 拒绝，然后打开指定 index 并按需读取实际响应 PNG；读取失败 fail closed 且不得回退其它 release。
+
+路径安全和链接/reparse 拒绝是防逃逸边界，不是 release 完整性证明。构建后的离线 release 篡改或损坏不保证在查询前发现，只有实际打开、SQLite 查询或 PNG 读取失败时可能暴露。MCP 可以在进程内缓存 `minecraft_version+release_id` snapshot；下一请求观察到 pointer 指向变化时载入新 snapshot。文档、响应和测试不得把该范围包装成 immutable、manifest、checksum、Schema inventory、quality report 或 index format 已由 MCP 运行时验证。
+
+### 3.2 导出目录 chooser 与 import snapshot
 
 WebUI 的目录选择范围严格限定为 `<data-root>/exports/<minecraft_version>`；chooser 只能传递进程本地、高熵 opaque ref，绝不把绝对路径放入 token、response、log、cache、SQLite 或 URL。消费 ref 时必须重新验证 root、精确版本、目录 identity 和每个 path component，拒绝 traversal、symlink、Windows junction/reparse point、意外 mount crossing、snapshot hardlink、以及 chooser 后的 stale replacement。source `Path` 只允许存在于当前 in-memory closure。
 
@@ -157,7 +163,7 @@ workspace `work.sqlite3` 只能以只读连接读取逻辑 rows；WAL 模式下�
 
 最终 release 在应用层以 `immutable=true` 拒绝写入，并在最终完整 hash 验证后将普通文件和目录设置为只读权限/ACL；权限设置不得产生 release 内 marker 或内容改写。rename 后只允许更新 release 外的 check state、cache 和 workspace audit/status；不得修改 release 内任何文件、目录内容、SQLite 数据、权限语义或 hash 文件。Phase C 不执行 activation/current/MCP。
 
-R3 Phase C 的 `release-index.v1.sql` candidate 是有效且不可变的历史 R3 evidence，但不具备 MCP/activation 资格；R4/R5 只能消费 fresh `release-index.v2.sql`，MCP 或 activation 遇 v1 必须返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`，不得 migration、降级读取或原地补列。MCP 的 `minecraft_version` 输入必须匹配严格版本格式 `^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$`；格式非法为 JSON-RPC `-32602`，格式合法但未发布版本为 `VERSION_NOT_AVAILABLE`，不因安全兼容而回退到其它 current。
+R3 Phase C 的 `release-index.v1.sql` candidate 是有效且不可变的历史 R3 evidence，但不具备 activation 资格；R4/R5 future candidate 仍由 build/activation gate 约束为 fresh `release-index.v2.sql`，D-052 后 MCP 运行时不检查 index format、不为 v1 建立专门的 `RELEASE_INTEGRITY_FAILED` 路径，也不 migration、降级转换或原地补列。MCP 的 `minecraft_version` 输入必须匹配严格版本格式 `^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$`；格式非法为 JSON-RPC `-32602`，格式合法但未发布版本为 `VERSION_NOT_AVAILABLE`，不因安全兼容而回退到其它 current。
 
 ### 7.1 不可变 release
 
@@ -241,5 +247,6 @@ release manifest 必须记录精确 `minecraft_version`、`release_id`、来源 
 6. current 原子替换故障注入、release immutable、rollback 只切 pointer、cleanup 不删审计测试通过；
 7. 公开包只含代码、文档、Schema、空库和 fixture 生成器源码；真实图片/索引只存在用户本地 data root；
 8. 每个目标 Minecraft version 在首发检查中有至少两个独立完整 release，且发布门记录 `TWO_INDEPENDENT_RELEASES`；candidate-build gate 的 `excluded` qualification 审计已通过，activation gate 只复核其报告和 hash。
+9. D-052 只允许最小 focused tests：pointer/default/显式版本切换、路径逃逸与明显链接/reparse 拒绝、指定 index/按需 PNG 读取失败、outputSchema strict `oneOf`/structured-Text parity、55/15/30 秒 deadline、provider/client/preview bytes 复用和同步查询移出 event loop；不得新增真实基数 fixture、全量矩阵或新的 evidence report，也不得把这些测试写成 MCP 运行时完整性验证。
 
 详细测试命令和报告要求见 [`quality-and-testing.md`](quality-and-testing.md)；R1–R5 项只在对应实现和最小验收证据存在后标记完成，不提前建设额外证据层。

@@ -6,6 +6,8 @@ import hashlib
 import json
 import math
 import re
+import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +20,8 @@ from .mcp_release import (
     ReleaseHandle,
     MCP_VERSION_RE,
 )
-from .r3 import make_contact_sheet, sha256_bytes
+from .features import DecodedPng
+from .r3 import ContactSheet, _paint_label, _resize_nearest, encode_rgba_png, sha256_bytes
 from .schema import RecordSchemaError, validate_record
 
 
@@ -114,6 +117,16 @@ class _Snapshot:
     manual: dict[str, Any]
 
 
+@dataclass(slots=True)
+class _RequestResources:
+    """Objects and bytes shared by one search/details/compare request."""
+
+    preview_cache: dict[str, tuple[bytes, DecodedPng]]
+    provider: Any | None = None
+    provider_owned: bool = False
+    provider_error: str | None = None
+
+
 def _hash_json(value: Any) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -162,7 +175,7 @@ def _error_result(error: MCPReleaseError, request_id: str, *, invalid_block_ids:
         "schema_version": "mcp-error.v1",
         "request_id": request_id,
         "error_code": error.code if error.code in {
-            "DATA_ROOT_INVALID", "CURRENT_POINTER_MISSING", "CURRENT_POINTER_INVALID", "VERSION_NOT_AVAILABLE", "RELEASE_NOT_FOUND", "RELEASE_NOT_BUILT", "RELEASE_INTEGRITY_FAILED", "INDEX_INFO_UNAVAILABLE", "INDEX_OPEN_FAILED", "QUERY_INVALID", "QUERY_PARSE_FAILED", "HARD_CONSTRAINT_UNSUPPORTED", "BLOCK_NOT_FOUND", "IMAGE_READ_FAILED", "IMAGE_MAPPING_INVALID", "RERANK_REQUIRED_UNAVAILABLE", "READ_ONLY_VIOLATION", "MCP_INTERNAL_ERROR",
+            "DATA_ROOT_INVALID", "CURRENT_POINTER_MISSING", "CURRENT_POINTER_INVALID", "VERSION_NOT_AVAILABLE", "RELEASE_NOT_FOUND", "RELEASE_NOT_BUILT", "INDEX_INFO_UNAVAILABLE", "INDEX_OPEN_FAILED", "QUERY_INVALID", "QUERY_PARSE_FAILED", "HARD_CONSTRAINT_UNSUPPORTED", "BLOCK_NOT_FOUND", "IMAGE_READ_FAILED", "IMAGE_MAPPING_INVALID", "RERANK_REQUIRED_UNAVAILABLE", "READ_ONLY_VIOLATION", "MCP_INTERNAL_ERROR",
         } else "MCP_INTERNAL_ERROR",
         "message": error.message[:500],
         "retryable": False,
@@ -423,6 +436,34 @@ def _image_id(payload: bytes, variant_id: str, prefix: str = "img") -> str:
     return f"{prefix}_{hashlib.sha256(payload).hexdigest()[:24]}"
 
 
+def _make_cached_contact_sheet(
+    images: Sequence[tuple[str, bytes, DecodedPng]],
+    *,
+    columns: int = 4,
+) -> ContactSheet:
+    """Build the normal contact sheet from already decoded preview cards."""
+
+    if not 1 <= len(images) <= 16:
+        raise ValueError("contact sheets contain 1-16 images")
+    columns = max(1, min(columns, len(images)))
+    rows = (len(images) + columns - 1) // columns
+    width, height = columns * 512, rows * 512
+    pixels = bytearray(width * height * 4)
+    tiles: list[dict[str, Any]] = []
+    for index, (variant_id, _payload, decoded) in enumerate(images):
+        card = _resize_nearest(decoded)
+        row, column = divmod(index, columns)
+        x0, y0 = column * 512, row * 512
+        for y in range(512):
+            target = ((y0 + y) * width + x0) * 4
+            source = y * 512 * 4
+            pixels[target : target + 512 * 4] = card[source : source + 512 * 4]
+        tile_id = f"T{index + 1:02d}"
+        _paint_label(pixels, width, height, x0 + 12, y0 + 470, tile_id)
+        tiles.append({"tile_id": tile_id, "variant_id": variant_id, "row": row, "column": column})
+    return ContactSheet(encode_rgba_png(width, height, bytes(pixels)), tuple(tiles))
+
+
 class MCPQueryService:
     """Four-tool query surface over an immutable release resolver."""
 
@@ -432,21 +473,83 @@ class MCPQueryService:
         *,
         repo_root: Path | None = None,
         provider: Any | None = None,
-        provider_factory: Callable[..., Any] | None = None,
+        provider_factory: Callable[[Mapping[str, Any], ReleaseHandle], Any] | None = None,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self.resolver = MCPReleaseResolver(data_root, repo_root=repo_root)
         self.provider = provider
         self.provider_factory = provider_factory
+        self._monotonic = monotonic or time.monotonic
         self._counter = 0
+        self._lock = threading.RLock()
+        self._snapshots: dict[tuple[str, str, str], _Snapshot] = {}
 
     def _next_request_id(self, value: str | None) -> str:
-        self._counter += 1
-        return _request_id(value, self._counter)
+        with self._lock:
+            self._counter += 1
+            return _request_id(value, self._counter)
 
     def _release_error(self, error: MCPReleaseError, request_id: str) -> MCPToolResult:
         return _error_result(error, request_id)
 
+    def _ensure_provider(self, handle: ReleaseHandle, resources: _RequestResources) -> tuple[Any | None, str | None]:
+        if resources.provider is not None or resources.provider_error is not None:
+            return resources.provider, resources.provider_error
+        provider, error = self._load_provider(handle)
+        resources.provider = provider
+        resources.provider_error = error
+        resources.provider_owned = provider is not None and self.provider is None
+        return provider, error
+
+    def _close_request_resources(self, resources: _RequestResources) -> None:
+        if not resources.provider_owned or resources.provider is None:
+            return
+        close = getattr(resources.provider, "close", None)
+        if callable(close):
+            close()
+        resources.provider = None
+
+    def _provider_timeout(self, provider: Any) -> float:
+        profile = getattr(provider, "profile", None)
+        value = getattr(profile, "request_timeout_ms", None)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value / 1000.0
+        value = getattr(provider, "request_timeout", None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return float(value)
+        return 60.0
+
+    def _stage_timeout_factory(
+        self,
+        provider: Any,
+        deadline: float,
+        stage_started: float,
+        stage_budget: float,
+        attempt_caps: Sequence[float],
+    ) -> Callable[[int], float | None]:
+        """Calculate the actual timeout immediately before each provider attempt."""
+
+        def timeout_for(attempt_number: int) -> float | None:
+            if not 1 <= attempt_number <= len(attempt_caps):
+                return None
+            now = self._monotonic()
+            timeout = min(
+                self._provider_timeout(provider),
+                float(attempt_caps[attempt_number - 1]),
+                stage_started + stage_budget - now,
+                deadline - 5.0 - now,
+            )
+            return timeout if timeout >= 1.0 else None
+
+        return timeout_for
+
     def _snapshot(self, handle: ReleaseHandle) -> _Snapshot:
+        key = (handle.minecraft_version, handle.release_id, str(handle.release_path))
+        with self._lock:
+            cached = self._snapshots.get(key)
+        if cached is not None:
+            return cached
+
         blocks: dict[str, dict[str, Any]] = {}
         states: dict[str, dict[str, Any]] = {}
         variants: dict[str, dict[str, Any]] = {}
@@ -455,19 +558,13 @@ class MCPQueryService:
         try:
             for row in handle.execute("SELECT block_id, minecraft_version, default_state_id, record_json FROM blocks ORDER BY block_id"):
                 block = json.loads(row["record_json"])
-                if block.get("block_id") != row["block_id"] or block.get("minecraft_version") != handle.minecraft_version or block.get("default_state_id") != row["default_state_id"]:
-                    raise ValueError("block projection mismatch")
                 blocks[str(row["block_id"])] = block
             for row in handle.execute("SELECT state_id, block_id, record_json FROM states ORDER BY state_id"):
                 state = json.loads(row["record_json"])
-                if state.get("state_id") != row["state_id"] or state.get("block_id") != row["block_id"]:
-                    raise ValueError("state projection mismatch")
                 states[str(row["state_id"])] = state
             for row in handle.execute("SELECT variant_id, block_id, record_json, feature_json FROM visual_variants ORDER BY variant_id"):
                 variant = json.loads(row["record_json"])
                 feature = json.loads(row["feature_json"])
-                if not isinstance(feature, dict) or variant.get("variant_id") != row["variant_id"] or variant.get("block_id") != row["block_id"]:
-                    raise ValueError("variant projection mismatch")
                 variants[str(row["variant_id"])] = variant
                 features[str(row["variant_id"])] = feature
             for row in handle.execute("SELECT variant_id, semantic_json FROM annotations ORDER BY variant_id"):
@@ -483,8 +580,13 @@ class MCPQueryService:
             if not isinstance(manual, dict):
                 raise ValueError("manual record package is invalid")
         except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError, RecordSchemaError) as exc:
-            raise MCPReleaseError("RELEASE_INTEGRITY_FAILED", "The release record projection is invalid.", minecraft_version=handle.minecraft_version, details={"integrity_component": "index"}) from exc
-        return _Snapshot(blocks, states, variants, features, annotations, manual)
+            raise MCPReleaseError("INDEX_INFO_UNAVAILABLE", "The release records could not be read.", minecraft_version=handle.minecraft_version, details={"integrity_component": "index"}) from exc
+        snapshot = _Snapshot(blocks, states, variants, features, annotations, manual)
+        with self._lock:
+            # A concurrent request may have populated the same immutable
+            # release while this request was reading it.  Keep one value.
+            snapshot = self._snapshots.setdefault(key, snapshot)
+        return snapshot
 
     def index_info(self, arguments: Mapping[str, Any] | None = None, *, request_id: str | None = None) -> MCPToolResult:
         request = self._next_request_id(request_id)
@@ -493,18 +595,25 @@ class MCPQueryService:
             version = _validate_version_input(args)
             with self.resolver.resolve(version) as handle:
                 snapshot = self._snapshot(handle)
-                handle.assert_index_current()
+                quality_hash = handle.manifest.get("quality_report_sha256")
+                built_at = handle.release.get("built_at")
+                if not isinstance(quality_hash, str) or not isinstance(built_at, str):
+                    raise MCPReleaseError(
+                        "INDEX_INFO_UNAVAILABLE",
+                        "Release metadata needed for index_info is unavailable.",
+                        minecraft_version=handle.minecraft_version,
+                    )
                 data = {
                     "product": "Blockpedia",
                     "official_disclaimer": OFFICIAL_DISCLAIMER,
                     "release_id": handle.release_id,
-                    "built_at": handle.release["built_at"],
+                    "built_at": built_at,
                     "counts": {
                         "blocks": len(snapshot.blocks),
                         "visual_variants": len(snapshot.variants),
                         "audited_skips": len(snapshot.manual.get("skip_reviews", [])) if isinstance(snapshot.manual.get("skip_reviews", []), list) else 0,
                     },
-                    "quality_gate": {"passed": True, "quality_report_sha256": sha256_bytes(handle.read_bytes("quality_report.json"))},
+                    "quality_gate": {"passed": True, "quality_report_sha256": quality_hash},
                 }
                 envelope = {"schema_version": "mcp-index-info-output.v1", "request_id": request, "minecraft_version": handle.minecraft_version, "resolved_release_id": handle.release_id, "manifest_sha256": handle.manifest_sha256, "warnings": [], "data": data}
                 return _validate_output("mcp-index-info-output.v1", envelope)
@@ -515,8 +624,24 @@ class MCPQueryService:
         except MCPReleaseError as exc:
             return self._release_error(exc, request)
 
-    def search_blocks(self, arguments: Mapping[str, Any], *, request_id: str | None = None) -> MCPToolResult:
+    def search_blocks(self, arguments: Mapping[str, Any], *, request_id: str | None = None, deadline: float | None = None) -> MCPToolResult:
+        resources = _RequestResources(preview_cache={})
+        try:
+            return self._search_blocks(arguments, request_id=request_id, resources=resources, deadline=deadline)
+        finally:
+            self._close_request_resources(resources)
+
+    def _search_blocks(
+        self,
+        arguments: Mapping[str, Any],
+        *,
+        request_id: str | None,
+        resources: _RequestResources,
+        deadline: float | None,
+    ) -> MCPToolResult:
         request = self._next_request_id(request_id)
+        if deadline is None:
+            deadline = self._monotonic() + 55.0
         try:
             args = _validate_object(arguments, {"minecraft_version", "query", "limit", "context", "query_spec"})
             host_spec = self._validate_host_spec(args)
@@ -541,7 +666,6 @@ class MCPQueryService:
                 raise MCPInputError("context.rerank has an invalid value")
             with self.resolver.resolve(version) as handle:
                 snapshot = self._snapshot(handle)
-                handle.assert_index_current()
                 intent_value = parse_query(query)
                 intent = _Intent(tuple(intent_value["hard"]), intent_value["soft"], tuple(intent_value["unknown_terms"]), tuple(intent_value["unsupported"]))
                 if intent.unsupported:
@@ -556,7 +680,19 @@ class MCPQueryService:
                     intent = self._merge_provider_intent(intent, query_spec)
                     query_warning, query_error = None, None
                 else:
-                    query_spec, query_warning, query_error = self._query_spec_before_filter(handle, query, rows, rerank_mode)
+                    provider, provider_error = (None, None)
+                    if rerank_mode != "local_only" and rows:
+                        provider, provider_error = self._ensure_provider(handle, resources)
+                    query_spec, query_warning, query_error = self._query_spec_before_filter(
+                        handle,
+                        query,
+                        rows,
+                        rerank_mode,
+                        provider=provider,
+                        provider_error=provider_error,
+                        deadline=deadline,
+                        resources=resources,
+                    )
                     if query_spec is not None:
                         intent = self._merge_provider_intent(intent, query_spec)
                 if any(str(item.get("field")) == "orientation" for item in intent.hard) and not any(_fact_value(row[1], row[2], "orientation") != "unknown" for row in rows):
@@ -602,12 +738,29 @@ class MCPQueryService:
                     data = {"search_id": self._search_id(handle, query, host_spec), "query": query, "hard_filters": list(intent.hard), "exclusion_summary": self._exclusions(snapshot, rows, recalled, intent), "candidates": [], "contact_sheet": {"image_id": None, "tile_mapping": []}, "images": [], "reranked_by_llm": False}
                     envelope = {"schema_version": "mcp-search-blocks-output.v1", "request_id": request, "minecraft_version": handle.minecraft_version, "resolved_release_id": handle.release_id, "manifest_sha256": handle.manifest_sha256, "warnings": warnings, "data": data}
                     return _validate_output("mcp-search-blocks-output.v1", envelope)
-                sheet, image_meta, image_bytes = self._search_sheet(handle, candidates, snapshot)
+                sheet, image_meta, image_bytes = self._search_sheet(handle, candidates, snapshot, resources)
                 reranked = False
                 if query_error is not None and query_spec is None:
                     provider_warning, provider_code, reranked_candidates = None, query_error, None
                 else:
-                    provider_warning, provider_code, reranked_candidates = self._maybe_rerank(handle, query, intent, candidates, image_bytes, rerank_mode, sheet, query_spec)
+                    if rerank_mode != "local_only":
+                        provider, provider_error = self._ensure_provider(handle, resources)
+                    else:
+                        provider, provider_error = None, None
+                    provider_warning, provider_code, reranked_candidates = self._maybe_rerank(
+                        handle,
+                        query,
+                        intent,
+                        candidates,
+                        image_bytes,
+                        rerank_mode,
+                        sheet,
+                        query_spec,
+                        provider=provider,
+                        provider_error=provider_error,
+                        deadline=deadline,
+                        resources=resources,
+                    )
                 if provider_warning:
                     warnings.append(provider_warning)
                 if query_error is not None and provider_code is None:
@@ -630,6 +783,7 @@ class MCPQueryService:
 
     def get_block_details(self, arguments: Mapping[str, Any], *, request_id: str | None = None) -> MCPToolResult:
         request = self._next_request_id(request_id)
+        resources = _RequestResources(preview_cache={})
         try:
             args = _validate_object(arguments, {"minecraft_version", "block_id"})
             version = _validate_version_input(args)
@@ -638,10 +792,9 @@ class MCPQueryService:
                 raise MCPInputError("block_id has an invalid format")
             with self.resolver.resolve(version) as handle:
                 snapshot = self._snapshot(handle)
-                handle.assert_index_current()
                 if block_id not in snapshot.blocks:
                     return _error_result(MCPReleaseError("BLOCK_NOT_FOUND", "The requested block is not in this release.", minecraft_version=handle.minecraft_version), request, invalid_block_ids=[block_id])
-                data, images = self._details_data(handle, snapshot, block_id)
+                data, images = self._details_data(handle, snapshot, block_id, resources)
                 envelope = {"schema_version": "mcp-block-details-output.v1", "request_id": request, "minecraft_version": handle.minecraft_version, "resolved_release_id": handle.release_id, "manifest_sha256": handle.manifest_sha256, "warnings": [], "data": data}
                 result = _validate_output("mcp-block-details-output.v1", envelope)
                 return MCPToolResult(result, images=images)
@@ -654,6 +807,7 @@ class MCPQueryService:
 
     def compare_blocks(self, arguments: Mapping[str, Any], *, request_id: str | None = None) -> MCPToolResult:
         request = self._next_request_id(request_id)
+        resources = _RequestResources(preview_cache={})
         try:
             args = _validate_object(arguments, {"minecraft_version", "block_ids", "context", "compare_states"})
             version = _validate_version_input(args)
@@ -668,11 +822,10 @@ class MCPQueryService:
                 raise MCPInputError("compare_states must be boolean")
             with self.resolver.resolve(version) as handle:
                 snapshot = self._snapshot(handle)
-                handle.assert_index_current()
                 invalid = [value for value in block_ids if value not in snapshot.blocks]
                 if invalid:
                     return _error_result(MCPReleaseError("BLOCK_NOT_FOUND", "One or more requested blocks are not in this release.", minecraft_version=handle.minecraft_version), request, invalid_block_ids=invalid)
-                data, images = self._compare_data(handle, snapshot, block_ids)
+                data, images = self._compare_data(handle, snapshot, block_ids, resources)
                 envelope = {"schema_version": "mcp-compare-blocks-output.v1", "request_id": request, "minecraft_version": handle.minecraft_version, "resolved_release_id": handle.release_id, "manifest_sha256": handle.manifest_sha256, "warnings": [], "data": data}
                 result = _validate_output("mcp-compare-blocks-output.v1", envelope)
                 return MCPToolResult(result, images=images)
@@ -683,11 +836,18 @@ class MCPQueryService:
         except MCPReleaseError as exc:
             return self._release_error(exc, request)
 
-    def call_tool(self, name: str, arguments: Mapping[str, Any] | None = None, *, request_id: str | None = None) -> MCPToolResult:
+    def call_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, Any] | None = None,
+        *,
+        request_id: str | None = None,
+        deadline: float | None = None,
+    ) -> MCPToolResult:
         if name == "index_info":
             return self.index_info(arguments, request_id=request_id)
         if name == "search_blocks":
-            return self.search_blocks(arguments or {}, request_id=request_id)
+            return self.search_blocks(arguments or {}, request_id=request_id, deadline=deadline)
         if name == "get_block_details":
             return self.get_block_details(arguments or {}, request_id=request_id)
         if name == "compare_blocks":
@@ -701,12 +861,8 @@ class MCPQueryService:
             return self.provider, None
         if self.provider_factory is not None:
             try:
-                return self.provider_factory(handle.provider_snapshot, handle), None
-            except TypeError:
-                try:
-                    return self.provider_factory(handle.provider_snapshot), None
-                except Exception:
-                    return None, "PROVIDER_CONFIG_INVALID"
+                provider = self.provider_factory(handle.provider_snapshot, handle)
+                return (provider, None) if provider is not None else (None, "PROVIDER_CONFIG_INVALID")
             except Exception:
                 return None, "PROVIDER_CONFIG_INVALID"
         try:
@@ -736,10 +892,7 @@ class MCPQueryService:
         try:
             result = function(text, **kwargs)
         except TypeError:
-            try:
-                result = function(text)
-            except Exception:
-                return None, "PROVIDER_UNKNOWN"
+            return None, "PROVIDER_UNKNOWN"
         except Exception:
             return None, "PROVIDER_UNKNOWN"
         if isinstance(result, Mapping):
@@ -912,16 +1065,34 @@ class MCPQueryService:
         query: str,
         rows: Sequence[tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]],
         mode: str,
+        *,
+        provider: Any | None,
+        provider_error: str | None,
+        deadline: float,
+        resources: _RequestResources,
     ) -> tuple[dict[str, Any] | None, str | None, str | None]:
         if mode == "local_only" or not rows:
             return None, None, None
-        provider, construction_error = self._load_provider(handle)
         if provider is None:
-            return None, "Provider unavailable; deterministic local ranking was used.", construction_error or "PROVIDER_NOT_CONFIGURED"
+            return None, "Provider unavailable; deterministic local ranking was used.", provider_error or "PROVIDER_NOT_CONFIGURED"
+        stage_started = self._monotonic()
+        timeout_factory = self._stage_timeout_factory(provider, deadline, stage_started, 15.0, (10.0, 5.0))
+        if timeout_factory(1) is None:
+            return None, "Query parsing timed out; deterministic local ranking was used.", "PROVIDER_TIMEOUT"
         try:
-            image_png = self._last_preview_bytes(handle, rows[0][0])
+            image_png = self._last_preview_bytes(handle, rows[0][0], resources)
             query_envelope = self._provider_envelope(handle, "query_spec", {"query_sha256": "sha256:" + hashlib.sha256(query.encode("utf-8")).hexdigest()})
-            artifact, error = self._provider_result(provider, "query_spec", query, image_png=image_png, query_text=query, envelope=query_envelope)
+            artifact, error = self._provider_result(
+                provider,
+                "query_spec",
+                query,
+                image_png=image_png,
+                query_text=query,
+                envelope=query_envelope,
+                attempt_timeout_factory=timeout_factory,
+            )
+            if self._monotonic() > min(stage_started + 15.0, deadline - 5.0):
+                return None, "Query parsing timed out; deterministic local ranking was used.", "PROVIDER_TIMEOUT"
             if artifact is None:
                 return None, "Query parsing failed; deterministic local ranking was used.", error or "PROVIDER_UNKNOWN"
             try:
@@ -930,9 +1101,8 @@ class MCPQueryService:
                 return None, "Query parsing returned an invalid specification; deterministic local ranking was used.", "PROVIDER_SCHEMA_INVALID"
             return artifact, None, None
         finally:
-            close = getattr(provider, "close", None)
-            if self.provider is None and callable(close):
-                close()
+            # Provider lifetime belongs to the outer search request.
+            del resources
 
     @staticmethod
     def _merge_provider_intent(intent: _Intent, query_spec: Mapping[str, Any]) -> _Intent:
@@ -972,18 +1142,36 @@ class MCPQueryService:
                 unknown.append(term)
         return _Intent(tuple(hard), soft, tuple(unknown), intent.unsupported)
 
-    def _maybe_rerank(self, handle: ReleaseHandle, query: str, intent: _Intent, candidates: list[dict[str, Any]], image_bytes: bytes, mode: str, sheet: Mapping[str, Any], query_spec: Mapping[str, Any] | None) -> tuple[str | None, str | None, list[dict[str, Any]] | None]:
+    def _maybe_rerank(
+        self,
+        handle: ReleaseHandle,
+        query: str,
+        intent: _Intent,
+        candidates: list[dict[str, Any]],
+        image_bytes: bytes,
+        mode: str,
+        sheet: Mapping[str, Any],
+        query_spec: Mapping[str, Any] | None,
+        *,
+        provider: Any | None,
+        provider_error: str | None,
+        deadline: float,
+        resources: _RequestResources,
+    ) -> tuple[str | None, str | None, list[dict[str, Any]] | None]:
         if mode == "local_only":
             return None, None, None
         if query_spec is None:
             return "QuerySpec was unavailable; deterministic local ranking was used.", "PROVIDER_CAPABILITY_MISSING", None
-        provider, construction_error = self._load_provider(handle)
         if provider is None:
-            return "Provider unavailable; deterministic local ranking was used.", construction_error or "PROVIDER_NOT_CONFIGURED", None
+            return "Provider unavailable; deterministic local ranking was used.", provider_error or "PROVIDER_NOT_CONFIGURED", None
+        stage_started = self._monotonic()
+        timeout_factory = self._stage_timeout_factory(provider, deadline, stage_started, 30.0, (20.0, 10.0))
+        if timeout_factory(1) is None:
+            return "Visual reranking timed out; deterministic local ranking was used.", "PROVIDER_TIMEOUT", None
         records = {candidate["candidate_id"]: {"candidate_id": candidate["candidate_id"], "variant_id": candidate["variant_id"], "block_id": candidate["block_id"], "recommended_state_id": candidate["recommended_state_id"]} for candidate in candidates}
         source_images: dict[str, bytes] = {}
         for candidate in candidates:
-            source_images[candidate["candidate_id"]] = self._last_preview_bytes(handle, candidate["variant_id"])
+            source_images[candidate["candidate_id"]] = self._last_preview_bytes(handle, candidate["variant_id"], resources)
         candidate_map = [
             {
                 **record,
@@ -1017,10 +1205,9 @@ class MCPQueryService:
             sort_keys=True,
             separators=(",", ":"),
         )
-        artifact, error = self._provider_result(provider, rerank_method, model_input, **provider_kwargs)
-        close = getattr(provider, "close", None)
-        if self.provider is None and callable(close):
-            close()
+        artifact, error = self._provider_result(provider, rerank_method, model_input, attempt_timeout_factory=timeout_factory, **provider_kwargs)
+        if self._monotonic() > min(stage_started + 30.0, deadline - 5.0):
+            return "Visual reranking timed out; deterministic local ranking was used.", "PROVIDER_TIMEOUT", None
         if artifact is None:
             return "Visual reranking failed; deterministic local ranking was used.", error or "PROVIDER_UNKNOWN", None
         try:
@@ -1130,14 +1317,11 @@ class MCPQueryService:
             return list(rows)
         ids: set[str] = set()
         if handle.fts_mode == "trigram" and any(len(token) >= 3 for token in tokens):
-            try:
-                for token in tokens:
-                    if len(token) < 3:
-                        continue
-                    escaped = '"' + token.replace('"', ' ') + '"'
-                    ids.update(str(row[0]) for row in handle.execute("SELECT variant_id FROM search_fts WHERE search_fts MATCH ?", (escaped,)))
-            except Exception:
-                ids.clear()
+            for token in tokens:
+                if len(token) < 3:
+                    continue
+                escaped = '"' + token.replace('"', ' ') + '"'
+                ids.update(str(row[0]) for row in handle.execute("SELECT variant_id FROM search_fts WHERE search_fts MATCH ?", (escaped,)))
         else:
             for token in tokens:
                 ids.update(str(row[0]) for row in handle.execute("SELECT variant_id FROM search_text WHERE normalized_text LIKE ?", (f"%{token}%",)))
@@ -1223,19 +1407,28 @@ class MCPQueryService:
             result.append({"reason": "hard constraints", "count": 0})
         return result
 
-    def _search_sheet(self, handle: ReleaseHandle, candidates: list[dict[str, Any]], snapshot: _Snapshot) -> tuple[Any, dict[str, Any], bytes]:
-        source: list[tuple[str, bytes]] = []
+    def _search_sheet(
+        self,
+        handle: ReleaseHandle,
+        candidates: list[dict[str, Any]],
+        snapshot: _Snapshot,
+        resources: _RequestResources,
+    ) -> tuple[Any, dict[str, Any], bytes]:
+        del snapshot
+        source: list[tuple[str, bytes, DecodedPng]] = []
         mapping: list[dict[str, Any]] = []
         for candidate in candidates:
-            payload = self._last_preview_bytes(handle, candidate["variant_id"])
-            source.append((candidate["variant_id"], payload))
+            payload, decoded = self._preview(handle, candidate["variant_id"], resources)
+            source.append((candidate["variant_id"], payload, decoded))
             mapping.append({"candidate_id": candidate["candidate_id"], "variant_id": candidate["variant_id"], "block_id": candidate["block_id"]})
-        sheet = make_contact_sheet(source, columns=4)
+        sheet = _make_cached_contact_sheet(source, columns=4)
         tiles = []
         for index, item in enumerate(mapping):
             tiles.append({**item, "row": index // 4, "column": index % 4})
         image_id = _image_id(sheet.image_png, "contact")
-        image = {"image_id": image_id, "purpose": "search_contact_sheet", "mime_type": "image/png", "width": self._png_dimensions(sheet.image_png)[0], "height": self._png_dimensions(sheet.image_png)[1], "sha256": sha256_bytes(sheet.image_png), "content_index": 1, "mapping": mapping}
+        width = min(4, len(source)) * 512
+        height = ((len(source) + min(4, len(source)) - 1) // min(4, len(source))) * 512
+        image = {"image_id": image_id, "purpose": "search_contact_sheet", "mime_type": "image/png", "width": width, "height": height, "sha256": sha256_bytes(sheet.image_png), "content_index": 1, "mapping": mapping}
         return sheet, {"image_id": image_id, "mapping_tiles": tiles, "image": image}, sheet.image_png
 
     @staticmethod
@@ -1244,17 +1437,30 @@ class MCPQueryService:
         image = decode_rgba_png(payload)
         return image.width, image.height
 
-    def _last_preview_bytes(self, handle: ReleaseHandle, variant_id: str) -> bytes:
+    def _preview(self, handle: ReleaseHandle, variant_id: str, resources: _RequestResources) -> tuple[bytes, DecodedPng]:
+        cached = resources.preview_cache.get(variant_id)
+        if cached is not None:
+            return cached
         row = handle.execute("SELECT preview_path,image_sha256 FROM visual_variants WHERE variant_id=?", (variant_id,)).fetchone()
         if row is None:
             raise MCPReleaseError("IMAGE_READ_FAILED", "A release preview reference is missing.", minecraft_version=handle.minecraft_version)
         payload, decoded = handle.read_image(str(row[0]))
-        del decoded
-        if str(row[1]) != sha256_bytes(payload):
-            raise MCPReleaseError("IMAGE_MAPPING_INVALID", "A release preview hash does not match its index mapping.", minecraft_version=handle.minecraft_version)
+        resources.preview_cache[variant_id] = (payload, decoded)
+        return payload, decoded
+
+    def _last_preview_bytes(self, handle: ReleaseHandle, variant_id: str, resources: _RequestResources | None = None) -> bytes:
+        if resources is None:
+            resources = _RequestResources(preview_cache={})
+        payload, _decoded = self._preview(handle, variant_id, resources)
         return payload
 
-    def _details_data(self, handle: ReleaseHandle, snapshot: _Snapshot, block_id: str) -> tuple[dict[str, Any], tuple[bytes, ...]]:
+    def _details_data(
+        self,
+        handle: ReleaseHandle,
+        snapshot: _Snapshot,
+        block_id: str,
+        resources: _RequestResources,
+    ) -> tuple[dict[str, Any], tuple[bytes, ...]]:
         block = snapshot.blocks[block_id]
         states = [state for state in snapshot.states.values() if state.get("block_id") == block_id]
         states.sort(key=lambda value: str(value["state_id"]).encode("utf-8"))
@@ -1267,7 +1473,7 @@ class MCPQueryService:
         for variant in variants:
             state = snapshot.states.get(str(variant["canonical_state_id"]))
             if state is None:
-                raise MCPReleaseError("RELEASE_INTEGRITY_FAILED", "A variant references a missing state.", minecraft_version=handle.minecraft_version, details={"integrity_component": "index"})
+                raise MCPReleaseError("INDEX_INFO_UNAVAILABLE", "A variant references unavailable state data.", minecraft_version=handle.minecraft_version, details={"integrity_component": "index"})
             annotation_value = _semantic(snapshot.annotations.get(str(variant["variant_id"])))
             annotation = None
             if (
@@ -1281,9 +1487,7 @@ class MCPQueryService:
             image_ids: list[str] = []
             render = variant.get("render")
             if isinstance(render, Mapping):
-                payload = self._last_preview_bytes(handle, str(variant["variant_id"]))
-                from .features import decode_rgba_png
-                decoded = decode_rgba_png(payload)
+                payload, decoded = self._preview(handle, str(variant["variant_id"]), resources)
                 image_id = _image_id(payload, str(variant["variant_id"]))
                 image_ids.append(image_id)
                 metadata = {"image_id": image_id, "purpose": "block_variant_views", "mime_type": "image/png", "width": decoded.width, "height": decoded.height, "sha256": sha256_bytes(payload), "content_index": len(image_bytes) + 1, "mapping": [{"candidate_id": None, "variant_id": variant["variant_id"], "block_id": block_id}]}
@@ -1310,7 +1514,7 @@ class MCPQueryService:
             })
         default_state = snapshot.states.get(str(block["default_state_id"]))
         if default_state is None:
-            raise MCPReleaseError("RELEASE_INTEGRITY_FAILED", "A block references a missing default state.", minecraft_version=handle.minecraft_version, details={"integrity_component": "index"})
+            raise MCPReleaseError("INDEX_INFO_UNAVAILABLE", "A block references unavailable default-state data.", minecraft_version=handle.minecraft_version, details={"integrity_component": "index"})
         default_behavior = default_state["behavior"]
         block_facts = {"has_item": block["machine_facts"]["has_item"], "has_block_entity": block["machine_facts"]["has_block_entity"], "tags": list(block.get("tags", [])), "default_state_behavior": default_behavior}
         state_outputs = [{"state_id": state["state_id"], "is_default": state["is_default"], "properties": [{"name": name, "value": value} for name, value in sorted(state.get("properties", {}).items(), key=lambda item: str(item[0]).encode("utf-8"))], "shape": state["shape"], "collision": state["collision"], "behavior": state["behavior"], "variant_ids": list(state["variant_ids"]), "mapping_status": state["mapping_status"]} for state in states]
@@ -1336,7 +1540,13 @@ class MCPQueryService:
                     result.append(value)
         return result
 
-    def _compare_data(self, handle: ReleaseHandle, snapshot: _Snapshot, block_ids: Sequence[str]) -> tuple[dict[str, Any], tuple[bytes, ...]]:
+    def _compare_data(
+        self,
+        handle: ReleaseHandle,
+        snapshot: _Snapshot,
+        block_ids: Sequence[str],
+        resources: _RequestResources,
+    ) -> tuple[dict[str, Any], tuple[bytes, ...]]:
         rows = []
         for field, extractor, source in (
             ("candidate_qualification", lambda variant, state, block: variant.get("candidate_qualification"), "machine"),
@@ -1361,21 +1571,22 @@ class MCPQueryService:
                     values.append({"block_id": block_id, "value": value, "source": source})
             if len(values) >= 2 and len({json.dumps(item["value"], ensure_ascii=False, sort_keys=True) for item in values}) > 1:
                 rows.append({"field": field, "values": values})
-        source_images: list[tuple[str, bytes]] = []
+        source_images: list[tuple[str, bytes, DecodedPng]] = []
         mapping: list[dict[str, Any]] = []
         for index, block_id in enumerate(block_ids, start=1):
             variants = sorted((variant for variant in snapshot.variants.values() if variant.get("block_id") == block_id), key=lambda value: str(value["variant_id"]).encode("utf-8"))
             if not variants:
                 continue
             variant = variants[0]
-            source_images.append((str(variant["variant_id"]), self._last_preview_bytes(handle, str(variant["variant_id"]))))
+            payload, decoded = self._preview(handle, str(variant["variant_id"]), resources)
+            source_images.append((str(variant["variant_id"]), payload, decoded))
             mapping.append({"candidate_id": f"T{index:02d}", "variant_id": variant["variant_id"], "block_id": block_id})
         if not source_images:
             return {"block_ids": list(block_ids), "rows": rows, "contact_sheet": {"image_id": None, "tile_mapping": []}, "images": []}, ()
-        sheet = make_contact_sheet(source_images, columns=len(source_images))
+        sheet = _make_cached_contact_sheet(source_images, columns=len(source_images))
         tiles = [{**item, "row": 0, "column": index} for index, item in enumerate(mapping)]
         image_id = _image_id(sheet.image_png, "compare")
-        image = {"image_id": image_id, "purpose": "compare_contact_sheet", "mime_type": "image/png", "width": self._png_dimensions(sheet.image_png)[0], "height": self._png_dimensions(sheet.image_png)[1], "sha256": sha256_bytes(sheet.image_png), "content_index": 1, "mapping": mapping}
+        image = {"image_id": image_id, "purpose": "compare_contact_sheet", "mime_type": "image/png", "width": len(source_images) * 512, "height": 512, "sha256": sha256_bytes(sheet.image_png), "content_index": 1, "mapping": mapping}
         return {"block_ids": list(block_ids), "rows": rows, "contact_sheet": {"image_id": image_id, "tile_mapping": tiles}, "images": [image]}, (sheet.image_png,)
 
 
