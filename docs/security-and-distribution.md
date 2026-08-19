@@ -8,6 +8,10 @@
 
 ## 1. 产品身份和品牌
 
+### 1.0 D-053 MCP online boundary
+
+MCP runtime is local-only and read-only: it reads `current.json` and the pointer-selected release, but **MUST NOT** initialize/call any AI provider or read Keyring, active profile, workspace data, or provider snapshot for online search. `search_blocks` accepts only the current `keywords` array contract and performs local eligible/conditional FTS5 trigram or normalized-LIKE recall and deterministic ranking. It never performs natural-language parsing, QuerySpec generation, hard filtering, visual rerank, provider retry/deadline/reuse, or zero-result rewriting. Historical provider snapshots and QuerySpec/rerank schemas remain offline lineage only. MCP writes no cache, logs, database, release, workspace, or current pointer; stdout remains protocol-only and diagnostics go to stderr.
+
 产品主品牌必须是 **Blockpedia**。Minecraft 仅作为兼容目标、数据来源和描述性名称使用，不得使产品看起来是官方客户端、官方百科、官方服务、资源包或 Mojang/Microsoft 产品。
 
 公开 WebUI、文档、源码发行页、release 说明和任何可见产品介绍必须显著展示以下原文（大小写、标点和单词顺序不得改变）：
@@ -183,7 +187,7 @@ R3 Phase C 的 `release-index.v1.sql` candidate 是有效且不可变的历史 R
 
 生成并写入完整 hash manifest 后，release **MUST NOT** 原地修改。candidate release 使用 `built_at`；激活时间只写 `current.json` 和 workspace activation audit，不写回 release metadata。configured/requested model_id、prompt、Schema、semantic constraints、图片、人工覆盖或任何语义变化都必须产生新的 build/release；不能改旧 SQLite、图片、override 或 quality report。response model echo mismatch 不产生远端身份证明，也不触发旧 release rewrite。每个精确 Minecraft version 首发前至少有两个独立、完整性通过、带 hash 的不可变 release。
 
-release manifest 必须记录精确 `minecraft_version`、`release_id`、来源 export、工具链 lock hash、Schema/prompt/search 版本、provider `adapter`、`profile_id`、requested `model_id`、`base_url_stable_id`（非秘密）、`secret_reference`、AI artifact/cache hash、覆盖审计和 quality report hash；manifest 记录的是 requested identity，不是第三方 response model echo，也不声称远端实际执行身份。manifest 只哈希功能输入/产物，`checksums.sha256` 另行覆盖 release 内其它普通文件。`adapter` 是 protocol lineage 字段，允许 `openai_responses` 或 `openai_chat_completions`；MCP 必须按它使用冻结 codec，不得读取 active profile 或跨协议 fallback。JSON、Schema 字段、metadata、manifest、current 和 release 中的 hash 字符串必须使用 `sha256:<64 lowercase hex>`；`checksums.sha256`/`schemas.sha256` 的行首 digest 不带前缀。`checksums.sha256` 格式为 `<64hex><two ASCII spaces><release-relative-posix-path>\n`，排除自身并按路径排序；`schemas.sha256` 格式为 `<64hex><two ASCII spaces><schema-id><two ASCII spaces><canonical-repository-relative-posix-path>\n`，按 schema ID UTF-8 bytes 排序，路径不声称位于 release。AI 产物冻结字段见 [`openai-provider.md`](openai-provider.md)。
+release manifest 必须记录精确 `minecraft_version`、`release_id`、来源 export、工具链 lock hash、Schema/prompt/search 版本、provider `adapter`、`profile_id`、requested `model_id`、`base_url_stable_id`（非秘密）、`secret_reference`、AI artifact/cache hash、覆盖审计和 quality report hash；manifest 记录的是 requested identity，不是第三方 response model echo，也不声称远端实际执行身份。manifest 只哈希功能输入/产物，`checksums.sha256` 另行覆盖 release 内其它普通文件。`adapter` 是 Studio/offline protocol lineage 字段，允许 `openai_responses` 或 `openai_chat_completions`；MCP 不读取该字段、active profile、Keyring 或 provider snapshot 作在线查询，也不执行 codec/provider fallback。JSON、Schema 字段、metadata、manifest、current 和 release 中的 hash 字符串必须使用 `sha256:<64 lowercase hex>`；`checksums.sha256`/`schemas.sha256` 的行首 digest 不带前缀。`checksums.sha256` 格式为 `<64hex><two ASCII spaces><release-relative-posix-path>\n`，排除自身并按路径排序；`schemas.sha256` 格式为 `<64hex><two ASCII spaces><schema-id><two ASCII spaces><canonical-repository-relative-posix-path>\n`，按 schema ID UTF-8 bytes 排序，路径不声称位于 release。AI 产物冻结字段见 [`openai-provider.md`](openai-provider.md)。
 
 ### 7.2 `current.json` 唯一指针
 
@@ -247,6 +251,6 @@ release manifest 必须记录精确 `minecraft_version`、`release_id`、来源 
 6. current 原子替换故障注入、release immutable、rollback 只切 pointer、cleanup 不删审计测试通过；
 7. 公开包只含代码、文档、Schema、空库和 fixture 生成器源码；真实图片/索引只存在用户本地 data root；
 8. 每个目标 Minecraft version 在首发检查中有至少两个独立完整 release，且发布门记录 `TWO_INDEPENDENT_RELEASES`；candidate-build gate 的 `excluded` qualification 审计已通过，activation gate 只复核其报告和 hash。
-9. D-052 只允许最小 focused tests：pointer/default/显式版本切换、路径逃逸与明显链接/reparse 拒绝、指定 index/按需 PNG 读取失败、outputSchema strict `oneOf`/structured-Text parity、55/15/30 秒 deadline、provider/client/preview bytes 复用和同步查询移出 event loop；不得新增真实基数 fixture、全量矩阵或新的 evidence report，也不得把这些测试写成 MCP 运行时完整性验证。
+9. D-052 只允许最小 focused tests；D-053 当前范围是 pointer/default/显式版本切换、路径逃逸与明显链接/reparse 拒绝、指定 index/按需 PNG 读取失败、keywords strict input、outputSchema strict `oneOf`/structured-Text parity、snapshot refresh、同步本地查询隔离和 zero writes。55/15/30 provider deadline、provider/client/preview reuse 与 online QuerySpec/rerank 不再是 MCP tests，也不得把这些测试写成 MCP 运行时完整性验证。
 
 详细测试命令和报告要求见 [`quality-and-testing.md`](quality-and-testing.md)；R1–R5 项只在对应实现和最小验收证据存在后标记完成，不提前建设额外证据层。

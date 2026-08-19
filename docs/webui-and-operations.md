@@ -14,6 +14,10 @@
 - [`quality-and-testing.md`](quality-and-testing.md)：服务层/路由层验收和发布门；
 - [`security-and-distribution.md`](security-and-distribution.md)：loopback、秘密、日志和分发边界。
 
+## D-053 search/provider scope amendment (current)
+
+WebUI/Studio continues to own provider profiles, `offline_annotation`, QuerySpec/rerank schemas, review and release lineage. The MCP process is separate and read-only: it does not initialize/call a provider and does not read Keyring, active profile or provider snapshot. The WebUI search test may still expose its own Studio QuerySpec/provider controls, but its MCP-equivalent path must use required `keywords`, local eligible/conditional recall, deterministic local ordering, Top-24/contact sheet, `hard_filters=[]`, `reranked_by_llm=false`, `score_source=local`, and successful empty results. Legacy `query`, `context`, and `query_spec` are not MCP compatibility inputs.
+
 ## 1. 角色、分层和安全边界
 
 WebUI 是本地单用户索引工作台，不是玩家账户系统、远程管理面板、LAN 服务、多租户服务或团队审批系统。默认架构 **MUST** 是 Python + FastAPI + Jinja2 + HTMX + SQLite + 本地文件 + 进程内有限 Worker。除非先更新 [`decisions.md`](decisions.md) 并取得项目所有者书面批准，**MUST NOT** 引入 Redis、Celery、Kafka、微服务、对象存储、向量数据库、独立搜索服务或其他常驻服务。
@@ -119,10 +123,10 @@ MVP **MUST NOT** 使用通用 SQLite migration framework。schema 在 R0 冻结�
 | `Pipeline` | run/pause/resume/status、heartbeat、失败恢复、手动逐批默认、计划确认后的有界顺序提交、单项/批量 Provider retry | 无限自动重试、无审计后台写入、越过 approved barrier 或超过冻结/全局上限的并发发送 |
 | `Review` | normal/high 队列、机器事实只读、语义编辑、声明式 override、skip | 修改机器事实、无原因 skip、静默发布 |
 | `Release` | check/build/activation-check/apply/rollback/cleanup、hash、审计 | 原地改 release、删除回滚证据 |
-| `Search test` | QuerySpec、hard filter、Top-24、`context.family` 的 R4 no-op/校验、联系表、降级结果 | 持久化测试 query、隐藏 warning、放宽 hard 或展示不存在的 family metadata |
+| `Search test` | 显式 `minecraft_version`、required `keywords`、本地召回、确定性排序、Top-24、联系表、`hard_filters=[]`、空结果成功 | 持久化测试 query、`query`/`context`/`query_spec` MCP compatibility、provider call、hard filtering、visual rerank 或自动换词 |
 | `Settings/Logs` | data root、日志级别/保留、脱敏日志 | 远程遥测、秘密查看、Token/成本仪表盘 |
 
-Provider 页面可以保存多个非活动 profile，但全局最多一个 active profile；每个 profile 必须显式选择 `openai_responses` 或 `openai_chat_completions`，并显示所选 endpoint、请求字段和隐私边界。页面必须显示简短警告：`model_id` 是发送的 requested identity，第三方 gateway 可能改写 response model；Blockpedia 不验证或声称远端实际模型身份。active 只控制 Studio 新写任务和新 release；既有 Responses profile/release 继续有效。release-bound MCP 使用已解析 release 冻结的 provider snapshot，不读取或比较可变 active profile。每个 profile 在 enable 前必须通过所选 adapter 的图片、strict Structured Outputs、错误分类、requested model/auth 和协议 wire 形状能力门；Responses 发送 `store=false`、Chat 省略 `store`，两者都不证明远端 retention。任一能力失败都禁止 enable；不得提供协议 fallback、retention/模型身份确认或绕过字段。具体字段见 [`openai-provider.md`](openai-provider.md)。
+Provider 页面可以保存多个非活动 profile，但全局最多一个 active profile；每个 profile 必须显式选择 `openai_responses` 或 `openai_chat_completions`，并显示所选 endpoint、请求字段和隐私边界。页面必须显示简短警告：`model_id` 是发送的 requested identity，第三方 gateway 可能改写 response model；Blockpedia 不验证或声称远端实际模型身份。active 只控制 Studio 新写任务和新 release；既有 Responses profile/release 继续有效。MCP 不读取 provider snapshot、Keyring 或 active profile 作在线查询。每个 profile 在 enable 前必须通过所选 adapter 的图片、strict Structured Outputs、错误分类、requested model/auth 和协议 wire 形状能力门；Responses 发送 `store=false`、Chat 省略 `store`，两者都不证明远端 retention。任一能力失败都禁止 enable；不得提供协议 fallback、retention/模型身份确认或绕过字段。具体字段见 [`openai-provider.md`](openai-provider.md)。
 
 页面初始 HTML 必须由服务端渲染。状态 hero 的可滚动区域必须展示完整的 11-stage timeline（顺序仍为 `PREPARE → IMPORT_EXPORT → VALIDATE_REGISTRY → VALIDATE_VARIANTS → VALIDATE_RENDERS → EXTRACT_FEATURES → AI_ANNOTATE → VALIDATE → HUMAN_REVIEW → BUILD_RELEASE → ACTIVATE_RELEASE`）。下方使用统一 live work 区域展示 heartbeat、item aggregates、current step、recent steps 和 latest allowlisted audit projection。浏览器刷新后以持久化的 `check_id`/run snapshot 恢复；不要求 `localStorage`。EventSource 是 live DOM 更新的权威来源，HTMX/普通页面刷新不得与其维护第二套状态。
 
@@ -410,19 +414,18 @@ cleanup 可以由 WebUI 人工删除未受保护的旧 release、workspace 临�
 
 ### 5.6 Search test route
 
-`POST /api/search-tests` 使用与 [`mcp-api.md`](mcp-api.md) `search_blocks` 等价的 input，加固定 `persist=false`；WebUI/API 必须显式提供 `minecraft_version`，release 只能解析 current：
+`POST /api/search-tests` 是 WebUI 的独立、非持久化搜索台；它必须显式提供 `minecraft_version`，并使用当前 MCP keywords contract 的 local-only path，加固定 `persist=false`。它不得调用 provider、读取 Keyring/provider snapshot 或接受旧 MCP `query`、`context`、`query_spec` 字段；release 只能解析 current：
 
 ```json
 {
   "minecraft_version": "26.2",
-  "query": "黄色的扁片方块，用于屋檐",
+  "keywords": ["yellow", "carpet", "roof trim"],
   "limit": 8,
-  "context": {"rerank": "auto"},
   "persist": false
 }
 ```
 
-响应必须显示 resolved `minecraft_version`、`resolved_release_id`、`manifest_sha256`、QuerySpec、来源、hard filter、Top-24、`context.family` 的 R4 no-op/校验结果、contact sheet mapping、本地/LLM 排序、warning、`reranked_by_llm` 和 MCP 等价结构化对象。`context.family=null` 或任意通过 input schema 的 string 都不改变候选顺序、不分组、不限额且不产生 family warning/metadata；非 string 且非 null 返回 JSON-RPC `-32602`，不展示或创建 family metadata。release 只能由服务解析 current，客户端不能指定历史 release。不得展示 Token/cost、完整 provider response、绝对路径或自动写生产索引；图片/联系表只在请求生命周期内构造，测试 API 不得持久化。
+响应必须显示 resolved `minecraft_version`、`resolved_release_id`、`manifest_sha256`、规范化 keywords query、`hard_filters=[]`、Top-24、contact sheet mapping、local ordering、warnings 和 `reranked_by_llm=false`。空结果为成功；release 只能由服务解析 current，客户端不能指定历史 release。不得展示 Token/cost、完整 provider response、绝对路径或自动写生产索引；图片/联系表只在请求生命周期内构造，测试 API 不得持久化。
 
 ## 6. 发布前置和错误码
 

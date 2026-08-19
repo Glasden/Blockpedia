@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -54,23 +53,17 @@ def _input_schema(tool_name: str) -> dict[str, Any]:
     schema = _common_input_schema()
     properties = schema["properties"]
     if tool_name == "search_blocks":
-        properties.update(
-            {
-                "query": {"type": "string", "minLength": 1, "maxLength": 2000},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 12, "default": 8},
-                "query_spec": load_schema("query-spec-output.v1"),
-                "context": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "family": {"type": ["string", "null"]},
-                        "compare_states": {"type": "boolean", "default": False},
-                        "rerank": {"enum": ["auto", "local_only", "required"], "default": "auto"},
-                    },
-                },
-            }
-        )
-        schema["required"] = ["query"]
+        properties.update({
+            "keywords": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 16,
+                "uniqueItems": True,
+                "items": {"type": "string", "minLength": 1, "maxLength": 64},
+            },
+            "limit": {"type": "integer", "minimum": 1, "maximum": 12, "default": 8},
+        })
+        schema["required"] = ["keywords"]
     elif tool_name == "get_block_details":
         properties["block_id"] = {"type": "string", "pattern": BLOCK_ID_PATTERN}
         schema["required"] = ["block_id"]
@@ -114,9 +107,12 @@ def _output_schema(tool_name: str) -> dict[str, Any]:
 
 
 def _tool(name: str) -> Tool:
+    description = f"Read-only Blockpedia {name} query."
+    if name == "search_blocks":
+        description += " Host should provide short keywords; default English canonical keywords best match the current index."
     return Tool(
         name=name,
-        description=f"Read-only Blockpedia {name} query.",
+        description=description,
         inputSchema=_input_schema(name),
         outputSchema=_output_schema(name),
     )
@@ -181,20 +177,8 @@ def make_handlers(data_root: str | Path | None) -> tuple[Any, Any]:
         return ListToolsResult(tools=list(TOOLS))
 
     async def call_tool(_ctx: Any, params: CallToolRequestParams) -> CallToolResult:
-        deadline = time.monotonic() + 55.0
         try:
-            remaining = max(0.0, deadline - time.monotonic())
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    service.call_tool,
-                    params.name,
-                    params.arguments or {},
-                    deadline=deadline,
-                ),
-                timeout=remaining,
-            )
-        except asyncio.TimeoutError:
-            result = _internal_result()
+            result = await asyncio.to_thread(service.call_tool, params.name, params.arguments or {})
         except (MCPInputError, MCPProtocolError) as exc:
             raise _invalid_params(str(exc))
         except Exception:

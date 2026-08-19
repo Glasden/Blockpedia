@@ -14,6 +14,10 @@
 - [`quality-and-testing.md`](quality-and-testing.md)：provider contract tests 和发布门；
 - [`security-and-distribution.md`](security-and-distribution.md)：秘密、最小披露和分发禁入物。
 
+## D-053 MCP boundary amendment (current)
+
+`OpenAIProvider` 以及本文的 `query_spec`/`visual_rerank` wire contracts 只服务 Studio `offline_annotation` 和历史离线 lineage。MCP runtime **MUST NOT** 初始化或调用 provider，不读取 Keyring、可变 active profile 或 provider snapshot 作在线查询，也不执行自然语言解析、QuerySpec 或 visual rerank。MCP 的 `keywords` 本地召回、确定性排序和 `score_source=local` 语义以 [`mcp-api.md`](mcp-api.md) 与 [`search-and-ranking.md`](search-and-ranking.md) 的 D-053 段落为准；本文其它 MCP 在线预算、请求复用和 host-supplied QuerySpec 段落均为历史 D-051/D-052 记录。
+
 ## 1. 冻结范围
 
 ### 1.1 唯一 provider、显式 adapter 和活动 profile
@@ -28,7 +32,7 @@ query_spec
 visual_rerank
 ```
 
-同一 release 的离线标注、QuerySpec 和视觉重排必须使用同一 release-bound configured/requested `model_id` 和同一 `adapter`。`model_id` 与 `adapter` 是运行时配置，不得硬编码；每个 run 的非秘密配置快照、每个 AI 产物和 `manifest.json` **MUST** 记录 requested `model_id`、`adapter`、`profile_id`、`base_url_stable_id`、`secret_reference`、prompt/schema/search 版本。成功响应中的 string `model` 只是 untrusted informational echo；它可以不同于 requested `model_id`，不得作为已验证远端模型身份、持久化值或替换来源。非活动 profile 不得用于 Studio 新写任务或新 release；但 release-bound MCP 必须使用 `manifest.json` 冻结的 provider snapshot，不读取或比较可变的 active profile。切换 Studio active profile、adapter 或 endpoint 不影响旧 release，release snapshot 也不算另一个 active profile。除合法 offline-concurrency-only profile edit 外，改变其中任一值后，旧缓存不得被当作新输入的成功结果；尚未完成的旧 cache/workspace 必须失效并重新运行，不做协议迁移。`secret_reference` 只保存引用，不保存 key。既有 `openai_responses` profile 和 release 继续有效。
+同一 release 的 Studio 离线标注、QuerySpec 和视觉重排必须使用同一 release-bound configured/requested `model_id` 和同一 `adapter`。`model_id` 与 `adapter` 是运行时配置，不得硬编码；每个 run 的非秘密配置快照、每个 AI 产物和 `manifest.json` **MUST** 记录 requested `model_id`、`adapter`、`profile_id`、`base_url_stable_id`、`secret_reference`、prompt/schema/search 版本。成功响应中的 string `model` 只是 untrusted informational echo；它可以不同于 requested `model_id`，不得作为已验证远端模型身份、持久化值或替换来源。非活动 profile 不得用于 Studio 新写任务或新 release；MCP 不读取 provider snapshot 作在线查询。切换 Studio active profile、adapter 或 endpoint 不影响旧 release，release snapshot 也不算另一个 active profile。除合法 offline-concurrency-only profile edit 外，改变其中任一值后，旧缓存不得被当作新输入的成功结果；尚未完成的旧 cache/workspace 必须失效并重新运行，不做协议迁移。`secret_reference` 只保存引用，不保存 key。既有 `openai_responses` profile 和 release 继续有效。
 
 ### 1.2 兼容 `base_url`
 
@@ -86,7 +90,7 @@ Provider profile 配置对象使用 JSON Schema Draft 2020-12，严格对象必�
 | `batch_size` | `offline_annotation` 为 8–16；在线阶段固定为 1 |
 | `concurrency` | `offline_annotation` 为整数 `1..5`、默认 `1`；`query_spec`/`visual_rerank` 必须为 `1`；计数 logical batch，不改变每 batch 最多两次总尝试 |
 
-profile 必须满足以下启用不变量：`adapter` 为两个显式枚举值之一、`enabled=true`、三个阶段使用同一 configured/requested `model_id`、能力状态严格为 `verified`、秘密可读取、实际 wire Schema ID/name 固定、Schema/prompt/search 版本存在，并且所选 adapter 的 endpoint/wire 能力门通过。成功响应的 model echo 不要求与 requested `model_id` 相等；缺失或非 string 仍必须 fail closed。保存非活动 profile 不需要探测，但不得用于 Studio 新写任务或新 release；release-bound MCP 例外使用已解析 release 冻结的 provider snapshot，不读取或比较可变 active profile。一个 profile 被启用后不得再启用第二个；变更活动 profile、adapter 或 endpoint 必须停止新 AI job，并在新 run 中使用新快照。只改变合法 `offline_annotation.concurrency` 的 profile edit 是唯一例外：保留 `verified`/`enabled` 且不需要 reprobe；`query_spec`/`visual_rerank` 仍固定为 `1`，其它配置变化继续沿用既有 invalidation。
+profile 必须满足以下 Studio 启用不变量：`adapter` 为两个显式枚举值之一、`enabled=true`、三个 Studio 阶段使用同一 configured/requested `model_id`、能力状态严格为 `verified`、秘密可读取、实际 wire Schema ID/name 固定、Schema/prompt/search 版本存在，并且所选 adapter 的 endpoint/wire 能力门通过。成功响应的 model echo 不要求与 requested `model_id` 相等；缺失或非 string 仍必须 fail closed。保存非活动 profile 不需要探测，但不得用于 Studio 新写任务或新 release；MCP 不读取或比较 provider snapshot、Keyring 或可变 active profile。一个 profile 被启用后不得再启用第二个；变更活动 profile、adapter 或 endpoint 必须停止新 AI job，并在新 run 中使用新快照。只改变合法 `offline_annotation.concurrency` 的 profile edit 是唯一例外：保留 `verified`/`enabled` 且不需要 reprobe；`query_spec`/`visual_rerank` 仍固定为 `1`，其它配置变化继续沿用既有 invalidation。
 
 ### 2.2 配置来源和秘密
 
@@ -109,7 +113,7 @@ API key、Authorization、完整 header、完整 provider request/response、图
 
 ### 3.1 两种协议的请求和 wire codec
 
-Studio 三类新写调用都必须使用同一个活动 profile、同一个 `adapter`、configured/requested `model_id` 和 `base_url`；release-bound MCP 的 QuerySpec/视觉重排必须使用该 release 冻结的同一个 provider snapshot/adapter/requested model，不读取或比较可变 active profile。两种协议都使用同一组 wire Schema ID/name、strict 本地校验、ID/机器事实校验、最小披露和两次总尝试预算。下方 `schema` 不是任意 Draft 2020-12 的声明：本地完整 Schema 可使用 Draft 2020-12，实际 wire Schema 必须是所选 endpoint 支持的 strict 子集。
+Studio 三类新写调用都必须使用同一个活动 profile、同一个 `adapter`、configured/requested `model_id` 和 `base_url`；MCP 不执行其中的 QuerySpec/视觉重排调用。两种协议都使用同一组 wire Schema ID/name、strict 本地校验、ID/机器事实校验、最小披露和两次总尝试预算。下方 `schema` 不是任意 Draft 2020-12 的声明：本地完整 Schema 可使用 Draft 2020-12，实际 wire Schema 必须是所选 endpoint 支持的 strict 子集。
 
 ```json
 {
@@ -168,11 +172,11 @@ Studio 三类新写调用都必须使用同一个活动 profile、同一个 `ada
 
 图片只能是为当前阶段裁剪的 PNG 或联系表；请求文本只能包含当前查询、短编号、当前 `prompt_version` 允许的必要机器元数据、Schema 允许的 bounded semantic fields 和约束。不得发送 SQLite、完整导出包、无关方块、文件系统路径、日志、人工秘密或 API key。`prompt.v1` 和其它历史 prompt version string 保持既有 legacy text；只有 exact `prompt.v2` 使用本节后述 slim model-visible projection。
 
-#### 3.1.1 MCP 在线查询预算与请求复用（D-052）
+#### 3.1.1 MCP 在线查询预算与请求复用（D-052 historical, superseded by D-053）
 
-MCP `search_blocks` 的外层 hard deadline 为 **55 秒**；进入最后 **5 秒** 后不得启动新的 provider 请求。QuerySpec stage 总预算为 **15 秒**（首次最多 10 秒、最多一次重试最多 5 秒），visual rerank stage 总预算为 **30 秒**（首次最多 20 秒、最多一次重试最多 10 秒）。每次实际 timeout 必须取 profile 配置、stage 剩余预算和 request 剩余时间的最小值；小于 1 秒时不得发送。每个 logical provider request 最多两次尝试且无 protocol/model/profile fallback；`auto` 失败走确定性本地降级，`required` 失败使用 `RERANK_REQUIRED_UNAVAILABLE`。
+历史 D-052 曾为 MCP `search_blocks` 定义 55/15/30 秒 provider budget、retry 和 fallback；D-053 已删除该 MCP provider lane。当前 MCP 不发送 provider request，也没有 deadline/retry/reuse budget。
 
-同一 MCP `search_blocks` 请求必须复用一个 provider/client 和已构造的 preview bytes；提供有效 host-supplied QuerySpec 时只省略 QuerySpec provider call，visual rerank 仍沿用该请求上下文。同步 provider/SQLite 查询工作必须移出 event loop。该在线预算只作用于 MCP 请求生命周期，不新增 profile required field、Schema、SQL、migration、依赖、服务、CLI 或 release manifest 字段。
+历史 provider/client/preview reuse 规则不适用于 MCP。D-052 保留的同步本地查询移出 event loop、snapshot cache 和 outputSchema `oneOf` 仅作为实现边界/历史 focused evidence。
 
 ### 3.2 `offline_annotation`
 
@@ -228,11 +232,11 @@ tile_metadata: [{"tile_id": "<existing tile id>",
 
 `query_spec` 的输出 Schema 和语义由 [`search-and-ranking.md`](search-and-ranking.md) 定义。真实 wire Schema 固定为 `query-spec-output.v1`，不作为持久记录。provider 只负责返回严格 `QuerySpec`，不得返回候选 `block_id`、SQL、路径或发布事实。输出的 `source` 必须标识 `llm`；本地合并和硬过滤由应用完成。所有 wire 字段 required，所有 object `additionalProperties=false`，只使用探测通过的子集。
 
-MCP `search_blocks` 的 D-051 窄例外允许调用方直接提供一个完整的 `query-spec-output.v1` 对象。该对象是不可信、临时输入，不是 provider response、provider artifact 或 provider identity；`source=llm` 只标识语义生产，不证明 Blockpedia 验证了 provider/model，也不证明本次执行了 server-side provider call。它只抑制 server-side QuerySpec generation，不能选择或改写 release-bound `adapter`、`profile_id`、requested `model_id`、`base_url` 或 `secret_reference`，也不得写入 cache、workspace、release 或日志。
+历史 D-051 曾允许 MCP `search_blocks` 接收 host-supplied `query-spec-output.v1`；D-053 已删除该输入。该 Schema 仍可用于 Studio provider wire 和历史 lineage，但不属于 MCP runtime。
 
-该 host input 仍必须由本地完整 Schema strict/fail-closed 校验，包括 unknown nested fields；shape 错误按 MCP JSON-RPC `-32602`，语义/invariant 错误按既有 `QUERY_INVALID`，不能隐式 fallback 到 QuerySpec provider 请求。`local_only` 仍禁止所有 provider call；`auto`/`required` 只有在 host spec 已消费后，才可按既有 release snapshot 仅执行 visual rerank，既有能力、secret、warning、local downgrade 和 required fail-closed 规则不变。
+上述 host input、`local_only`/`auto`/`required` 和 MCP visual-rerank 语义已 superseded；当前 MCP 只校验 keywords，并执行 local recall/ranking。
 
-MCP 必须先执行 D-051 的有限语义不变量：请求版本与非空 `hard.minecraft_version.value` 不一致、canonical boolean hard assertions 的允许集合交集为空（包括 `behaviors.transparent` 与 `transparency` alias 冲突），或 `needs_user_choice` 与 `ambiguities` 不一致时，返回 `QUERY_INVALID`；具体规则为 ambiguities 非空则必须为 `true`、为空则必须为 `false`，`suggested_followups` 不强制非空。未确认 host hard 只从 effective spec 删除并可产生 warning，不是 `QUERY_INVALID`，soft disagreement 也不是。原始 validated canonical host object 只留在内存中用于 identity/warning，不能发送给 provider、持久化、记录、缓存或 output。visual rerank 的 provider request 只能接收 effective sanitized QuerySpec：本地确认 hard 与 explicit hard 已合并、未确认 hard 已删除、`soft.avoid_for` 已设为 `[]`；host input 本身不能产生 rerank 标志或 provider/model 证据。
+上述 D-051 invariants 保留为 Studio/history provider 记录，不是当前 MCP input/error contract。
 
 ### 3.4 `visual_rerank`
 
@@ -409,7 +413,7 @@ MCP D-051 host-supplied QuerySpec 不构成 provider artifact，且不得写入�
 实现可提供 fake selected-adapter endpoint 或脱敏协议 fixture 验证请求形状和客户端分类，但 fake endpoint 本身不能证明生产 endpoint 的 retention policy；还必须验证：
 
 1. 三阶段 × 两种 adapter 的六种请求形状均有覆盖：Responses `POST /responses`、`store=false`、`input_text/input_image`、`text.format`；Chat `POST /chat/completions`、省略 `store`、`text/image_url`、`response_format`。
-2. 两种 adapter 都使用同一个 configured/requested `model_id`、同三份 Schema/name、图片输入、strict output 和本地 ID/机器事实校验；`offline_annotation`、`query_spec`、`visual_rerank` 三个阶段均必须发送非空 PNG。成功响应必须有 string `model`，但不同 echo 不失败、不持久化且不替换 requested `model_id`；不存在 `json_object`、自由文本或协议 fallback 正常路径。MCP host-supplied QuerySpec 只抑制 `query_spec` provider request，不改变上述 Studio/provider 请求规则，也不构成 provider/model evidence。
+2. 两种 adapter 都使用同一个 configured/requested `model_id`、同三份 Schema/name、图片输入、strict output 和本地 ID/机器事实校验；`offline_annotation`、`query_spec`、`visual_rerank` 三个 Studio/history provider 阶段均必须发送非空 PNG。成功响应必须有 string `model`，但不同 echo 不失败、不持久化且不替换 requested `model_id`；不存在 `json_object`、自由文本或协议 fallback 正常路径。MCP 不调用这些 provider stages，也不构成 provider/model evidence。
 3. Probe 只验证选定 adapter：Responses 发送 `store=false` 但不检查 store/model echo equality；Chat 检查请求没有 `store` 且不检查 model echo equality；两者都验证 image、strict、错误分类、requested model/auth，并不宣称 retention 或远端模型身份已验证。
 4. Chat 仅按 `choices[0]`、`refusal`、`finish_reason=stop` 和 JSON string content 解析；其它 incomplete/failure 分支不得正常 fallback。SDK retry 加应用 retry 的总尝试数不超过 2。
 5. profile 只有一个活动 model/adapter；改变 adapter、model、base URL/Schema/semantic constraints 会改变 cache key 和 run snapshot；协议不得自动切换。
@@ -419,6 +423,6 @@ MCP D-051 host-supplied QuerySpec 不构成 provider artifact，且不得写入�
 9. 两种 adapter 的 `prompt.v2` model-visible text 只含 trusted instruction、contact-sheet tile labels、`tile_id`/`variant_id` 和去重有界 `geometry_classes`；local envelope/hash checks 仍使用 full metadata。`prompt.v1` 与其它历史 version string 保持当前 legacy behavior，source change 触发 TOCTOU，v2 使用 fresh run。
 10. malformed JSON、missing required、wrong type、additional property 和 duplicate-array 的 final failure 只通过 internal `ProviderResult`/existing review evidence 保留六个 allowlisted diagnostic fields；successful repair 不保留 diagnostic，DB/API/UI 不出现 raw output/value/prefix/secret/path-like value。
 11. Provider-side/Worker-side full validation、ID/hash/cache/record/variant/`VALIDATE`/release gates、local uniqueItems、max-one-retry 和现有 Provider/Worker/release acceptance 不因 v2 或 diagnostic 放宽；prompt size comparison 仅作为 evidence。
-12. D-052 MCP focused tests 只验证 55 秒外层 deadline、最后 5 秒不启动新 provider 请求、15 秒 QuerySpec/30 秒 visual rerank stage budgets、timeout 取 profile/stage/request 剩余时间最小值、少于 1 秒不发送、最多两次尝试且无 fallback、同请求 provider/client/preview bytes 复用及同步查询移出 event loop；不新增真实基数 fixture、全量矩阵或 evidence report。
+12. D-052 MCP focused tests 的 55/15/30 provider budget、retry/reuse 和在线 QuerySpec/rerank cases 仅为历史 evidence；当前 D-053 MCP focused tests 只验证 keywords local path、zero provider calls、snapshot refresh、event-loop isolation、output parity 和 zero writes，不新增真实基数 fixture、全量矩阵或 evidence report。
 
 精确测试分层和目标平台命令以 [`quality-and-testing.md`](quality-and-testing.md) 为准；本文件不把不存在的测试报告、真实数据或 provider 响应宣称为已完成。

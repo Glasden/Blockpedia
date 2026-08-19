@@ -10,6 +10,10 @@
 - [`openai-provider.md`](openai-provider.md)、[`search-and-ranking.md`](search-and-ranking.md)、[`mcp-api.md`](mcp-api.md)、[`webui-and-operations.md`](webui-and-operations.md)；
 - [`security-and-distribution.md`](security-and-distribution.md)。
 
+## D-053 focused MCP acceptance (current)
+
+R4 MCP tests cover only the current local path: strict `keywords` array validation (1–16 items, trim 1–64 Unicode characters, no empty/duplicate items), rejection of legacy `query`/`context`/`query_spec` with JSON-RPC `-32602`, pointer-resolved eligible/conditional local FTS5 trigram or normalized-LIKE union recall, deterministic local ordering, Top-24/contact-sheet limits, `hard_filters=[]`, `reranked_by_llm=false`, `score_source=local`, and successful empty results. Tests also cover zero provider calls and no Keyring/provider-snapshot reads, pointer snapshot cache refresh, `to_thread`/event-loop isolation, strict outputSchema `oneOf` parity, and zero writes. D-052 55/15/30 provider deadline, provider retry/reuse, QuerySpec and visual-rerank cases are historical focused evidence only and MUST NOT be used as current MCP acceptance criteria.
+
 当前仓库已完成 R0 契约、Schema/fixture 轻量验收、依赖锁和工具链骨架；R1、R2 已有 Windows 证据关闭。Linux CPython/Web、Linux MCP、Linux Java 25/runtime/exporter、Linux wheel/ABI 和最终双平台源码/运行时复现统一保留至 R5；产品 release 尚未开始。本文件后续验收只在对应实现阶段执行，不作为 R0-R4 的提前 blocker。
 
 ## 1. MVP 质量边界
@@ -121,30 +125,28 @@ Phase 1 的当前渲染策略为 `render.v2`；未修改的历史 `render.v1` re
 
 Provider 测试必须使用本地 fake endpoint 或脱敏协议 fixture，不发送真实 key，分别覆盖两种显式 adapter 的 wire 形状和共享语义：
 
-1. `offline_annotation`、`query_spec`、`visual_rerank` 均使用同一个 Studio active profile 的同一个 configured/requested `model_id` 和所选 `adapter`；成功响应必须有 string `model`，但 model echo mismatch 不失败、不持久化且不替换 requested `model_id`；可保存多个非活动 profile，但全局最多一个 active；release-bound MCP 使用 release 冻结 snapshot，不读取或比较可变 active profile；
+1. `offline_annotation`、`query_spec`、`visual_rerank` 均使用同一个 Studio active profile 的同一个 configured/requested `model_id` 和所选 `adapter`；成功响应必须有 string `model`，但 model echo mismatch 不失败、不持久化且不替换 requested `model_id`；可保存多个非活动 profile，但全局最多一个 active；MCP 不读取或比较 provider snapshot、Keyring 或可变 active profile；
 2. 两种 adapter 都发送图片、strict JSON Schema 和稳定错误分类；Schema ID/name 分别为 `annotation-batch-output.v1`/`annotation_batch_output_v1`、`query-spec-output.v1`/`query_spec_output_v1`、`rerank-output.v1`/`rerank_output_v1`，没有 `json_object`/自由文本正常 fallback。Responses 使用 `text.format`、`input_text`/`input_image`；Chat 使用 `response_format.json_schema`、`text`/`image_url`；
 3. Responses wire 必须是 `POST /responses` 并发送 `store=false`；Chat wire 必须是 `POST /chat/completions` 且省略 `store`。能力 probe 只验证所选 adapter 的 endpoint、图片、strict output、错误分类和 string model structural validity；probe 不验证 model echo equality、第三方实际模型身份或远端 retention，不能自动改用另一协议；
 4. R3 provider 请求的总尝试最多 2 次；仅已观察的可恢复错误最多补试一次，不能据此为 R1 exporter 预建通用重试框架；
 5. Chat 只接受 `choices[0]` 的非流式 JSON 字符串内容、`finish_reason=stop` 和无 refusal；Responses/Chat 的 refusal、incomplete、认证、权限、能力缺失和不可修复请求错误不重试；
-6. 离线最终失败创建 high `needs_review`；在线最终失败保留本地结果、warning 和 `reranked_by_llm=false`；
+6. 离线最终失败创建 high `needs_review`；Studio 在线历史 lane 最终失败可保留本地结果；MCP 没有在线 provider failure/degrade path，始终 local。
 7. usage、完整 response、图片、Authorization、key、绝对路径不进入返回对象、SQLite 或日志；只留脱敏 request ID；
 8. cache key 缺任一字段即失败：`image_hash`、`machine_metadata_hash`、`adapter`、`prompt_version`、`model_id`、`schema_version`、`base_url_stable_id`、`stage`；
-9. artifact 与 adapter/profile/requested model/prompt/wire schema/search/base URL stable ID/secret reference、input hash 和 cache key 在 release freeze 中可复核；response model echo 不进入 artifact、cache、run 或 release lineage；不出现 Token usage、费用或预算字段；Keyring/env 无法解析时在线只本地降级并 warning，不写状态。
+9. artifact 与 adapter/profile/requested model/prompt/wire schema/search/base URL stable ID/secret reference、input hash 和 cache key 在 release freeze 中可复核；response model echo 不进入 artifact、cache、run 或 release lineage；不出现 Token usage、费用或预算字段；MCP 不读取 Keyring/env，也不执行 provider 降级。
 
 ## 6. R4 搜索和排序 contract tests
 
 使用原创小型 release fixture 验证：
 
-1. R4 fixture 使用通过 build/activation gate 的 pointer-resolved release；fresh `release-index.v2.sql` 的资格由 gate 负责，MCP 运行时不检查 index format，也不对历史 v1 index 声称运行时完整性失败。MCP 省略版本使用 `default_minecraft_version` 的 current；显式 `minecraft_version` 必须匹配严格版本 pattern，malformed input 为 JSON-RPC `-32602`，格式合法但未发布版本为 `VERSION_NOT_AVAILABLE` 且不回退；WebUI/API 显式版本只查 current；历史 `release_id` selector 被拒绝；release-bound provider snapshot 使用冻结 adapter/profile/model/base URL/secret reference，不能读取或比较可变 active profile；
-2. pointer 解析出的版本/current release、legal state、资格、明确排除行为、明确必须支撑/透明/发光/方向/形状先于评分；MCP 不在运行时重新验证 release 完整性；`unknown` 不能满足硬约束；
-3. FTS5 `trigram` 与无 trigram 时 `normalized_like` fallback 均覆盖名称/同义词、颜色、几何、用途、风格和行为；
-4. `search-ranking.v1` 权重精确为 shape `.35`、color `.30`、use `.15`、name-synonym `.10`、style `.05`、behavior `.05`，未出现维度按规则归一化；
-5. Top-24 后执行确定性 family no-op：`context.family=null` 或任意通过 input schema 的 string 都不分组、不限额并保持稳定顺序，再生成 8–12 联系表，且不产生 family warning/metadata；非 string 且非 null 的 `context.family` 返回 JSON-RPC `-32602`；`compare_states`/`compare_blocks` 不引入 family 分组、限制或 family metadata；
-6. 相同 release、QuerySpec、config 和 fixture 的排序、candidate ID、tile mapping 可重复；
-7. provider 不可用时 `rerank=auto` 必须本地降级、返回 warning、`isError=false` 和 `reranked_by_llm=false`，不放宽 hard；`rerank=required` 必须以顶层 `RERANK_REQUIRED_UNAVAILABLE` 失败，底层 provider code 只能位于 `details.provider_error_code`；
-8. 正常硬过滤空集是 `isError=false` 的空成功结果，含硬过滤原因和建议追问；非法 `block_id`、compare 数量、`minecraft_version` 和其它 input shape 使用 JSON-RPC `-32602`，不产生 `mcp-error.v1` 工具结果；格式合法但未知 block/release 等工具执行错误使用 `isError=true`；歧义含 `needs_user_choice`、歧义点、建议追问；
-9. 未验证视觉条件使用 warning/`visual_constraints_verified=false`，不伪称满足；
-10. LLM 不能新增、删除、改写候选 ID、block/state、图片或机器事实。
+1. R4 fixture 使用通过 build/activation gate 的 pointer-resolved release；MCP 运行时不检查 index format 或其它 build-time integrity。MCP 省略版本使用 default current；显式 malformed/unknown/unpublished version 按既有 `-32602`/`VERSION_NOT_AVAILABLE` 规则失败，不回退；历史 `release_id` selector 被拒绝；MCP 不读取 provider snapshot、Keyring 或 active profile；
+2. `search_blocks` 严格验证 required keywords：1–16 项、trim 后 1–64 Unicode 字符、禁止空项/重复项；旧 `query`/`context`/`query_spec` 和未知字段为 JSON-RPC `-32602`；
+3. pointer 解析出的 release 只对 `eligible`/`conditional` 候选执行 FTS5 `trigram` 或 normalized-LIKE keyword recall，并做确定性 local ordering；
+4. MCP 不执行 `search-ranking.v1` QuerySpec 权重、hard filter、family、QuerySpec 或 provider rerank；Top-24 后按 limit 生成 contact sheet；
+5. 相同 release、normalized keywords 和 fixture 的 local ordering、candidate ID、tile mapping 可重复；
+6. provider 永不调用；candidate `score_source=local`、`reranked_by_llm=false`、`hard_filters=[]`；
+7. 正常关键词空集是 `isError=false` 的成功结果；非法 input shape 使用 JSON-RPC `-32602`，格式合法但未知 block/release 等工具执行错误使用 `isError=true`；
+9. MCP 只读取 release 中的 ID/state/image mapping，不新增、删除或改写候选、机器事实或图片映射。
 
 ## 7. R4 MCP protocol tests
 
@@ -157,7 +159,7 @@ Provider 测试必须使用本地 fake endpoint 或脱敏协议 fixture，不发
 5. `index_info` 无图；search/compare 有稳定编号 PNG 联系表 ImageContent；details 有四视角 PNG；
 6. 图片 metadata 包含 ID、MIME、尺寸、hash、purpose、content index 和 mapping，不含绝对路径；
 7. 工具错误 `isError=true` 与成功降级 `isError=false + warnings` 分层；协议错误使用 JSON-RPC error；
-8. current/default version、strict version pattern、显式未发布版本、禁止历史 selector、未知 ID、空搜索、null 与 string `context.family` 的成功 no-op、非 string 且非 null family 的 JSON-RPC `-32602`、pointer/path/index/按需图片读取失败符合 [`mcp-api.md`](mcp-api.md)；不把 manifest/checksum/schema/quality/index format/PNG 全量验证加入 MCP runtime test；
+8. current/default version、strict version pattern、显式未发布版本、禁止历史 selector、未知 ID、keywords 空搜索、旧字段/未知字段 `-32602`、pointer/path/index/按需图片读取失败符合 [`mcp-api.md`](mcp-api.md)；不把 manifest/checksum/schema/quality/index format/PNG 全量验证加入 MCP runtime test；
 9. MCP 进程执行全部路径后不写 SQLite、文件、cache、logs 或 current；联系表和 ImageContent 使用内存 bytes，provider 降级也成立；允许进程内 snapshot cache，但不产生持久化写入。
 
 ### 7.1 D-052 最小 focused acceptance
@@ -167,8 +169,8 @@ D-052 只允许最小 focused tests，不新增真实基数 fixture、全量矩�
 1. 四工具 advertised `outputSchema` 是 strict `oneOf`，分别组合既有成功 Schema 与 `mcp-error.v1`；成功/错误的 `isError` 分层、structuredContent/TextContent parity 和既有 Schema 校验保持一致。
 2. MCP 读取/解析 `current.json`，正确执行 default/显式版本和严格 tool input/version 语义；下一请求观察 pointer 切换并载入新 `minecraft_version+release_id` snapshot；不接受历史 `release_id` selector。
 3. 相对路径防逃逸、明显 symlink/junction/reparse 拒绝、指定 index 打开失败、实际响应 PNG 按需读取失败均 fail closed，且不回退其它 release；测试不得把这些安全边界写成 release 完整性证明。
-4. `search_blocks` 55 秒外层 deadline、最后 5 秒禁止新 provider 请求、QuerySpec 15 秒（10+5）、visual rerank 30 秒（20+10）、实际 timeout 取 profile/stage/request 剩余时间最小值、少于 1 秒不发送、最多两次尝试且无 fallback。
-5. 单请求复用 provider/client 与 preview bytes，同步 provider/SQLite 查询工作移出 event loop；`auto` 确定性降级，`required` 使用 `RERANK_REQUIRED_UNAVAILABLE`。
+4. 当前 D-053 MCP focused tests 不发送 provider request，因此不测试 55/15/30 deadline、provider retry/reuse 或 `auto`/`required`。
+5. 测试 pointer snapshot refresh、同步本地查询移出 event loop、strict output parity 和 zero writes；这些是 D-052 保留的最小 focused boundary。
 
 这些 focused tests 不验证、不声称 MCP 运行时验证 immutable、manifest hash、checksums、schema inventory、quality report、index format 或 PNG/index projection 全量完整性；构建后离线篡改/损坏只有实际打开、SQLite 查询或 PNG 读取时可能暴露。没有实现、命令和报告证据时，不得将本节写入路线图 `[x]`。
 
@@ -185,7 +187,7 @@ D-052 只允许最小 focused tests，不新增真实基数 fixture、全量矩�
 - `running` 超时由显式 recover 才改变且只作用于未完成 job，成功 job 不重复；provider 不无限重试；
 - normal/high review、机器事实只读、override allowlist、operator/time/reason/source version/target ID audit；
 - candidate-build check/build 只验证 R0–R3 及 candidate 前置；activation-check/apply 才验证 R0–R4、activation gate、用户确认、`set_as_default` 和 current 原子替换；第一 release 可 build 不可 apply、不可变保护、每版本至少两个保底 release、rollback hash 不变；
-- search test 与 MCP 等价结构化对象、不持久化 query、显示 warning 和 `reranked_by_llm=false`；
+- search test 使用显式版本和 keywords local-only path，与 MCP 输出保持结构化字段 parity；不持久化 query，不调用 provider，空结果成功并显示 `hard_filters=[]`、`reranked_by_llm=false`；
 - 页面不存在 Token/usage/cost/budget 字段；日志为零遥测且脱敏 key、Authorization、图片、完整 response、绝对路径。
 
 ### 8.2 原子发布故障注入

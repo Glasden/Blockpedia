@@ -57,12 +57,13 @@
 | D-044 | 2026-08-16 owner-approved：Phase 1 有界批次并发、发送线性化、进程级共享 executor 与 pristine same-run reconfiguration | 仅 supersede D-040/D-041 的 send concurrency=`1`；`offline_annotation` 为整数 `1..5`、默认 `1`，`query_spec`/`visual_rerank` 固定 `1`；保留 logical-batch 两次总尝试、无 fallback、顺序授权、TOCTOU、审计、恢复和既有数据契约；不新增服务、队列、per-run executor、adaptive concurrency、SQL/Schema/migration、状态、依赖、CLI 或 retry 语义 |
 | D-045 | 2026-08-17 owner-approved：精确 32 个 standing/wall banner 的 targeted complete replacement export 与当前 run refresh；`camera.v2`/banner-camera policy；混合 export lineage 与最小增量 AI 工作 | 仅为本次精确操作 supersede D-043 的 camera category-invariance 与 historical-run no-refresh boundary；其它 D-043/D-044 边界、`render.v2`、完整导出校验和既有数据契约均保持有效；不新增 partial package、Schema ID、迁移、服务、队列、产品 CLI 或通用 patch framework |
 | D-046 | 2026-08-18 owner-approved：纠正 MCP JSON-RPC 错误分类；未知 RPC method 为 `-32601`，合法 `tools/call` 中的未知 tool name 为 Invalid Params `-32602` | 只修正协议错误映射和验收表述；不改变工具集合、transport、Schema、服务、CLI、持久化、release 语义或只读边界 |
-| D-047 | 2026-08-18 owner-approved：保持 `mcp-error.v1` 既有 `error_code` enum 不变，纠正 MCP 输入、空结果和 provider 降级的错误分层 | 输入 shape 错误使用 JSON-RPC `-32602`；正常空搜索和 `rerank=auto` provider failure 为成功 warning；`rerank=required` 仅用顶层 `RERANK_REQUIRED_UNAVAILABLE`，provider code 仅在 `details.provider_error_code`；不新增 Schema 或 fixture |
+| D-047 | 2026-08-18 owner-approved（provider/rerank 部分已由 D-053 supersede）：保持 `mcp-error.v1` 既有 `error_code` enum 不变，纠正 MCP 输入、空结果和 provider 降级的错误分层 | 历史输入/错误分层保留供审计；D-053 保留正常空搜索成功和本地 `reranked_by_llm=false`，删除 provider/rerank 输入、降级和调用；不新增 Schema 或 fixture |
 | D-048 | 2026-08-18 owner-approved：为未来 R4/R5 candidate 增加 fresh-only `release-index.v2.sql`，保留 R3 `release-index.v1.sql` 历史证据但禁止 activation 使用 | v2 保留 v1 scalar/indexed columns 并增加 validated record/feature JSON columns，`schema_meta.format_version=2`；只 fresh build、不迁移/改写旧 release；MCP 运行时不验证 index format，index 版本资格只由 build/activation gate 负责；不新增 JSON Schema、服务、CLI 或状态 |
 | D-049 | 2026-08-18 owner-approved：MCP tool input 的 `minecraft_version` 改用严格版本格式 pattern，不再用 `const: 26.2` | 格式非法返回 JSON-RPC `-32602`；格式合法但未发布版本返回 `VERSION_NOT_AVAILABLE` 且不回退；不增加当前版本支持或改变 Minecraft 26.2 baseline |
-| D-050 | 2026-08-18 owner-approved；2026-08-19 owner-approved amendment：当前 R4 的 `context.family` 没有 schema-owned `family_id`/family catalog；family dedupe 为确定性 no-op | `context.family=null` 或任何通过 input schema 的 string 都不分组、不限额且保持 Top-24 后稳定顺序；不产生 family warning/metadata；不得推断/创建 family ID；非 string/null 仍是 JSON-RPC `-32602` input shape error；不新增 Schema、字段、数据、服务、CLI 或 migration |
-| D-051 | 2026-08-19 owner-approved：MCP `search_blocks` 可接收可选、顶层、host-supplied `query_spec`，作为不可信且临时的 QuerySpec 输入 | 输入必须完整符合既有 `query-spec-output.v1`；严格/未知字段失败使用 JSON-RPC `-32602`，语义/不变量失败保持 `QUERY_INVALID`；有效输入只抑制服务端 QuerySpec 生成，不持久化、不选择 provider identity；本地 hard 约束、`local_only`、release-bound visual rerank、四工具/stdio/只读边界和既有重排降级不变 |
-| D-052 | 2026-08-19 owner-approved：MCP 采用“仅构建时验证”的运行时完整性边界，并冻结查询 deadline、广告 outputSchema、provider 复用和最小 focused tests | release 完整性、Schema/checksum/manifest/quality/index/PNG 预验证只属于 WebUI build/activation gate；MCP 运行时只解析 current/pointer、执行严格 input/version 语义、做相对路径安全与明显链接/reparse 拒绝、打开指定 index 并按需读取响应 PNG，失败即 fail closed 且不回退；可缓存 `minecraft_version+release_id` snapshot，pointer 变化时下一请求换载；四工具 advertised `outputSchema` 用 strict `oneOf` 组合既有成功 Schema 与 `mcp-error.v1`，不新增 Schema ID；`search_blocks` 外层 55 秒且最后 5 秒不得启动新的 provider 请求，QuerySpec 为 15 秒（10+5），visual rerank 为 30 秒（20+10），每个 logical request 最多两次尝试且无 fallback；单请求复用 provider/client/preview bytes，同步查询移出 event loop；不新增服务、依赖、SQL、migration、tool、transport 或 release manifest 字段 |
+| D-050 | 2026-08-18 owner-approved；2026-08-19 owner-approved amendment：当前 R4 的 `context.family` 没有 schema-owned `family_id`/family catalog；family dedupe 为确定性 no-op（当前 `search_blocks` input 部分已由 D-053 supersede） | `context.family=null` 或任何通过 input schema 的 string 都不分组、不限额且保持 Top-24 后稳定顺序；不产生 family warning/metadata；不得推断/创建 family ID；非 string/null 仍是 JSON-RPC `-32602` input shape error；不新增 Schema、字段、数据、服务、CLI 或 migration |
+| D-051 | 2026-08-19 owner-approved（整体已由 D-053 supersede）：MCP `search_blocks` 可接收可选、顶层、host-supplied `query_spec`，作为不可信且临时的 QuerySpec 输入 | 历史契约保留供审计；D-053 删除该输入及其 server-side QuerySpec、hard parser、visual rerank 和 provider runtime，不提供兼容层 |
+| D-052 | 2026-08-19 owner-approved；provider/deadline/request-provider-reuse 部分已由 D-053 supersede：MCP 采用“仅构建时验证”的运行时完整性边界，并冻结广告 outputSchema 和最小 focused tests | release 完整性、Schema/checksum/manifest/quality/index/PNG 预验证只属于 WebUI build/activation gate；MCP 运行时只解析 current/pointer、执行严格 input/version 语义、做相对路径安全与明显链接/reparse 拒绝、打开指定 index 并按需读取响应 PNG，失败即 fail closed 且不回退；可缓存 `minecraft_version+release_id` snapshot，pointer 变化时下一请求换载；四工具 advertised `outputSchema` 用 strict `oneOf` 组合既有成功 Schema 与 `mcp-error.v1`，不新增 Schema ID；D-052 的 build-time-only integrity、snapshot cache、to_thread/event-loop isolation 和 outputSchema `oneOf` 仍保留 |
+| D-053 | 2026-08-20 owner-approved amendment：彻底简化 MCP 搜索，MCP runtime 完全不初始化/调用 AI provider；D-051 整体 supersede，D-052 仅 provider/deadline/request-provider-reuse 部分 supersede | `search_blocks` 改为 required `keywords` Unicode string array（建议/冻结边界为 1..16 项，每项 trim 后 1..64 chars，禁止空项和重复项），可选 `minecraft_version` 与 `limit`（1..12，默认 8）；删除 `query`、`context`、`query_spec`。仅执行 pointer-resolved release 的 eligible/conditional 本地 FTS5 trigram 或 normalized LIKE 召回、确定性排序、Top-24、limit/contact sheet；`data.query` 为 trim 后单空格连接的 keywords，`hard_filters=[]`、`reranked_by_llm=false`、`score_source=local`，空集成功。保留现有 MCP/output/provider Schema ID、release snapshot/AI annotation lineage，不新增工具、兼容层、依赖、服务、SQL 或 migration |
 
 ## 关键边界的执行解释
 
@@ -388,11 +389,13 @@ Pairwise report `run/blockpedia-data/reports/export_20260816T091512Z--export_202
 
 **影响记录**：本项只更正 MCP 协议错误映射及对应文档/测试表述；不改变工具集合、stdio transport、任何数据 Schema、服务、Python CLI、持久化行为、release 语义或 MCP 只读边界。
 
-## D-047：MCP 输入与工具执行错误分层纠正
+## D-047：MCP 输入与工具执行错误分层纠正（provider/rerank 部分已由 D-053 supersede）
 
 ### 2026-08-18 — owner-approved correction
 
 项目所有者于 **2026-08-18** 明确批准本项纠正，并确认现有 `mcp-error.v1` 的 `error_code` enum 是唯一权威且保持不变：非法 `block_id` 格式、compare 数量和其它 input shape 错误在工具执行前返回 JSON-RPC `-32602`；格式合法但 release 中不存在的 block ID 仍返回 `BLOCK_NOT_FOUND`。正常空搜索是 `isError=false` 成功；`rerank=auto` 的 provider failure 返回 warning 和 `reranked_by_llm=false`；`rerank=required` 失败返回顶层 `RERANK_REQUIRED_UNAVAILABLE`，具体 provider code 只写入 `details.provider_error_code`。
+
+上述 provider/rerank 分支是 D-053 前的历史契约，继续保留为历史事实但不再是当前 MCP runtime 语义；D-053 将正常空搜索和本地 `reranked_by_llm=false` 保留，同时删除所有 provider/rerank 输入与调用。
 
 **影响记录**：本项只收敛文档和 R4 验收的错误分层；不修改 `mcp-error.v1` 或其它 Schema、fixtures、roadmap、代码、工具集合、transport、服务、CLI、持久化、release 语义或 MCP 只读边界。`VERSION_REQUIRED`、`NO_CANDIDATES`、`BLOCK_ID_INVALID`、`COMPARE_COUNT_INVALID` 及 provider-specific codes 均不得作为顶层 `mcp-error.v1.error_code`。
 
@@ -412,7 +415,7 @@ Pairwise report `run/blockpedia-data/reports/export_20260816T091512Z--export_202
 
 **影响记录**：本项只修正文档中的 MCP input/resolver/test 语义，不改变持久记录的精确版本约束、current-pointer/release Schema、JSON Schema inventory、fixture 资产、服务、CLI、状态、release 语义或 MCP 只读边界。
 
-## D-050：R4 family context 确定性 no-op
+## D-050：R4 family context 确定性 no-op（当前 search input 部分已由 D-053 supersede）
 
 ### 2026-08-18 — owner-approved correction
 
@@ -426,13 +429,15 @@ Pairwise report `run/blockpedia-data/reports/export_20260816T091512Z--export_202
 
 项目所有者于 **2026-08-19** 批准本项 amendment，明确 supersede D-050 原先“非 null `context.family` 返回 `QUERY_INVALID`”的业务分支：`family=null` 或任意通过现有 input schema 的 string（包括未知 string，如 `"unknown"`）均为确定性 no-op，继续正常搜索。两者都不执行 family 分组、不应用 family 限额、不推断或创建 family、不产生 family warning 或 metadata，也不改变候选顺序；Top-24 后继续保持既有稳定顺序并生成联系表。只有非 string 且非 null 的值仍属于 input shape error，必须在协议层返回 JSON-RPC `-32602`，不得生成 `mcp-error.v1`。
 
+D-053 随后删除当前 `search_blocks` 的 `context` 输入，因此上述 family 行为仅作为 superseded historical contract 保留，不属于当前 MCP input surface。
+
 **影响记录**：本 amendment 只删除当前 `search_blocks` 的非 null string `QUERY_INVALID` 业务分支并同步文档/验收；保留现有 string/null 类型校验和 deterministic search 路径。不新增 D-052、Schema、字段、服务、CLI、SQLite migration、family catalog 或 family metadata；本地单机运行、可复现性、MCP stdio/只读边界、release/workspace 数据契约和既有候选排序均不变。
 
-## D-051：MCP host-supplied QuerySpec 窄例外
+## D-051：MCP host-supplied QuerySpec 窄例外（整体已由 D-053 supersede）
 
 ### 2026-08-19 — owner-approved Phase 1 contract
 
-项目所有者在本会话明确批准以下窄例外。它只允许 MCP `search_blocks` 接收一个可选的顶层 `query_spec`，作为调用方提供的不可信、临时 QuerySpec；不改变四工具、stdio、release-only、只读或 provider identity 边界。本项是文档契约冻结，不代表代码、测试或新的 Schema 已增加。
+项目所有者在本会话明确批准以下窄例外。该段落保留为历史契约和审计记录；D-053 已整体 supersede 它，当前 MCP 不再接收 `query_spec`，不执行 server-side QuerySpec、hard parser、visual rerank 或任何 provider runtime。原契约不代表当前代码、测试或新的 Schema 已增加。
 
 1. **输入与 Schema owner**：`search_blocks` 的 `query_spec` 只能是一个完整对象，精确使用现有 `query-spec-output.v1` 的字段、required 集合、枚举、边界和所有 nested object 约束。它不是新的 Schema ID、持久记录或 MCP 输出字段，也不增加新工具。省略该顶层字段才表示请求既有的 server-side QuerySpec 路径；不得以 `null` 或部分对象表示省略。
 2. **严格校验与错误分层**：输入及所有嵌套对象均必须 strict/fail closed，未知 nested fields 也必须拒绝。Schema、类型、缺失字段、额外字段和边界错误返回 JSON-RPC `-32602`；Schema 已通过但语义或不变量不成立的查询条件继续使用既有 `QUERY_INVALID`。提供了无效 `query_spec` 时不得隐式退回旧路径；调用方必须省略它才请求旧路径。
@@ -451,11 +456,11 @@ Pairwise report `run/blockpedia-data/reports/export_20260816T091512Z--export_202
 - **MCP read-only and provider safety**：host spec 是不可信临时输入，不进入 release、workspace、cache 或日志，也不能选择 provider identity；只有 pointer-resolved release snapshot 可用于 visual rerank，`local_only` 与 `required` 语义不变。完整性预验证仍由 build/activation gate 负责。
 - **Reproducibility and honesty**：严格校验、确定性本地 hard/soft 合并、`avoid_for` 忽略和既有 `search_id` identity 约定保持可重放；visual-rerank 标志只由真实成功调用产生，不能把 host input 当作 provider evidence。
 
-## D-052：MCP 仅构建时验证与有界在线查询
+## D-052：MCP 仅构建时验证与有界在线查询（provider/deadline/request-provider-reuse 部分已由 D-053 supersede）
 
 ### 2026-08-19 — owner-approved amendment
 
-项目 owner 于 **2026-08-19** 明确批准本项修订，并明确选择 **“仅构建时验证”**。本项是对 MCP 运行时完整性检测的有意安全检测削减，**不是等价安全**，也不代表本次文档变更已经完成代码、测试或新的运行证据。D-052 supersedes 既有契约中要求 MCP 在运行时首次或逐请求验证 release 完整性的部分；build/activation gate 的完整性职责不削弱。
+项目 owner 于 **2026-08-19** 明确批准本项修订，并明确选择 **“仅构建时验证”**。本项是对 MCP 运行时完整性检测的有意安全检测削减，**不是等价安全**，也不代表本次文档变更已经完成代码、测试或新的运行证据。D-052 supersedes 既有契约中要求 MCP 在运行时首次或逐请求验证 release 完整性的部分；build/activation gate 的完整性职责不削弱。D-053 保留本项的 build-time-only integrity、snapshot cache、to-thread/event-loop isolation、outputSchema `oneOf` 和 parity 语义，仅 supersede 本项的 provider、deadline、retry、resource-reuse 与在线 QuerySpec/rerank 语义。
 
 1. **验证职责重新归属**：release 完整性以及 Schema、`checksums.sha256`、manifest hash、quality report、index format 和 PNG 的预验证只属于 WebUI build/activation gate。MCP 运行时不得首次全量验证，也不得逐请求验证 current/manifest/checksum/schema/file identity/hash，不得复算质量门，不得全量验证 PNG 或 index projection。MCP 不得声称运行时验证了 immutable、manifest hash、checksums、schema inventory、quality report 或 index format；这些事实只信任已经通过构建/激活门的 release 产物和报告。
 2. **MCP 最小运行时范围**：每个请求必须读取并解析 `current.json`，按省略/显式 `minecraft_version` 执行 default/精确版本语义，取得该 pointer 的 `release_id` 与 `relative_path`，并观察下一请求的 pointer 切换。仍须执行严格 tool input/version 校验、相对路径防逃逸和明显 symlink/junction/reparse 拒绝；这些是安全边界，不是 release 完整性证明。随后只打开 pointer 指定的 index，并按实际响应需要读取 PNG；任何 current、pointer、路径、index/SQLite 或 PNG 读取失败都 fail closed，不回退其它 release。可在进程内缓存按 `minecraft_version+release_id` 区分的 snapshot；观察到 pointer 指向变化时，下一请求必须载入新 snapshot。
@@ -473,3 +478,26 @@ Pairwise report `run/blockpedia-data/reports/export_20260816T091512Z--export_202
 - **No extra service and release build gate**：完整 release/Schema/checksum/manifest/quality/index/PNG 检查仍由 WebUI build/activation gate 承担；D-052 不改变既有 gate、hash DAG、release immutability、activation 条件或 release manifest。
 - **MCP read-only**：MCP 继续不写 SQLite、文件、cache、logs、release 或 current；snapshot cache 只存在进程内，不是持久化写入。pointer 切换只在下一请求载入新 snapshot，不修改任何数据。
 - **Data contract**：既有成功 Schema、`mcp-error.v1`、provider wire Schema、SQLite projection、release layout、字段来源和 machine/AI/manual 三层不变；advertised outputSchema 的 `oneOf` 是协议广告组合，不是新的持久 Schema ID。
+
+## D-053：MCP 关键词本地搜索与 provider runtime 彻底移除
+
+### 2026-08-20 — owner-approved amendment
+
+项目所有者于 **2026-08-20** 明确批准本项“彻底简化方案”。这是破坏性的 MCP input contract change，不提供兼容层；本项只冻结高优先级契约，不代表代码、测试或新的 focused evidence 已完成。D-053 整体 supersede D-051；D-052 仅在 provider、deadline、request-provider-reuse 语义上由本项 supersede，D-052 的 build-time-only integrity、snapshot cache、to-thread/event-loop isolation、strict advertised `outputSchema` `oneOf`、structured/Text parity 和 `isError` 分层继续有效。
+
+1. **Provider boundary**：MCP runtime 完全不初始化、不读取、不调用任何 AI provider，不读取 Keyring、可变 active profile、workspace database 或 release-bound provider snapshot 作在线查询。Studio 的 `offline_annotation` 继续使用 protocol-neutral `OpenAIProvider` 和既有显式 adapter；release 中已有 provider snapshot 与 AI annotations 继续作为离线 lineage/搜索内容保留，但不构成 MCP runtime 能力，也不被 MCP 用来生成 QuerySpec 或重排。
+2. **Breaking input contract**：`search_blocks` 必须接收 required `keywords` Unicode string array。边界冻结为 `1..16` 个元素；每项先 trim，trim 后必须为 `1..64` 个 Unicode 字符；禁止空项和重复项。只允许可选 `minecraft_version` 与 `limit`，其中 `limit` 为 `1..12`、默认 `8`。删除 `query`、`context`、`query_spec` 输入；不新增 tool、Schema ID、dependency、service、SQL 或 migration。旧调用方必须改用新输入，不提供兼容或自动转换层。
+3. **Local-only search**：搜索只读取 pointer-resolved release 中 `eligible`/`conditional` 的候选，使用本地 SQLite FTS5 `trigram` 或 normalized `LIKE` 按关键词召回，执行确定性本地排序，截取 Top-24，再应用 `limit` 并生成既有 contact sheet。MCP 不执行自然语言理解、翻译、hard parser、hard filtering、server-side QuerySpec、visual rerank、模型排序或 provider 请求；不存在 `auto`、`local_only`、`required` provider mode 和 provider deadline/retry/reuse 语义。
+4. **Stable output semantics**：继续使用现有 `mcp-search-blocks-output.v1`，不增加或修改 Schema ID。`data.query` 是按输入顺序 trim 后以单个空格连接的规范化 keywords；`data.hard_filters=[]`；`data.reranked_by_llm=false`；每个 candidate 的 `score_source` 永远为 `local`。关键词无召回时是正常成功空集，不生成 provider error 或 `isError`。
+5. **Host conversation boundary**：前台/宿主对话 LLM 负责自然语言理解、澄清、翻译、生成关键词、零结果时换词重试，以及消费 MCP 返回的图片、详情和比较结果。默认建议生成英文 canonical keywords，但 MCP 仍接受任意 Unicode keywords。任何一次真实对照只可作为实现/验收观察，不得写成正式质量指标或 Top-5 质量承诺。
+6. **Schema/history retention**：`query-spec-output.v1`、`rerank-output.v1` 及历史 release/profile fields 不删除，以保持 Studio/历史 lineage/现有 26 个 Schema inventory；它们不再属于 MCP runtime，不改变当前四工具 output Schema、release layout 或既有历史 evidence 的事实。
+7. **Preserved boundaries**：本项不破坏本地单机运行、无额外服务、MCP stdio/只读、机器事实/AI 语义/人工覆盖数据分层或 release immutable 语义。MCP 仍只信任 current pointer，按需打开 pointer 指定的 release/index/PNG；D-052 允许运行时的构建时完整性边界不改变。
+
+### D-053 impact proof
+
+- **Local single-machine operation**：MCP 只在本地 stdio 进程内读取 pointer-resolved release 和本地 SQLite/PNG，不建立网络 provider client，不增加服务、队列、daemon、数据库或远程依赖；Studio 的 offline annotation provider boundary 保持不变。
+- **Reproducibility and lineage**：trim 后按输入顺序连接的 keywords、固定本地 recall/ranking、Top-24 和 `score_source=local` 形成确定性搜索结果；既有 provider snapshot/AI annotations 仍留在 release 作为离线 lineage/搜索内容，旧 release 不原地修改。
+- **No schema/service expansion**：仅改变 MCP `search_blocks` 输入语义；复用现有 `mcp-search-blocks-output.v1`、FTS/LIKE 投影、contact sheet 和四工具 surface，不增加 Schema ID、依赖、服务、SQL、migration、tool 或兼容层。保留 query-spec/rerank provider Schema 与历史字段，不把它们扩展为 MCP runtime 能力。
+- **MCP read-only and release immutability**：MCP 不初始化 provider、不读取 Keyring 或 workspace、不写数据库、文件、cache、logs、release 或 current；只按 pointer 读取不可变 release，candidate/release 的完整性仍由 build/activation gate 负责。
+- **Data layering and host responsibility**：机器事实、AI semantic suggestions、manual overrides 和 release-bound offline lineage 继续分层；宿主 LLM 承担自然语言到关键词的转换和澄清，MCP 不伪装为自然语言理解或模型重排服务。
+- **Breaking change and recovery**：旧 `query`/`context`/`query_spec` 调用不被隐式兼容或转换；调用方必须迁移到 `keywords`。这不引入数据库 migration，也不改写历史 release/profile/Schema inventory；实现和 focused validation 必须另行完成后才能更新路线图复选框。

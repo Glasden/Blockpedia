@@ -392,7 +392,7 @@ class ActivationService:
                 {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
                 {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
                 {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "index_info", "arguments": {}}},
-                {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "stone", "context": {"rerank": "local_only"}}}},
+                {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"keywords": ["stone"]}}},
                 {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "get_block_details", "arguments": {"block_id": block_ids[0]}}},
                 {"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "compare_blocks", "arguments": {"block_ids": block_ids}}},
             ]

@@ -29,6 +29,10 @@ Python Studio:
 - [质量与测试接口](quality-and-testing.md)
 - [安全与分发接口](security-and-distribution.md)
 
+## D-053 MCP runtime boundary amendment (current)
+
+MCP 只读取 `current.json` 和 pointer 指定的不可变 release；它不读取 workspace、Keyring、active profile 或 provider snapshot 作在线查询，不初始化/调用 provider，不写任何本地持久化位置。`search_blocks` 的 MCP 搜索只在 release 的 `eligible`/`conditional` 候选上执行 keywords 本地 FTS5 `trigram` 或 normalized `LIKE` 并集召回、确定性排序、Top-24 和 contact sheet；输入为 1–16 个 trim 后 1–64 Unicode 字符且无空项/重复项的 `keywords`，可选 `minecraft_version`/`limit`，旧 `query`/`context`/`query_spec` 不兼容。Provider snapshot、QuerySpec、rerank Schema 和 lineage 仍可用于 Studio/历史 release，但不是 MCP runtime 能力。候选输出固定为 local：`data.query` 为规范化 keywords、`hard_filters=[]`、`reranked_by_llm=false`、`score_source=local`；空集成功。
+
 ## 2. 默认运行架构和写入边界
 
 MVP 默认使用一个本地 Python 应用、SQLite 工作库、本地图片文件和进程内有限 Worker。WebUI 和 Worker 是工作库唯一写入者；MCP **MUST NOT** 读取或写入工作库，只能读取已通过门禁的不可变 release。MCP 查询失败不能触发工作库写入、重新渲染或 AI 调用。
@@ -411,7 +415,7 @@ recover 不能删除成功产物，也不能把未知结果当作 AI 已返回�
 
 ### 6.5 provider 配置冻结
 
-`AI_ANNOTATE` 和在线 query lane 使用同一个已启用的 protocol-neutral `OpenAIProvider`、`adapter` 和 `model_id`。release candidate 的 `manifest.json` 必须冻结以下非秘密 provider snapshot 引用和版本：`adapter`、`profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、`prompt_version`、各 wire/record Schema version、`search_ranking_version`。MCP 只能从 `manifest.json` 读取这些值，并按 `secret_reference` 从 Keyring 或允许的环境变量读取秘密；MCP **MUST NOT** 读取 workspace 数据库、可变 provider profile 或缓存；不得跨协议 fallback。compatible `base_url` 仍属于所选 OpenAI 协议 endpoint；能力探测必须按所选 adapter 通过，但不证明远端 retention。既有 `openai_responses` release 不迁移、不改写。
+`AI_ANNOTATE` 和 Studio 的离线 provider stages 使用同一个已启用的 protocol-neutral `OpenAIProvider`、`adapter` 和 `model_id`。release candidate 的 `manifest.json` 可以冻结 provider snapshot 作为离线 lineage；MCP **MUST NOT** 读取该 snapshot、Keyring、workspace 数据库、可变 provider profile 或缓存作在线查询，也不得跨协议 fallback。compatible `base_url` 仍属于所选 OpenAI 协议 endpoint；能力探测必须按所选 adapter 通过，但不证明远端 retention。既有 `openai_responses` release 不迁移、不改写。
 
 ### 6.6 Import state and workspace reconciliation
 
@@ -467,7 +471,7 @@ check 的 progress callback 只观察既有循环：snapshot 阶段接 copy/hash
 └── checksums.sha256
 ```
 
-`index.sqlite3` 是为只读 MCP 构建的发布投影，包含 FTS 索引和仅 `eligible`/满足条件的 `conditional` 视觉候选；可以保留用于详情查看的完整 Block/状态事实，但不得把 skipped 或 `excluded` 项伪装成可搜索图片。release 不包含原版资源。MCP 所需 provider snapshot 必须冻结在同目录 `manifest.json` 的 `release-manifest.v1` 中：`adapter`、`profile_id`、`model_id`、`base_url_stable_id`、不可逆 `secret_reference`、prompt/Schema/search 版本；MCP 不读 workspace provider profile，也不把该 snapshot 视为新的 active profile。`adapter` 只允许 `openai_responses` 或 `openai_chat_completions`，并决定唯一 wire codec。
+`index.sqlite3` 是为只读 MCP 构建的发布投影，包含 FTS 索引和仅 `eligible`/满足条件的 `conditional` 视觉候选；可以保留用于详情查看的完整 Block/状态事实，但不得把 skipped 或 `excluded` 项伪装成可搜索图片。release 不包含原版资源。若 release 保存 provider snapshot，它只是 Studio 离线 lineage/搜索内容的冻结元数据：`adapter`、`profile_id`、`model_id`、`base_url_stable_id`、不可逆 `secret_reference`、prompt/Schema/search 版本；MCP 不读取该 snapshot、Keyring 或 active profile 作在线查询，也不把该 snapshot 视为新的 active profile。`adapter` 只允许 `openai_responses` 或 `openai_chat_completions`，并决定唯一 wire codec。
 
 `release.json` 使用 `release.v1`，只保存该 Schema 允许的 release identity、`manifest_sha256`、record schema versions、quality report ref 和 immutable 标记；它不承载 provider snapshot。同目录 `manifest.json` 使用独立的 `release-manifest.v1`，并且是 provider snapshot、功能输入/产物和 Schema inventory 引用的唯一位置。精确字段形状由 `schemas/workspace/` 下的真实 Schema 文件拥有，以下仅为说明性示例。`release-manifest.v1` 的顶层 `schema_version` 必须为 `release-manifest.v1`，其功能哈希不得包含 `release.json`、`manifest.json`、`schemas.sha256` 或 `checksums.sha256`，避免自引用和循环；`release.json` 不保存自身或 checksum 的摘要：
 

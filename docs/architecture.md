@@ -17,7 +17,7 @@ Python Index Studio
                                │
                                └─ 四个 MCP tools
 
-OpenAIProvider（Studio 新写任务使用唯一 active profile 的显式 adapter 和 configured/requested model_id；MCP 使用 resolved release snapshot，网络调用只用于受控语义/查询任务）
+OpenAIProvider（Studio 的 offline_annotation 使用唯一 active profile 的显式 adapter 和 configured/requested model_id；MCP 不初始化或调用 provider，只读取 resolved release）
 ```
 
 不部署 Redis、Celery、Kafka、消息队列、对象存储、向量数据库、独立搜索服务或其他常驻服务。WebUI 和 MCP 读取同一数据根目录，但 MCP 不读取可变 workspace 数据作为查询源，只读取 current pointer 指定的 release 路径。release 完整性由 WebUI build/activation gate 负责，MCP 运行时不重新验证 immutable、manifest/checksum/schema/quality/index/PNG。MCP 不写数据库、文件、cache、logs 或 current。
@@ -39,7 +39,7 @@ OpenAIProvider（Studio 新写任务使用唯一 active profile 的显式 adapte
 | HTML/交互 | Jinja2 + HTMX，少量原生 JavaScript |
 | storage | SQLite + 本地文件 |
 | worker | Python 进程内有限 Worker，任务状态持久化到 SQLite |
-| LLM | protocol-neutral `OpenAIProvider`；现有 profile `adapter` 显式取 `openai_responses` 或 `openai_chat_completions`，分别使用 `POST /responses`+`store=false` 或 `POST /chat/completions` 且省略 `store`；两者均为图片输入、strict JSON Schema、同一 configured/requested `model_id`/重试预算、稳定错误分类和本地校验；response model echo 不证明远端实际身份 |
+| LLM | Studio `offline_annotation` 使用 protocol-neutral `OpenAIProvider`；现有 profile `adapter` 显式取 `openai_responses` 或 `openai_chat_completions`，分别使用 `POST /responses`+`store=false` 或 `POST /chat/completions` 且省略 `store`；两者均为图片输入、strict JSON Schema、同一 configured/requested `model_id`/重试预算、稳定错误分类和本地校验；response model echo 不证明远端实际身份；MCP 不初始化或调用 provider |
 | MCP transport | stdio |
 
 R0 退出前只锁定 R0 tooling 实际引入的 Python 依赖；后续依赖在使用前必须精确/hash 锁定，Windows 在对应阶段验证，Linux 安装/运行、wheel/ABI 和最终双平台复现统一在 R5 验证，不预锁未实现的 R2-R4 栈。架构复现证据必须明确指向：
@@ -193,7 +193,7 @@ Python 只能验证和提取离线特征，不能重新选择代表状态或重�
 
 ### 5.2 AI 语义层
 
-Studio 新任务、配置管理和构建新 release 使用唯一 active profile 所选 adapter 的同一 configured/requested `model_id` 覆盖离线标注、QuerySpec 和 visual rerank 三阶段，只允许写入：
+Studio 新任务、配置管理和构建新 release 使用唯一 active profile 所选 adapter 的同一 configured/requested `model_id` 覆盖 `offline_annotation`，只允许写入以下受控语义字段。既有 query-spec/rerank provider Schema 与历史 release/profile fields 保留用于 Studio/历史 lineage，不作为 MCP runtime 能力。
 
 ```text
 synonyms_zh
@@ -320,7 +320,7 @@ provider 层使用 protocol-neutral `OpenAIProvider`，其现有 profile `adapte
 
 能力探测必须按所选协议验证 endpoint、图片输入、strict Schema structured output、稳定错误分类和成功 response 的 string `model` structural validity；model echo 不再是 equality 验证条件或 enable gate，缺失/非 string 仍 fail closed。任何协议都不能证明远端 retention 或第三方实际执行的 requested model，文档、probe 和实现不得声称 storage/remote model identity 已验证，第三方服务 trust/policy 由用户负责；warning 或用户 ack 不得绕过显式 adapter 选择。
 
-允许保存多个非活动 profile，但全局最多一个 active profile 的约束只适用于 Studio 新任务、配置管理和构建新 release。每个 release 冻结离线标注时的完整非秘密 provider snapshot，包括现有 `adapter`、`profile_id`、requested `model_id`、`base_url_stable_id`、不可逆 `secret_reference` 及相关版本；MCP 不读可变 active 状态或 workspace 数据库，只能按 resolved release snapshot 使用同一 requested `model_id` 和所选协议执行 QuerySpec 与 rerank。secret 无法解析或能力不再通过时，MCP 本地降级并返回 warning。release-bound snapshot 不算第二个 active profile，也不能用于 Studio 新写任务。未来实现才把 adapter 纳入 envelope、cache、signature 和 release lineage，并按协议使用 conditional `store`；现有 openai_responses release 保持有效且 immutable，变更前 in-flight cache/workspace invalidated/rerun。
+允许保存多个非活动 profile，但全局最多一个 active profile 的约束只适用于 Studio 新任务、配置管理和构建新 release。每个 release 冻结离线标注时的完整非秘密 provider snapshot，包括现有 `adapter`、`profile_id`、requested `model_id`、`base_url_stable_id`、不可逆 `secret_reference` 及相关版本；该 snapshot 与 AI annotations 作为离线 lineage/搜索内容保留。MCP 不初始化或调用 provider，不读可变 active 状态、workspace 数据库、Keyring 或 provider snapshot 作在线查询。release-bound snapshot 不算第二个 active profile，也不能用于 Studio 新写任务。未来实现才把 adapter 纳入 envelope、cache、signature 和 release lineage，并按协议使用 conditional `store`；现有 openai_responses release 保持有效且 immutable，变更前 in-flight cache/workspace invalidated/rerun。
 
 ## 9. MCP 只读契约
 
@@ -337,17 +337,17 @@ provider 层使用 protocol-neutral `OpenAIProvider`，其现有 profile `adapte
 | 工具 | 最小输入 | 行为 |
 |---|---|---|
 | `index_info` | 可选 `minecraft_version` | 返回 default/指定版本的 pointer-resolved release 信息和 release-provided 构建元数据；不作运行时完整性证明 |
-| `search_blocks` | `query`，可选 `minecraft_version`、`limit`/`context` | 先硬过滤，再做可解释本地召回；可用同一所选 OpenAI adapter/model 做 QuerySpec/重排 |
+| `search_blocks` | required `keywords` Unicode string array；可选 `minecraft_version`、`limit` | 只对 pointer-resolved release 的 eligible/conditional 候选做本地 FTS5 `trigram` 或 normalized `LIKE` 关键词召回、确定性排序、Top-24 和 contact sheet；不做自然语言理解、hard filtering、QuerySpec、visual rerank 或 provider 调用 |
 | `get_block_details` | `block_id`，可选 `minecraft_version` | 返回该版本的状态、变体、机器事实、语义、资格、警告和图片 |
 | `compare_blocks` | 2–6 个 `block_ids`，可选 `minecraft_version`/`context` | 只从 release 读取指定方块，返回结构化差异和对比图片 |
 
-输入省略版本只影响 current 解析，不构成“最新兼容版”回退。`block_id` 必须经过 `minecraft:` 命名空间和 release 查找校验，不能拼接 SQL 或文件路径。图片由 server 从当前 release 读取并作为 MCP 图片内容返回，不向客户端暴露可写本地路径。
+输入省略版本只影响 current 解析，不构成“最新兼容版”回退。`search_blocks.keywords` 必须为 1..16 个 Unicode string；每项 trim 后为 1..64 个 Unicode 字符，禁止空项和重复项；`limit` 为 1..12，默认 8。`block_id` 必须经过 `minecraft:` 命名空间和 release 查找校验，不能拼接 SQL 或文件路径。图片由 server 从当前 release 读取并作为 MCP 图片内容返回，不向客户端暴露可写本地路径。
 
-### 9.3 D-052 MCP 运行时预算与输出广告
+### 9.3 D-052 保留的 MCP 输出广告与执行隔离
 
 四工具 advertised `outputSchema` 必须是 strict `oneOf`，分别组合既有成功 Schema 与 `mcp-error.v1`；这是协议广告，不新增 Schema ID。成功/工具错误继续保持 `isError=false/true`，structured content 与 TextContent 来自同一个对象。
 
-`search_blocks` 外层 hard deadline 为 55 秒，最后 5 秒不得启动新的 provider 请求；QuerySpec stage 为 15 秒（10+5），visual rerank stage 为 30 秒（20+10）。实际 timeout 取 profile/stage/request 剩余时间最小值，少于 1 秒不发送；`auto` 失败本地降级，`required` 使用 `RERANK_REQUIRED_UNAVAILABLE`，每个 logical request 最多两次尝试且无 fallback。单请求复用 provider/client/preview bytes，同步 provider/SQLite 查询工作移出 event loop。该边界不增加服务、依赖、SQL、migration、tool、transport 或 release manifest 字段。
+MCP runtime 不初始化或调用 AI provider，因此不存在 QuerySpec/visual-rerank stage、`auto`/`local_only`/`required` mode、provider deadline/retry/fallback 或 provider/client reuse 语义。`search_blocks` 只做本地关键词召回和确定性排序；`data.query` 是按输入顺序 trim 后以单空格连接的 keywords，`hard_filters=[]`、`reranked_by_llm=false`、candidate `score_source=local`，正常空集成功。前台/宿主对话 LLM 负责自然语言理解、澄清、翻译、关键词生成和零结果换词重试。D-052 保留的 outputSchema `oneOf`、structured/Text parity、snapshot cache 与同步本地查询移出 event loop 仍有效；不增加服务、依赖、Schema ID、SQL、migration、tool、transport 或 release manifest 字段。
 
 ## 10. 版本选择、发布和回滚流程
 
