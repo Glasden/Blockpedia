@@ -112,6 +112,7 @@ checksums.sha256
 - MCP 查询 **MUST** 解析到不可变 release 后再读取；除读取 release、`current.json` 和必要的 Keyring 秘密引用外不得产生本地写入，尤其不得写数据库、文件、cache、logs 或 release 指针。
 - MCP 的 stdout **MUST** 只输出 MCP 协议消息；日志、诊断和堆栈 **MUST** 输出 stderr，**MUST NOT** 污染 stdout，也不得写本地日志文件。
 - MCP 返回的 `block_id`、状态、图片映射和 release 元数据 **MUST** 来自 release；模型不能新增候选或改写这些字段。模型不可用时可返回确定性本地候选并明确 `reranked_by_llm=false`，不得伪装为已重排。
+- D-051 的窄例外允许 `search_blocks` 接收可选顶层 `query_spec` 作为不可信、临时输入，并仅抑制服务端 QuerySpec 生成；它必须按既有 `query-spec-output.v1` 严格校验，不能持久化，也不能选择或改写 server-side provider profile、`model_id`、`base_url` 或 release-bound provider snapshot。Studio/provider 请求与 release-bound MCP visual rerank 的既有 provider 硬规则、`local_only` 禁止 provider 调用、`required` 重排失败即 fail closed 仍然有效。
 - 公开白名单只允许源码、文档、真实 JSON Schema、空数据库和 fixture 生成器源码；不得提交生成后的 PNG、非空数据库、真实索引、预览、导出包、人工覆盖或秘密。任何真实数据只能在本地生成或保存。
 
 ## 证据、测试与路线图纪律

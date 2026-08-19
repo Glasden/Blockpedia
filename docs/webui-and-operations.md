@@ -422,7 +422,7 @@ cleanup 可以由 WebUI 人工删除未受保护的旧 release、workspace 临�
 }
 ```
 
-响应必须显示 resolved `minecraft_version`、`resolved_release_id`、`manifest_sha256`、QuerySpec、来源、hard filter、Top-24、`context.family` 的 R4 no-op/校验结果、contact sheet mapping、本地/LLM 排序、warning、`reranked_by_llm` 和 MCP 等价结构化对象。`context.family=null` 不改变候选顺序；非 null 返回 `QUERY_INVALID`，不展示或创建 family metadata。release 只能由服务解析 current，客户端不能指定历史 release。不得展示 Token/cost、完整 provider response、绝对路径或自动写生产索引；图片/联系表只在请求生命周期内构造，测试 API 不得持久化。
+响应必须显示 resolved `minecraft_version`、`resolved_release_id`、`manifest_sha256`、QuerySpec、来源、hard filter、Top-24、`context.family` 的 R4 no-op/校验结果、contact sheet mapping、本地/LLM 排序、warning、`reranked_by_llm` 和 MCP 等价结构化对象。`context.family=null` 或任意通过 input schema 的 string 都不改变候选顺序、不分组、不限额且不产生 family warning/metadata；非 string 且非 null 返回 JSON-RPC `-32602`，不展示或创建 family metadata。release 只能由服务解析 current，客户端不能指定历史 release。不得展示 Token/cost、完整 provider response、绝对路径或自动写生产索引；图片/联系表只在请求生命周期内构造，测试 API 不得持久化。
 
 ## 6. 发布前置和错误码
 

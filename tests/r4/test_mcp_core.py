@@ -174,6 +174,10 @@ class _BadReranker:
         return {"schema_id": "rerank-output.v1", "ranking": [{"candidate_id": "NOT_A_RELEASE_ID", "fit": 1.0, "reason": "bad"}], "needs_user_choice": False, "ambiguity_points": [], "suggested_followups": []}
 
 
+def _host_spec() -> dict[str, object]:
+    return json.loads(json.dumps(_Reranker._query_spec()))
+
+
 def test_provider_injection_auto_required_and_id_mismatch_fallback(tmp_path: Path) -> None:
     build_fixture(tmp_path)
     reranked = MCPQueryService(tmp_path, provider=_Reranker()).search_blocks({"query": "stone", "context": {"rerank": "auto"}})
@@ -185,7 +189,7 @@ def test_provider_injection_auto_required_and_id_mismatch_fallback(tmp_path: Pat
     assert not mismatch.is_error and mismatch["data"]["reranked_by_llm"] is False
 
 
-def test_provider_query_spec_precedes_visual_rerank_and_family_is_strict_noop(tmp_path: Path) -> None:
+def test_provider_query_spec_precedes_visual_rerank_and_family_string_is_noop(tmp_path: Path) -> None:
     build_fixture(tmp_path)
 
     class _Ordered(_Reranker):
@@ -205,8 +209,12 @@ def test_provider_query_spec_precedes_visual_rerank_and_family_is_strict_noop(tm
     assert not result.is_error
     assert provider.calls == ["query_spec", "visual_rerank"]
 
-    family = MCPQueryService(tmp_path).search_blocks({"query": "stone", "context": {"family": "unknown", "rerank": "local_only"}})
-    assert family.is_error and family["error_code"] == "QUERY_INVALID"
+    without_family = MCPQueryService(tmp_path).search_blocks({"query": "stone", "context": {"rerank": "local_only"}})
+    with_family = MCPQueryService(tmp_path).search_blocks({"query": "stone", "context": {"family": "unknown", "rerank": "local_only"}})
+    assert not without_family.is_error and not with_family.is_error
+    assert with_family["data"] == without_family["data"]
+    assert with_family["warnings"] == without_family["warnings"]
+    assert not any("family" in warning.casefold() for warning in with_family["warnings"])
 
 
 def test_provider_query_spec_hard_constraint_filters_before_rerank(tmp_path: Path) -> None:
@@ -235,6 +243,175 @@ def test_provider_query_spec_hard_constraint_filters_before_rerank(tmp_path: Pat
     assert provider.received == ["T01"]
     assert result["data"]["candidates"][0]["candidate_id"] == "T01"
     assert result["data"]["candidates"][0]["block_id"] == "minecraft:glass"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("contradictory_alias", "contradictory"),
+        ("ambiguity_flag", "needs_user_choice"),
+    ],
+)
+def test_host_query_spec_semantic_invariants_are_query_invalid(tmp_path: Path, mutation: str, message: str) -> None:
+    build_fixture(tmp_path)
+    spec = _host_spec()
+    hard = spec["hard"]
+    assert isinstance(hard, dict)
+    if mutation == "contradictory_alias":
+        hard["behaviors"] = [{"field": "transparent", "operator": "eq", "value": True, "source": "system", "required": True}]
+        hard["transparency"] = [{"operator": "eq", "value": False, "source": "system", "required": True}]
+    else:
+        spec["ambiguities"] = [{"point": "shape", "candidates": ["thin", "full"]}]
+        spec["needs_user_choice"] = False
+    result = MCPQueryService(tmp_path).search_blocks({"query": "stone", "query_spec": spec, "context": {"rerank": "local_only"}})
+    assert result.is_error and result["error_code"] == "QUERY_INVALID"
+    assert message in result["message"]
+
+
+def test_host_query_spec_drops_unconfirmed_hard_and_preserves_local_explicit_hard(tmp_path: Path) -> None:
+    build_fixture(tmp_path)
+    unconfirmed = _host_spec()
+    hard = unconfirmed["hard"]
+    assert isinstance(hard, dict)
+    hard["behaviors"] = [{"field": "transparent", "operator": "eq", "value": True, "source": "system", "required": True}]
+    dropped = MCPQueryService(tmp_path).search_blocks({"query": "stone", "query_spec": unconfirmed, "context": {"rerank": "local_only"}})
+    assert not dropped.is_error
+    assert any("Unconfirmed host hard" in warning for warning in dropped["warnings"])
+    assert [item["block_id"] for item in dropped["data"]["candidates"]] == ["minecraft:stone"]
+
+    ambiguous = _host_spec()
+    ambiguous_hard = ambiguous["hard"]
+    assert isinstance(ambiguous_hard, dict)
+    ambiguous_hard["behaviors"] = [{"field": "transparent", "operator": "eq", "value": True, "source": "system", "required": True}]
+    ambiguous["ambiguities"] = [{"point": "material", "candidates": ["glass", "stone"]}]
+    ambiguous["needs_user_choice"] = True
+    unresolved = MCPQueryService(tmp_path).search_blocks({"query": "stone", "query_spec": ambiguous, "context": {"rerank": "local_only"}})
+    assert not unresolved.is_error
+    assert [item["block_id"] for item in unresolved["data"]["candidates"]] == ["minecraft:stone"]
+
+    weakened = _host_spec()
+    hard = weakened["hard"]
+    assert isinstance(hard, dict)
+    hard["behaviors"] = [{"field": "transparent", "operator": "eq", "value": False, "source": "system", "required": True}]
+    result = MCPQueryService(tmp_path).search_blocks({"query": "必须透明 wall", "query_spec": weakened, "context": {"rerank": "local_only"}})
+    assert not result.is_error
+    assert [item["block_id"] for item in result["data"]["candidates"]] == ["minecraft:glass"]
+
+    class _Captured(_Reranker):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.effective_spec: dict[str, object] | None = None
+
+        def query_spec(self, _query: str, **kwargs: object) -> dict[str, object]:
+            self.calls.append("query_spec")
+            raise AssertionError("host QuerySpec must suppress server-side generation")
+
+        def visual_rerank(self, _query: str, **kwargs: object) -> dict[str, object]:
+            self.calls.append("visual_rerank")
+            value = kwargs["query_spec"]
+            assert isinstance(value, dict)
+            self.effective_spec = value
+            return super().visual_rerank(_query, **kwargs)
+
+    provider = _Captured()
+    reranked = MCPQueryService(tmp_path, provider=provider).search_blocks({"query": "必须透明 wall", "query_spec": weakened, "context": {"rerank": "auto"}})
+    assert not reranked.is_error
+    assert provider.calls == ["visual_rerank"]
+    assert provider.effective_spec is not None
+    effective_behaviors = provider.effective_spec["hard"]["behaviors"]  # type: ignore[index]
+    assert any(item["field"] == "transparent" and item["operator"] == "eq" and item["value"] is True for item in effective_behaviors)
+    assert not any(item["field"] == "transparent" and item["value"] is False for item in effective_behaviors)
+    assert any("Unconfirmed host hard" in warning for warning in reranked["warnings"])
+
+    unknown_intent = _Intent(({"field": "behavior.transparent", "operator": "unknown_internal", "value": True},), {}, (), ())
+    unknown_effective, _ = MCPQueryService._effective_host_spec(_host_spec(), unknown_intent)
+    assert unknown_effective["hard"]["behaviors"] == []  # type: ignore[index]
+
+
+def test_host_avoid_for_is_warning_only_and_is_not_sent_to_reranker(tmp_path: Path) -> None:
+    build_fixture(tmp_path)
+
+    class _Captured(_Reranker):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.specs: list[dict[str, object]] = []
+
+        def query_spec(self, _query: str, **kwargs: object) -> dict[str, object]:
+            self.calls.append("query_spec")
+            raise AssertionError("host QuerySpec must suppress server-side generation")
+
+        def visual_rerank(self, _query: str, **kwargs: object) -> dict[str, object]:
+            self.calls.append("visual_rerank")
+            value = kwargs["query_spec"]
+            assert isinstance(value, dict)
+            self.specs.append(value)
+            return super().visual_rerank(_query, **kwargs)
+
+    without = _host_spec()
+    with_avoid = _host_spec()
+    soft = with_avoid["soft"]
+    assert isinstance(soft, dict)
+    soft["avoid_for"] = [{"term": "redstone", "source": "user_explicit", "weight": 1.0}]
+    first_provider = _Captured()
+    second_provider = _Captured()
+    first = MCPQueryService(tmp_path, provider=first_provider).search_blocks({"query": "stone", "query_spec": without, "context": {"rerank": "auto"}})
+    second = MCPQueryService(tmp_path, provider=second_provider).search_blocks({"query": "stone", "query_spec": with_avoid, "context": {"rerank": "auto"}})
+    assert first_provider.calls == ["visual_rerank"]
+    assert second_provider.calls == ["visual_rerank"]
+    assert second["warnings"] and "avoid_for" in " ".join(second["warnings"])
+    assert second_provider.specs[0]["soft"]["avoid_for"] == []  # type: ignore[index]
+    assert [item["block_id"] for item in first["data"]["candidates"]] == [item["block_id"] for item in second["data"]["candidates"]]
+    assert first["data"]["reranked_by_llm"] is True and second["data"]["reranked_by_llm"] is True
+
+
+def test_host_query_spec_provider_matrix_only_calls_visual_rerank(tmp_path: Path) -> None:
+    build_fixture(tmp_path)
+
+    class _Matrix(_Reranker):
+        def __init__(self, fail: bool = False) -> None:
+            self.calls: list[str] = []
+            self.fail = fail
+
+        def query_spec(self, _query: str, **kwargs: object) -> dict[str, object]:
+            self.calls.append("query_spec")
+            raise AssertionError("host QuerySpec must suppress generation")
+
+        def visual_rerank(self, _query: str, **kwargs: object) -> dict[str, object]:
+            self.calls.append("visual_rerank")
+            if self.fail:
+                return {}
+            return super().visual_rerank(_query, **kwargs)
+
+    for mode, expected in (("local_only", []), ("auto", ["visual_rerank"]), ("required", ["visual_rerank"])):
+        provider = _Matrix()
+        result = MCPQueryService(tmp_path, provider=provider).search_blocks({"query": "stone", "query_spec": _host_spec(), "context": {"rerank": mode}})
+        assert provider.calls == expected
+        assert result.is_error is False
+        assert result["data"]["reranked_by_llm"] is (mode != "local_only")
+
+    provider = _Matrix(fail=True)
+    result = MCPQueryService(tmp_path, provider=provider).search_blocks({"query": "stone", "query_spec": _host_spec(), "context": {"rerank": "required"}})
+    assert provider.calls == ["visual_rerank"]
+    assert result.is_error and result["error_code"] == "RERANK_REQUIRED_UNAVAILABLE"
+
+
+def test_host_query_spec_identity_is_canonical_and_output_is_closed(tmp_path: Path) -> None:
+    build_fixture(tmp_path)
+    before = _inventory(tmp_path)
+    spec = _host_spec()
+    reordered = json.loads(json.dumps(spec, sort_keys=True))
+    first = MCPQueryService(tmp_path).search_blocks({"query": "stone", "query_spec": spec, "context": {"rerank": "local_only"}})
+    second = MCPQueryService(tmp_path).search_blocks({"query": "stone", "query_spec": reordered, "context": {"rerank": "local_only"}})
+    assert first["data"]["search_id"] == second["data"]["search_id"]
+    different = _host_spec()
+    soft = different["soft"]
+    assert isinstance(soft, dict)
+    soft["keywords"] = [{"term": "distinct", "source": "user_explicit", "weight": 1.0}]
+    third = MCPQueryService(tmp_path).search_blocks({"query": "stone", "query_spec": different, "context": {"rerank": "local_only"}})
+    assert first["data"]["search_id"] != third["data"]["search_id"]
+    validate_record("mcp-search-blocks-output.v1", first)
+    assert "query_spec" not in first and "query_spec_sha256" not in json.dumps(first)
+    assert _inventory(tmp_path) == before
 
 
 def test_validated_lab_oklab_features_affect_deterministic_weighted_ranking(tmp_path: Path) -> None:

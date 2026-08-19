@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from blockpedia.mcp_server import TOOLS, TOOL_NAMES
+from blockpedia.schema import load_schema
 
 from .fixture_builder import build_fixture
+from .test_mcp_core import _host_spec
 
 
 def _tool_wire(tool: Any) -> dict[str, Any]:
@@ -26,6 +28,18 @@ def test_declared_tool_inventory_is_exact_and_ordered() -> None:
         assert wire["inputSchema"]["type"] == "object"
         assert wire["inputSchema"]["additionalProperties"] is False
         assert wire["outputSchema"]["additionalProperties"] is False
+
+
+def test_search_only_advertises_the_complete_strict_host_query_spec_schema() -> None:
+    by_name = {_tool_wire(tool)["name"]: _tool_wire(tool) for tool in TOOLS}
+    search_schema = by_name["search_blocks"]["inputSchema"]
+    assert search_schema["properties"]["query_spec"] == load_schema("query-spec-output.v1")
+    assert search_schema["properties"]["query_spec"]["additionalProperties"] is False
+    assert search_schema["properties"]["query_spec"]["properties"]["hard"]["additionalProperties"] is False
+    assert search_schema["properties"]["query_spec"]["properties"]["hard"]["properties"]["behaviors"]["items"]["additionalProperties"] is False
+    assert "query_spec" not in by_name["index_info"]["inputSchema"]["properties"]
+    assert "query_spec" not in by_name["get_block_details"]["inputSchema"]["properties"]
+    assert "query_spec" not in by_name["compare_blocks"]["inputSchema"]["properties"]
 
 
 def test_locked_mcp_sdk_version() -> None:
@@ -87,7 +101,7 @@ def test_stdio_lists_exact_tools_and_calls_all_tools(tmp_path: Path) -> None:
     messages = _initialize() + [
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "index_info", "arguments": {}}},
-        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "yellow carpet", "context": {"rerank": "local_only"}}}},
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "yellow carpet", "context": {"family": "unknown", "rerank": "local_only"}}}},
         {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "get_block_details", "arguments": {"block_id": "minecraft:stone"}}},
         {"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "compare_blocks", "arguments": {"block_ids": ["minecraft:stone", "minecraft:glass"]}}},
     ]
@@ -109,6 +123,9 @@ def test_stdio_lists_exact_tools_and_calls_all_tools(tmp_path: Path) -> None:
             assert base64.b64decode(image["data"], validate=True)
             assert image_metadata[index]["content_index"] == index + 1
             assert "data" not in image_metadata[index]
+    family_search = responses[3]["result"]
+    assert family_search["isError"] is False
+    assert family_search["structuredContent"]["schema_version"] == "mcp-search-blocks-output.v1"
     after = {path.relative_to(tmp_path).as_posix(): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     assert after == before
 
@@ -121,8 +138,9 @@ def test_stdio_protocol_errors_and_business_error_layers(tmp_path: Path) -> None
         {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "x", "unknown": True}}},
         {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "get_block_details", "arguments": {"block_id": "minecraft:not_in_release"}}},
         {"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "stone", "context": None}}},
-        {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "stone", "context": {"rerank": []}}}},
-        {"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "compare_blocks", "arguments": {"block_ids": [{}, "minecraft:stone"]}}},
+        {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "stone", "context": {"family": []}}}},
+        {"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "stone", "context": {"rerank": []}}}},
+        {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "compare_blocks", "arguments": {"block_ids": [{}, "minecraft:stone"]}}},
     ]
     responses, stderr, returncode = asyncio.run(_session(tmp_path, messages))
     assert returncode == 0
@@ -135,6 +153,34 @@ def test_stdio_protocol_errors_and_business_error_layers(tmp_path: Path) -> None
     assert responses[5]["error"]["code"] == -32602
     assert responses[6]["error"]["code"] == -32602
     assert responses[7]["error"]["code"] == -32602
+    assert responses[8]["error"]["code"] == -32602
+
+
+def test_stdio_host_query_spec_shape_errors_are_protocol_errors_and_valid_reaches_execution(tmp_path: Path) -> None:
+    build_fixture(tmp_path)
+    valid = _host_spec()
+    partial = {}
+    missing_required = json.loads(json.dumps(valid))
+    del missing_required["unknown_terms"]
+    unknown_nested = json.loads(json.dumps(valid))
+    unknown_nested["hard"]["unexpected"] = True
+    range_invalid = json.loads(json.dumps(valid))
+    range_invalid["soft"]["colors"] = [{"term": "x" * 65, "source": "user_explicit", "weight": 1.0}]
+    messages = _initialize() + [
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "stone", "query_spec": None}}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "stone", "query_spec": partial}}},
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "stone", "query_spec": missing_required}}},
+        {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "stone", "query_spec": unknown_nested}}},
+        {"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "stone", "query_spec": range_invalid}}},
+        {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "search_blocks", "arguments": {"query": "stone", "query_spec": valid, "context": {"rerank": "local_only"}}}},
+    ]
+    responses, stderr, returncode = asyncio.run(_session(tmp_path, messages))
+    assert returncode == 0
+    assert stderr == b""
+    assert [responses[index]["error"]["code"] for index in range(1, 6)] == [-32602] * 5
+    assert responses[6]["result"]["isError"] is False
+    assert responses[6]["result"]["structuredContent"]["data"]["candidates"]
+    assert all(response.get("jsonrpc") == "2.0" for response in responses)
 
 
 def test_stdio_clean_eof_has_only_json_stdout(tmp_path: Path) -> None:

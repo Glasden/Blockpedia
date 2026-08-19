@@ -222,9 +222,15 @@ tile_metadata: [{"tile_id": "<existing tile id>",
 
 `query_spec` 的输出 Schema 和语义由 [`search-and-ranking.md`](search-and-ranking.md) 定义。真实 wire Schema 固定为 `query-spec-output.v1`，不作为持久记录。provider 只负责返回严格 `QuerySpec`，不得返回候选 `block_id`、SQL、路径或发布事实。输出的 `source` 必须标识 `llm`；本地合并和硬过滤由应用完成。所有 wire 字段 required，所有 object `additionalProperties=false`，只使用探测通过的子集。
 
+MCP `search_blocks` 的 D-051 窄例外允许调用方直接提供一个完整的 `query-spec-output.v1` 对象。该对象是不可信、临时输入，不是 provider response、provider artifact 或 provider identity；`source=llm` 只标识语义生产，不证明 Blockpedia 验证了 provider/model，也不证明本次执行了 server-side provider call。它只抑制 server-side QuerySpec generation，不能选择或改写 release-bound `adapter`、`profile_id`、requested `model_id`、`base_url` 或 `secret_reference`，也不得写入 cache、workspace、release 或日志。
+
+该 host input 仍必须由本地完整 Schema strict/fail-closed 校验，包括 unknown nested fields；shape 错误按 MCP JSON-RPC `-32602`，语义/invariant 错误按既有 `QUERY_INVALID`，不能隐式 fallback 到 QuerySpec provider 请求。`local_only` 仍禁止所有 provider call；`auto`/`required` 只有在 host spec 已消费后，才可按既有 release snapshot 仅执行 visual rerank，既有能力、secret、warning、local downgrade 和 required fail-closed 规则不变。
+
+MCP 必须先执行 D-051 的有限语义不变量：请求版本与非空 `hard.minecraft_version.value` 不一致、canonical boolean hard assertions 的允许集合交集为空（包括 `behaviors.transparent` 与 `transparency` alias 冲突），或 `needs_user_choice` 与 `ambiguities` 不一致时，返回 `QUERY_INVALID`；具体规则为 ambiguities 非空则必须为 `true`、为空则必须为 `false`，`suggested_followups` 不强制非空。未确认 host hard 只从 effective spec 删除并可产生 warning，不是 `QUERY_INVALID`，soft disagreement 也不是。原始 validated canonical host object 只留在内存中用于 identity/warning，不能发送给 provider、持久化、记录、缓存或 output。visual rerank 的 provider request 只能接收 effective sanitized QuerySpec：本地确认 hard 与 explicit hard 已合并、未确认 hard 已删除、`soft.avoid_for` 已设为 `[]`；host input 本身不能产生 rerank 标志或 provider/model 证据。
+
 ### 3.4 `visual_rerank`
 
-视觉重排输入是本地已经召回并编号的 8–12 个候选联系表、原始查询、已校验 QuerySpec 和必要语义。真实 wire 输出固定为 `rerank-output.v1`，不是持久记录：
+视觉重排输入是本地已经召回并编号的 8–12 个候选联系表、原始查询、effective sanitized QuerySpec 和必要语义。真实 wire 输出固定为 `rerank-output.v1`，不是持久记录：
 
 ```json
 {
@@ -296,7 +302,7 @@ tile_metadata: [{"tile_id": "<existing tile id>",
 
 本地校验失败时，provider 可以把最多四条有界、确定性的校验反馈与上一次 artifact 的有界前缀作为 untrusted repair context，仅发送给现有的第二次请求；该反馈和原始响应不得持久化或进入 result、warning、数据库、日志或 UI，也不得规范化、截断后当作结果、覆盖无效 artifact 或触发 fallback。第二次仍失败时保持 `PROVIDER_SCHEMA_INVALID` 并进入审核。
 
-离线 `offline_annotation` 在预算用尽后必须创建 high priority review；不能把空语义发布。在线 `query_spec` 或 `visual_rerank` 最终失败时，搜索必须继续使用不放宽硬约束的确定性路径，并返回 `reranked_by_llm=false`；如果 QuerySpec 无法解析，使用本地 bounded semantic fields 和用户显式词解析，未知词只作为 soft keyword，不能猜成硬条件。
+离线 `offline_annotation` 在预算用尽后必须创建 high priority review；不能把空语义发布。在线 server-side `query_spec` 或 `visual_rerank` 最终失败时，搜索必须继续使用不放宽硬约束的确定性路径，并返回 `reranked_by_llm=false`；如果 QuerySpec 无法解析，使用本地 bounded semantic fields 和用户显式词解析，未知词只作为 soft keyword，不能猜成硬条件。有效 D-051 host-supplied QuerySpec 不产生 `query_spec` provider request；它仍必须先通过完整本地校验和 hard/soft 合并，且不能单独产生 `reranked_by_llm=true` 或 `score_source=llm_rerank`。
 
 ### 5.2.1 FINAL annotation validation diagnostic
 
@@ -358,6 +364,8 @@ stage
 
 缓存命中条件是 key 相同、artifact Schema 通过、候选映射一致、输入图片和机器 metadata hash 再验证通过。缓存只能保存 validated artifact、版本字段、hash、脱敏 request ID 和状态；不得保存完整 response 或未校验模型文本。失败响应不构成成功缓存。
 
+MCP D-051 host-supplied QuerySpec 不构成 provider artifact，且不得写入上述缓存、workspace、release 或日志；它只能作为本次请求的已校验内存输入。它不能选择 cache key 中的 `adapter`、`model_id`、`base_url_stable_id` 或其它 release-bound provider snapshot 字段。提供 host spec 时，不同 host intent 的 `search_id` 仍按既有 query identity 约定区分；未提供时保持既有 identity 路径，不公开新的 hash 实现细节。
+
 ### 6.2 发布冻结
 
 发布前必须把每个 AI artifact 与以下版本/哈希绑定并写入 release manifest 或发布索引：`adapter`、`profile_id`、`model_id`、`base_url_stable_id`、`secret_reference`、`prompt_version`、对应 stage 的 wire `schema_id`、`search_ranking_version`、`image_hash`、`machine_metadata_hash`、`cache_key` 和 `artifact_hash`。发布后这些字段只能读取；任一变化必须构建新的不可变 release。发布门和 `quality_report.json` 见 [`quality-and-testing.md`](quality-and-testing.md)。
@@ -395,7 +403,7 @@ stage
 实现可提供 fake selected-adapter endpoint 或脱敏协议 fixture 验证请求形状和客户端分类，但 fake endpoint 本身不能证明生产 endpoint 的 retention policy；还必须验证：
 
 1. 三阶段 × 两种 adapter 的六种请求形状均有覆盖：Responses `POST /responses`、`store=false`、`input_text/input_image`、`text.format`；Chat `POST /chat/completions`、省略 `store`、`text/image_url`、`response_format`。
-2. 两种 adapter 都使用同一个 configured/requested `model_id`、同三份 Schema/name、图片输入、strict output 和本地 ID/机器事实校验；`offline_annotation`、`query_spec`、`visual_rerank` 三个阶段均必须发送非空 PNG。成功响应必须有 string `model`，但不同 echo 不失败、不持久化且不替换 requested `model_id`；不存在 `json_object`、自由文本或协议 fallback 正常路径。
+2. 两种 adapter 都使用同一个 configured/requested `model_id`、同三份 Schema/name、图片输入、strict output 和本地 ID/机器事实校验；`offline_annotation`、`query_spec`、`visual_rerank` 三个阶段均必须发送非空 PNG。成功响应必须有 string `model`，但不同 echo 不失败、不持久化且不替换 requested `model_id`；不存在 `json_object`、自由文本或协议 fallback 正常路径。MCP host-supplied QuerySpec 只抑制 `query_spec` provider request，不改变上述 Studio/provider 请求规则，也不构成 provider/model evidence。
 3. Probe 只验证选定 adapter：Responses 发送 `store=false` 但不检查 store/model echo equality；Chat 检查请求没有 `store` 且不检查 model echo equality；两者都验证 image、strict、错误分类、requested model/auth，并不宣称 retention 或远端模型身份已验证。
 4. Chat 仅按 `choices[0]`、`refusal`、`finish_reason=stop` 和 JSON string content 解析；其它 incomplete/failure 分支不得正常 fallback。SDK retry 加应用 retry 的总尝试数不超过 2。
 5. profile 只有一个活动 model/adapter；改变 adapter、model、base URL/Schema/semantic constraints 会改变 cache key 和 run snapshot；协议不得自动切换。

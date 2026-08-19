@@ -60,7 +60,8 @@
 | D-047 | 2026-08-18 owner-approved：保持 `mcp-error.v1` 既有 `error_code` enum 不变，纠正 MCP 输入、空结果和 provider 降级的错误分层 | 输入 shape 错误使用 JSON-RPC `-32602`；正常空搜索和 `rerank=auto` provider failure 为成功 warning；`rerank=required` 仅用顶层 `RERANK_REQUIRED_UNAVAILABLE`，provider code 仅在 `details.provider_error_code`；不新增 Schema 或 fixture |
 | D-048 | 2026-08-18 owner-approved：为未来 R4/R5 candidate 增加 fresh-only `release-index.v2.sql`，保留 R3 `release-index.v1.sql` 历史证据但禁止 MCP/activation 使用 | v2 保留 v1 scalar/indexed columns 并增加 validated record/feature JSON columns，`schema_meta.format_version=2`；只 fresh build、不迁移/改写旧 release；MCP 遇 v1 返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`；不新增 JSON Schema、服务、CLI 或状态 |
 | D-049 | 2026-08-18 owner-approved：MCP tool input 的 `minecraft_version` 改用严格版本格式 pattern，不再用 `const: 26.2` | 格式非法返回 JSON-RPC `-32602`；格式合法但未发布版本返回 `VERSION_NOT_AVAILABLE` 且不回退；不增加当前版本支持或改变 Minecraft 26.2 baseline |
-| D-050 | 2026-08-18 owner-approved：当前 R4 的 `context.family` 没有 schema-owned `family_id`/family catalog；family dedupe 为确定性 no-op | `context.family=null` 时不分组、不限额且保持 Top-24 后稳定顺序；非 null 时返回 `QUERY_INVALID`；不得推断/创建 family ID；`compare_states`/`compare_blocks` 不解除不存在的 family limit；不新增 Schema、字段、数据、服务、CLI 或 migration |
+| D-050 | 2026-08-18 owner-approved；2026-08-19 owner-approved amendment：当前 R4 的 `context.family` 没有 schema-owned `family_id`/family catalog；family dedupe 为确定性 no-op | `context.family=null` 或任何通过 input schema 的 string 都不分组、不限额且保持 Top-24 后稳定顺序；不产生 family warning/metadata；不得推断/创建 family ID；非 string/null 仍是 JSON-RPC `-32602` input shape error；不新增 Schema、字段、数据、服务、CLI 或 migration |
+| D-051 | 2026-08-19 owner-approved：MCP `search_blocks` 可接收可选、顶层、host-supplied `query_spec`，作为不可信且临时的 QuerySpec 输入 | 输入必须完整符合既有 `query-spec-output.v1`；严格/未知字段失败使用 JSON-RPC `-32602`，语义/不变量失败保持 `QUERY_INVALID`；有效输入只抑制服务端 QuerySpec 生成，不持久化、不选择 provider identity；本地 hard 约束、`local_only`、release-bound visual rerank、四工具/stdio/只读边界和既有重排降级不变 |
 
 ## 关键边界的执行解释
 
@@ -414,8 +415,37 @@ Pairwise report `run/blockpedia-data/reports/export_20260816T091512Z--export_202
 
 ### 2026-08-18 — owner-approved correction
 
-项目所有者于 **2026-08-18** 明确批准当前 R4 的 family 语义收敛：现有 release projection 没有 schema-owned `family_id` 或 family catalog，`context.family` 不能引用不存在的发布元数据。`context.family=null` 是当前唯一可执行值，并且是确定性 no-op；非 null 值在 input shape 有效后按业务规则返回 `QUERY_INVALID`。本项不允许实现推断 family、由模型创建 family ID 或把 family 元数据加入响应。
+项目所有者于 **2026-08-18** 明确批准当前 R4 的 family 语义收敛：现有 release projection 没有 schema-owned `family_id` 或 family catalog，`context.family` 不能引用不存在的发布元数据。原决定曾将 `context.family=null` 作为当前唯一可执行值，并规定非 null 值在 input shape 有效后返回 `QUERY_INVALID`；该非 null 业务错误语义已由下述 2026-08-19 amendment supersede。本项不允许实现推断 family、由模型创建 family ID 或把 family 元数据加入响应。
 
-搜索顺序固定为 Top-24 后保持既有稳定顺序，再生成联系表；不执行 family 分组、默认最多 2 个限制、放宽或任何 family warning/metadata。`compare_states=true` 与 `compare_blocks` 的显式 block ID 比较不解除不存在的 family limit。
+搜索顺序固定为 Top-24 后保持既有稳定顺序，再生成联系表；不执行 family 分组、默认最多 2 个限制、放宽或任何 family warning/metadata。`compare_states=true` 与 `compare_blocks` 的显式 block ID 比较不引入 family 分组、限制或 metadata。
 
 **影响记录**：本项只收敛当前 R4 文档和验收语义，不新增或修改 JSON Schema、release/workspace 数据字段、family 数据 owner、服务、Python CLI、SQLite migration、fixture 资产或 MCP 工具边界；未来若需要 family metadata，必须另行取得 owner 批准并更新相应数据契约。
+
+### 2026-08-19 — owner-approved amendment
+
+项目所有者于 **2026-08-19** 批准本项 amendment，明确 supersede D-050 原先“非 null `context.family` 返回 `QUERY_INVALID`”的业务分支：`family=null` 或任意通过现有 input schema 的 string（包括未知 string，如 `"unknown"`）均为确定性 no-op，继续正常搜索。两者都不执行 family 分组、不应用 family 限额、不推断或创建 family、不产生 family warning 或 metadata，也不改变候选顺序；Top-24 后继续保持既有稳定顺序并生成联系表。只有非 string 且非 null 的值仍属于 input shape error，必须在协议层返回 JSON-RPC `-32602`，不得生成 `mcp-error.v1`。
+
+**影响记录**：本 amendment 只删除当前 `search_blocks` 的非 null string `QUERY_INVALID` 业务分支并同步文档/验收；保留现有 string/null 类型校验和 deterministic search 路径。不新增 D-052、Schema、字段、服务、CLI、SQLite migration、family catalog 或 family metadata；本地单机运行、可复现性、MCP stdio/只读边界、release/workspace 数据契约和既有候选排序均不变。
+
+## D-051：MCP host-supplied QuerySpec 窄例外
+
+### 2026-08-19 — owner-approved Phase 1 contract
+
+项目所有者在本会话明确批准以下窄例外。它只允许 MCP `search_blocks` 接收一个可选的顶层 `query_spec`，作为调用方提供的不可信、临时 QuerySpec；不改变四工具、stdio、release-only、只读或 provider identity 边界。本项是文档契约冻结，不代表代码、测试或新的 Schema 已增加。
+
+1. **输入与 Schema owner**：`search_blocks` 的 `query_spec` 只能是一个完整对象，精确使用现有 `query-spec-output.v1` 的字段、required 集合、枚举、边界和所有 nested object 约束。它不是新的 Schema ID、持久记录或 MCP 输出字段，也不增加新工具。省略该顶层字段才表示请求既有的 server-side QuerySpec 路径；不得以 `null` 或部分对象表示省略。
+2. **严格校验与错误分层**：输入及所有嵌套对象均必须 strict/fail closed，未知 nested fields 也必须拒绝。Schema、类型、缺失字段、额外字段和边界错误返回 JSON-RPC `-32602`；Schema 已通过但语义或不变量不成立的查询条件继续使用既有 `QUERY_INVALID`。提供了无效 `query_spec` 时不得隐式退回旧路径；调用方必须省略它才请求旧路径。
+3. **来源诚实性**：`query_spec.source` 仍必须为 Schema 要求的 `llm`。该值只表示语义由 LLM 生产，不证明 Blockpedia 验证了 provider/model，也不证明本次由 server-side provider 调用产生。不得增加 host/model metadata，或从输入推断、持久化 provider identity。
+4. **调用抑制范围**：通过校验的 host spec 只抑制 server-side QuerySpec generation。`context.rerank=local_only` 仍禁止所有 provider call 和 visual rerank；`auto`/`required` 仍可仅为 visual rerank 使用 resolved release-bound provider snapshot。secret、capability 和 visual-rerank failure 继续沿用既有 warning、确定性 local downgrade 及 `required` fail-closed 规则，不得跨协议或改用别的 profile/model/base URL。
+5. **合并和硬约束**：本地 deterministic parsing 对 query 原文中的显式 hard constraints 拥有最终权威，不能被 host spec 弱化。host hard 值只有经本地解析确认后才能保留为 hard；未确认的 host hard 不得进入 hard filtering。存在未解决歧义时，只能应用安全的 soft intent，不能执行未经确认的 semantic hard。host soft intent 可以在既有 bounded、去重规则内与本地 soft intent 合并；不得创建新的候选身份或 machine facts。
+6. **`avoid_for`**：因为完整 Schema 包含 `soft.avoid_for`，输入必须接受并校验该字段；但当前 deterministic search 没有权威 negative dimension。因此它不参与 positive recall、hard exclusion 或 ranking，只通过现有输出 `warnings` 机制发出既有的“未应用/未验证语义约束”提示；不得发明评分规则、负向维度或 Schema 字段。
+7. **身份与结果诚实性**：提供 host spec 时，`search_id` 必须按既有 request/query identity 约定绑定其已校验 canonical representation/hash，使不同 host intent 不共享同一 identity；未提供 host spec 时保持既有 identity 路径。不在公开输出中增加或解释 hash 实现细节。仅消费 host QuerySpec 永远不能设置 `reranked_by_llm=true` 或 `score_source=llm_rerank`；这两个值只在实际 visual rerank 成功后产生，也不得声称 Blockpedia 调用或验证了某个 model。
+8. **边界保持**：MCP 仍只读取已解析的不可变 release、current pointer 和必要的 release-bound secret reference；不读取 workspace/可变 active profile，不写数据库、文件、cache、logs、release 或 current。host spec 不得选择或改写 server-side provider profile、requested `model_id`、`base_url` 或 release snapshot；MCP 仍只提供四个工具、只使用 stdio，并保持精确版本解析和历史 release selector 禁止。
+9. **有限语义不变量**：Schema/type/range/unknown-field 错误仍返回 JSON-RPC `-32602`。完成 Schema normalization 后，若 `hard.minecraft_version.value` 非 null，其规范化后的精确值必须等于已解析请求版本；不等则 `QUERY_INVALID`。将 `hard.behaviors` 的 `transparent`/`emissive` 分别规范化为 `behavior.transparent`/`behavior.emissive`，并将 `hard.transparency`/`hard.emission` 规范化到同一字段；同一 canonical boolean fact 的 `eq`/`not_eq` 与 boolean `value` 转换为 `{true,false}` 的允许集合，交集为空即 `QUERY_INVALID`（例如 `behaviors.transparent=eq true` 与 `transparency=eq false`）。同一规则适用于同一 `behaviors` field 和同一 `support.direction`；不对不同 soft terms 或未定义的形状关系臆测矛盾。`needs_user_choice` 与 `ambiguities` 采用最小确定规则：`ambiguities` 非空必须为 `true`，为空必须为 `false`；`suggested_followups` 只须满足 Schema 要求的数组约束，不因该规则强制非空。仅仅未被本地解析确认的 host hard 不构成 `QUERY_INVALID`，而是从 effective spec 删除并可沿用现有 warning；soft disagreement 也不构成 `QUERY_INVALID`。
+10. **Original/effective 分离**：Schema 和上述不变量通过后，保留原始 validated canonical host object 仅在内存中用于 `search_id` identity 和 warning 生成；对象本身不得发送给 visual rerank，不得持久化、记录日志、写 cache 或 output。另构造 effective sanitized QuerySpec：保留经本地确认的 host hard、合并本地 explicit hard（本地权威不可弱化），删除全部未确认 host hard，并在任何 recall、filter、scoring、contact-sheet 或 rerank 输入前将 `soft.avoid_for` 设为 `[]`。deterministic recall/filtering 和 visual rerank 只能接收 effective spec；仅实际成功 visual rerank 才能设置 `reranked_by_llm=true` 或 `score_source=llm_rerank`。
+
+### D-035 impact proof
+
+- **Local single-machine and data contract**：只在 `search_blocks` 的内存输入路径增加一个既有 provider Schema 的可选入口；不新增服务、依赖、CLI、Schema ID、持久字段或输出 Schema，Studio/provider 请求规则不变。
+- **MCP read-only and provider safety**：host spec 是不可信临时输入，不进入 release、workspace、cache 或日志，也不能选择 provider identity；只有既有 release-bound snapshot 可用于 visual rerank，`local_only` 与 `required` 语义不变。
+- **Reproducibility and honesty**：严格校验、确定性本地 hard/soft 合并、`avoid_for` 忽略和既有 `search_id` identity 约定保持可重放；visual-rerank 标志只由真实成功调用产生，不能把 host input 当作 provider evidence。

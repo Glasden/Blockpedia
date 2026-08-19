@@ -139,7 +139,7 @@ Provider 测试必须使用本地 fake endpoint 或脱敏协议 fixture，不发
 2. 版本、current release 完整性、legal state、资格、明确排除行为、明确必须支撑/透明/发光/方向/形状先于评分；`unknown` 不能满足硬约束；
 3. FTS5 `trigram` 与无 trigram 时 `normalized_like` fallback 均覆盖名称/同义词、颜色、几何、用途、风格和行为；
 4. `search-ranking.v1` 权重精确为 shape `.35`、color `.30`、use `.15`、name-synonym `.10`、style `.05`、behavior `.05`，未出现维度按规则归一化；
-5. Top-24 后执行确定性 family no-op：`context.family=null` 不分组、不限额并保持稳定顺序，再生成 8–12 联系表；非 null 的 `context.family` 返回 `QUERY_INVALID`；`compare_states`/`compare_blocks` 不解除不存在的 family limit，也不生成 family metadata；
+5. Top-24 后执行确定性 family no-op：`context.family=null` 或任意通过 input schema 的 string 都不分组、不限额并保持稳定顺序，再生成 8–12 联系表，且不产生 family warning/metadata；非 string 且非 null 的 `context.family` 返回 JSON-RPC `-32602`；`compare_states`/`compare_blocks` 不引入 family 分组、限制或 family metadata；
 6. 相同 release、QuerySpec、config 和 fixture 的排序、candidate ID、tile mapping 可重复；
 7. provider 不可用时 `rerank=auto` 必须本地降级、返回 warning、`isError=false` 和 `reranked_by_llm=false`，不放宽 hard；`rerank=required` 必须以顶层 `RERANK_REQUIRED_UNAVAILABLE` 失败，底层 provider code 只能位于 `details.provider_error_code`；
 8. 正常硬过滤空集是 `isError=false` 的空成功结果，含硬过滤原因和建议追问；非法 `block_id`、compare 数量、`minecraft_version` 和其它 input shape 使用 JSON-RPC `-32602`，不产生 `mcp-error.v1` 工具结果；格式合法但未知 block/release 等工具执行错误使用 `isError=true`；歧义含 `needs_user_choice`、歧义点、建议追问；
@@ -157,7 +157,7 @@ Provider 测试必须使用本地 fake endpoint 或脱敏协议 fixture，不发
 5. `index_info` 无图；search/compare 有稳定编号 PNG 联系表 ImageContent；details 有四视角 PNG；
 6. 图片 metadata 包含 ID、MIME、尺寸、hash、purpose、content index 和 mapping，不含绝对路径；
 7. 工具错误 `isError=true` 与成功降级 `isError=false + warnings` 分层；协议错误使用 JSON-RPC error；
-8. current/default version、strict version pattern、显式未发布版本、v1 index rejection、禁止历史 selector、未知 ID、空搜索、非 null `context.family` 的 `QUERY_INVALID`、图片失败符合 [`mcp-api.md`](mcp-api.md)；
+8. current/default version、strict version pattern、显式未发布版本、v1 index rejection、禁止历史 selector、未知 ID、空搜索、null 与 string `context.family` 的成功 no-op、非 string 且非 null family 的 JSON-RPC `-32602`、图片失败符合 [`mcp-api.md`](mcp-api.md)；
 9. MCP 进程执行全部路径后不写 SQLite、文件、cache、logs 或 current；联系表和 ImageContent 使用内存 bytes，provider 降级也成立。
 
 ## 8. R2/R3/R5 WebUI、任务和安全测试

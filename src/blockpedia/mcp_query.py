@@ -367,6 +367,57 @@ def _semantic(annotation: Mapping[str, Any] | None) -> dict[str, Any]:
     return {key: value for key, value in annotation.items() if key in {"synonyms_zh", "synonyms_en", "summary_zh", "summary_en", "color_terms", "shape_terms", "material_impressions", "building_roles", "style_tags", "avoid_for", "confidence"}}
 
 
+def _canonical_json(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _allowed_boolean_values(operator: str, value: bool) -> set[bool]:
+    if operator in {"eq", "equals"}:
+        return {value}
+    if operator in {"not_eq", "not_equals"}:
+        return {not value}
+    return set()
+
+
+def _host_query_spec_error(query_spec: Mapping[str, Any], resolved_version: str) -> str | None:
+    """Return the first finite D-051 semantic/invariant violation."""
+
+    hard = query_spec["hard"]
+    minecraft_version = hard["minecraft_version"]["value"]
+    if minecraft_version is not None and minecraft_version != resolved_version:
+        return "Host QuerySpec minecraft_version does not match the resolved request version."
+    ambiguities = query_spec["ambiguities"]
+    if query_spec["needs_user_choice"] is not bool(ambiguities):
+        return "Host QuerySpec needs_user_choice must match whether ambiguities are present."
+
+    allowed: dict[str, set[bool]] = {}
+
+    def add_boolean_fact(field: str, item: Mapping[str, Any]) -> str | None:
+        values = _allowed_boolean_values(str(item["operator"]), bool(item["value"]))
+        if field in allowed:
+            allowed[field].intersection_update(values)
+            if not allowed[field]:
+                return f"Host QuerySpec contains contradictory hard facts for {field}."
+        else:
+            allowed[field] = set(values)
+        return None
+
+    for item in hard["behaviors"]:
+        error = add_boolean_fact(f"behavior.{item['field']}", item)
+        if error:
+            return error
+    for item in hard["support"]:
+        error = add_boolean_fact(f"support.{item['direction']}", item)
+        if error:
+            return error
+    for field, items in (("behavior.transparent", hard["transparency"]), ("behavior.emissive", hard["emission"])):
+        for item in items:
+            error = add_boolean_fact(field, item)
+            if error:
+                return error
+    return None
+
+
 def _image_id(payload: bytes, variant_id: str, prefix: str = "img") -> str:
     del variant_id
     return f"{prefix}_{hashlib.sha256(payload).hexdigest()[:24]}"
@@ -467,7 +518,8 @@ class MCPQueryService:
     def search_blocks(self, arguments: Mapping[str, Any], *, request_id: str | None = None) -> MCPToolResult:
         request = self._next_request_id(request_id)
         try:
-            args = _validate_object(arguments, {"minecraft_version", "query", "limit", "context"})
+            args = _validate_object(arguments, {"minecraft_version", "query", "limit", "context", "query_spec"})
+            host_spec = self._validate_host_spec(args)
             version = _validate_version_input(args)
             query = args.get("query")
             if not isinstance(query, str) or not 1 <= len(query) <= 2000:
@@ -490,16 +542,23 @@ class MCPQueryService:
             with self.resolver.resolve(version) as handle:
                 snapshot = self._snapshot(handle)
                 handle.assert_index_current()
-                if family is not None:
-                    return _error_result(MCPReleaseError("QUERY_INVALID", "Family grouping is not available for this release.", minecraft_version=handle.minecraft_version), request)
                 intent_value = parse_query(query)
                 intent = _Intent(tuple(intent_value["hard"]), intent_value["soft"], tuple(intent_value["unknown_terms"]), tuple(intent_value["unsupported"]))
                 if intent.unsupported:
                     return _error_result(MCPReleaseError("HARD_CONSTRAINT_UNSUPPORTED", "An explicit hard constraint is not supported by this release.", minecraft_version=handle.minecraft_version), request)
                 rows = self._eligible_rows(snapshot)
-                query_spec, query_warning, query_error = self._query_spec_before_filter(handle, query, rows, rerank_mode)
-                if query_spec is not None:
+                host_warning: str | None = None
+                if host_spec is not None:
+                    semantic_error = _host_query_spec_error(host_spec, handle.minecraft_version)
+                    if semantic_error is not None:
+                        return _error_result(MCPReleaseError("QUERY_INVALID", semantic_error, minecraft_version=handle.minecraft_version), request)
+                    query_spec, host_warning = self._effective_host_spec(host_spec, intent)
                     intent = self._merge_provider_intent(intent, query_spec)
+                    query_warning, query_error = None, None
+                else:
+                    query_spec, query_warning, query_error = self._query_spec_before_filter(handle, query, rows, rerank_mode)
+                    if query_spec is not None:
+                        intent = self._merge_provider_intent(intent, query_spec)
                 if any(str(item.get("field")) == "orientation" for item in intent.hard) and not any(_fact_value(row[1], row[2], "orientation") != "unknown" for row in rows):
                     return _error_result(MCPReleaseError("HARD_CONSTRAINT_UNSUPPORTED", "This release has no verified orientation fact for the explicit constraint.", minecraft_version=handle.minecraft_version), request)
                 rows = [row for row in rows if self._passes_hard(row, intent.hard)]
@@ -533,12 +592,14 @@ class MCPQueryService:
                 selected = top24[:limit]
                 candidates = self._candidate_dicts(selected, snapshot, intent)
                 warnings: list[str] = []
+                if host_warning:
+                    warnings.append(host_warning)
                 if query_warning:
                     warnings.append(query_warning)
                 if intent.unknown_terms:
                     warnings.append("Some query terms were not assigned a bounded semantic field.")
                 if not selected:
-                    data = {"search_id": self._search_id(handle, query), "query": query, "hard_filters": list(intent.hard), "exclusion_summary": self._exclusions(snapshot, rows, recalled, intent), "candidates": [], "contact_sheet": {"image_id": None, "tile_mapping": []}, "images": [], "reranked_by_llm": False}
+                    data = {"search_id": self._search_id(handle, query, host_spec), "query": query, "hard_filters": list(intent.hard), "exclusion_summary": self._exclusions(snapshot, rows, recalled, intent), "candidates": [], "contact_sheet": {"image_id": None, "tile_mapping": []}, "images": [], "reranked_by_llm": False}
                     envelope = {"schema_version": "mcp-search-blocks-output.v1", "request_id": request, "minecraft_version": handle.minecraft_version, "resolved_release_id": handle.release_id, "manifest_sha256": handle.manifest_sha256, "warnings": warnings, "data": data}
                     return _validate_output("mcp-search-blocks-output.v1", envelope)
                 sheet, image_meta, image_bytes = self._search_sheet(handle, candidates, snapshot)
@@ -557,7 +618,7 @@ class MCPQueryService:
                 if reranked_candidates is not None:
                     candidates = reranked_candidates
                     reranked = True
-                data = {"search_id": self._search_id(handle, query), "query": query, "hard_filters": list(intent.hard), "exclusion_summary": self._exclusions(snapshot, rows, recalled, intent), "candidates": candidates, "contact_sheet": {"image_id": image_meta["image_id"], "tile_mapping": image_meta["mapping_tiles"]}, "images": [image_meta["image"]], "reranked_by_llm": reranked}
+                data = {"search_id": self._search_id(handle, query, host_spec), "query": query, "hard_filters": list(intent.hard), "exclusion_summary": self._exclusions(snapshot, rows, recalled, intent), "candidates": candidates, "contact_sheet": {"image_id": image_meta["image_id"], "tile_mapping": image_meta["mapping_tiles"]}, "images": [image_meta["image"]], "reranked_by_llm": reranked}
                 envelope = {"schema_version": "mcp-search-blocks-output.v1", "request_id": request, "minecraft_version": handle.minecraft_version, "resolved_release_id": handle.release_id, "manifest_sha256": handle.manifest_sha256, "warnings": warnings, "data": data}
                 return _validate_output("mcp-search-blocks-output.v1", envelope).__class__(envelope, images=(image_bytes,))
         except MCPInputError:
@@ -690,6 +751,160 @@ class MCPQueryService:
         if isinstance(artifact, Mapping) and status == "succeeded":
             return dict(artifact), None
         return None, str(code) if isinstance(code, str) else "PROVIDER_UNKNOWN"
+
+    @staticmethod
+    def _validate_host_spec(arguments: Mapping[str, Any]) -> dict[str, Any] | None:
+        if "query_spec" not in arguments:
+            return None
+        value = arguments["query_spec"]
+        try:
+            validate_record("query-spec-output.v1", value)
+            return _canonical_json(value)
+        except (RecordSchemaError, TypeError, ValueError) as exc:
+            raise MCPInputError("query_spec does not match query-spec-output.v1") from exc
+
+    @staticmethod
+    def _effective_host_spec(host_spec: Mapping[str, Any], intent: _Intent) -> tuple[dict[str, Any], str | None]:
+        """Make a sanitized, local-authority QuerySpec for all search stages."""
+
+        effective = _canonical_json(host_spec)
+        hard = effective["hard"]
+        local_by_field: dict[str, list[Mapping[str, Any]]] = {}
+        for constraint in intent.hard:
+            local_by_field.setdefault(str(constraint["field"]), []).append(constraint)
+
+        def confirmed(field: str, operator: str, value: Any) -> bool:
+            local_constraints = local_by_field.get(field, [])
+            for constraint in local_constraints:
+                local_operator = str(constraint["operator"])
+                local_value = constraint["value"]
+                if isinstance(value, bool) and isinstance(local_value, bool):
+                    if _allowed_boolean_values(operator, value) == _allowed_boolean_values(local_operator, local_value):
+                        return True
+                elif local_operator == operator and local_value == value:
+                    return True
+            return False
+
+        sanitized_behaviors: list[dict[str, Any]] = []
+        seen_boolean: set[tuple[str, str, bool]] = set()
+        unconfirmed = False
+
+        def add_behavior(field: str, operator: str, value: bool, source: str) -> None:
+            key = (field, operator, value)
+            if key in seen_boolean:
+                return
+            seen_boolean.add(key)
+            sanitized_behaviors.append({"field": field, "operator": operator, "value": value, "source": source, "required": True})
+
+        for item in hard["behaviors"]:
+            field = f"behavior.{item['field']}"
+            if confirmed(field, str(item["operator"]), bool(item["value"])):
+                add_behavior(str(item["field"]), str(item["operator"]), bool(item["value"]), str(item["source"]))
+            else:
+                unconfirmed = True
+        for item in hard["transparency"]:
+            if confirmed("behavior.transparent", str(item["operator"]), bool(item["value"])):
+                add_behavior("transparent", str(item["operator"]), bool(item["value"]), str(item["source"]))
+            else:
+                unconfirmed = True
+        for item in hard["emission"]:
+            if confirmed("behavior.emissive", str(item["operator"]), bool(item["value"])):
+                add_behavior("emissive", str(item["operator"]), bool(item["value"]), str(item["source"]))
+            else:
+                unconfirmed = True
+
+        sanitized_support: list[dict[str, Any]] = []
+        for item in hard["support"]:
+            field = f"support.{item['direction']}"
+            if confirmed(field, str(item["operator"]), bool(item["value"])):
+                sanitized_support.append({
+                    "direction": str(item["direction"]),
+                    "operator": str(item["operator"]),
+                    "value": bool(item["value"]),
+                    "source": str(item["source"]),
+                    "required": True,
+                })
+            else:
+                unconfirmed = True
+
+        sanitized_orientation: list[dict[str, Any]] = []
+        for item in hard["orientation"]:
+            if confirmed("orientation", "equals", item["value"]):
+                sanitized_orientation.append({"value": str(item["value"]), "source": str(item["source"]), "required": True})
+            else:
+                unconfirmed = True
+
+        sanitized_shape: list[dict[str, Any]] = []
+        for item in hard["shape"]:
+            if confirmed("shape", "equals", item["term"]):
+                sanitized_shape.append({"term": str(item["term"]), "source": str(item["source"]), "required": True})
+            else:
+                unconfirmed = True
+
+        hard["behaviors"] = sanitized_behaviors
+        hard["support"] = sanitized_support
+        # The two alias arrays are normalized into behaviors for downstream use.
+        hard["transparency"] = []
+        hard["emission"] = []
+        hard["orientation"] = sanitized_orientation
+        hard["shape"] = sanitized_shape
+
+        def local_spec_constraint(constraint: Mapping[str, Any]) -> tuple[str, dict[str, Any]] | None:
+            field = str(constraint["field"])
+            raw_operator = constraint.get("operator")
+            if raw_operator == "equals":
+                operator = "eq"
+            elif raw_operator == "not_equals":
+                operator = "not_eq"
+            else:
+                return None
+            value = constraint["value"]
+            source = "user_explicit"
+            if field.startswith("behavior.") and isinstance(value, bool):
+                return "behaviors", {"field": field.removeprefix("behavior."), "operator": operator, "value": value, "source": source, "required": True}
+            if field.startswith("support.") and isinstance(value, bool):
+                return "support", {"direction": field.removeprefix("support."), "operator": operator, "value": value, "source": source, "required": True}
+            if field == "orientation":
+                return "orientation", {"value": value, "source": source, "required": True}
+            if field == "shape":
+                return "shape", {"term": value, "source": source, "required": True}
+            return None
+
+        def same_constraint(left: Mapping[str, Any], right: Mapping[str, Any], field: str) -> bool:
+            if field == "behaviors":
+                if left.get("field") != right.get("field"):
+                    return False
+                if isinstance(left.get("value"), bool) and isinstance(right.get("value"), bool):
+                    return _allowed_boolean_values(str(left.get("operator")), left["value"]) == _allowed_boolean_values(str(right.get("operator")), right["value"])
+                return all(left.get(key) == right.get(key) for key in ("operator", "value"))
+            if field == "support":
+                if left.get("direction") != right.get("direction"):
+                    return False
+                if isinstance(left.get("value"), bool) and isinstance(right.get("value"), bool):
+                    return _allowed_boolean_values(str(left.get("operator")), left["value"]) == _allowed_boolean_values(str(right.get("operator")), right["value"])
+                return all(left.get(key) == right.get(key) for key in ("operator", "value"))
+            if field == "orientation":
+                return left.get("value") == right.get("value")
+            return left.get("term") == right.get("term")
+
+        for constraint in intent.hard:
+            converted = local_spec_constraint(constraint)
+            if converted is None:
+                continue
+            target, item = converted
+            hard[target] = [existing for existing in hard[target] if not same_constraint(existing, item, target)]
+            hard[target].append(item)
+
+        soft = effective["soft"]
+        had_avoid_for = bool(soft["avoid_for"])
+        soft["avoid_for"] = []
+        warning: str | None = None
+        if unconfirmed:
+            warning = "Unconfirmed host hard constraints were not applied."
+        if had_avoid_for:
+            warning = f"{warning} " if warning else ""
+            warning += "Host soft avoid_for terms were not applied to deterministic search."
+        return effective, warning
 
     def _query_spec_before_filter(
         self,
@@ -858,8 +1073,11 @@ class MCPQueryService:
             return None
 
     @staticmethod
-    def _search_id(handle: ReleaseHandle, query: str) -> str:
-        return "search_" + hashlib.sha256((handle.manifest_sha256 + "\0" + query).encode("utf-8")).hexdigest()[:20]
+    def _search_id(handle: ReleaseHandle, query: str, host_spec: Mapping[str, Any] | None = None) -> str:
+        identity = handle.manifest_sha256 + "\0" + query
+        if host_spec is not None:
+            identity += "\0" + _hash_json(host_spec)
+        return "search_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
 
     @staticmethod
     def _eligible_rows(snapshot: _Snapshot) -> list[tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]]:

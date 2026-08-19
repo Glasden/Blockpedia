@@ -40,14 +40,14 @@ stdout 从首字节开始 **MUST** 只输出 MCP 协议 JSON-RPC 消息；日志
 MCP 每次启动或打开查询都必须：
 
 1. 从数据根读取 `current.json`，解析 `current-pointer.v1` 的 `default_minecraft_version` 和 `versions` map；
-2. 校验 `minecraft_version`、`release_id`、相对路径安全性、`manifest_sha256`、release `checksums`、`index.sqlite3` 的 fresh v2 format 和质量门状态，并读取 release 冻结的 provider snapshot（包括 `adapter`）；
+2. 校验 `minecraft_version`、`release_id`、相对路径安全性、`manifest_sha256`、release `checksums`、`index.sqlite3` 的 fresh v2 format 和质量门状态，并读取 release 冻结的 provider snapshot（包括 `adapter`）；host-supplied QuerySpec 只在内存中消费，不改变该 snapshot；
 3. 只读打开不可变且 `schema_meta.format_version=2` 的 `releases/<minecraft_version>/<release_id>/index.sqlite3` 及同目录 PNG/metadata；v1 index 必须以 `RELEASE_INTEGRITY_FAILED`、`details.integrity_component="index"` 拒绝，不得迁移或降级读取；
 4. 拒绝 `workspace`、cache、导出源目录、任意用户路径和未完整 release；
 5. 在一次请求中固定解析结果，不能跨版本或在同一响应中混用 release。
 
 MCP 请求的 `minecraft_version` 可以省略；省略时使用 `current-pointer.v1.default_minecraft_version`，显式输入必须匹配严格版本格式 `^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$`，格式非法返回 JSON-RPC `-32602`。格式合法但未知、未发布或没有 current 的版本返回 `VERSION_NOT_AVAILABLE`，列出可用精确版本且 **MUST NOT** 自动回退。哈希不匹配、index v1、index format 非 2 或不可变标志缺失时返回 `RELEASE_INTEGRITY_FAILED`；MCP input 不支持 `release`/`release_id` selector；历史 release 选择只能由 WebUI rollback 完成。响应只返回 `resolved_release_id` 和 manifest hash，不返回 selector 歧义。
 
-MCP 进程 **MUST NOT** 写 SQLite、图片、release、cache、日志、data-root logs、临时文件、`current.json` 或任何任务状态。即使调用 provider 进行 QuerySpec/重排，也只能按已解析 release 冻结的 `adapter`、`profile_id`、`model_id`、`base_url_stable_id` 和 `secret_reference` 使用 snapshot；`adapter` 只能是 `openai_responses` 或 `openai_chat_completions`，决定唯一 wire codec；不得读取或比较可变 active profile，也不得跨协议 fallback。provider 结果只能在内存中使用。secret 无法解析或运行时能力不满足 snapshot 时，必须返回 warning 并使用确定性本地降级。联系表必须在内存构造，图片以进程内 bytes 直接形成 `ImageContent`，在线查询失败不能写缓存或生成联系表到持久目录。
+MCP 进程 **MUST NOT** 写 SQLite、图片、release、cache、日志、data-root logs、临时文件、`current.json` 或任何任务状态。未提供 host-supplied QuerySpec 时，若调用 provider 生成 QuerySpec，也只能按已解析 release 冻结的 `adapter`、`profile_id`、`model_id`、`base_url_stable_id` 和 `secret_reference` 使用 snapshot；提供有效 host spec 后只可跳过该生成步骤。任何 visual rerank 仍只能使用同一 snapshot；`adapter` 只能是 `openai_responses` 或 `openai_chat_completions`，决定唯一 wire codec；不得读取或比较可变 active profile，也不得跨协议 fallback。provider 结果只能在内存中使用。secret 无法解析或运行时能力不满足 snapshot 时，必须返回 warning 并使用确定性本地降级。联系表必须在内存构造，图片以进程内 bytes 直接形成 `ImageContent`，在线查询失败不能写缓存或生成联系表到持久目录。
 
 ## 2. MCP 能力和响应 envelope
 
@@ -88,7 +88,7 @@ compare_blocks
 
 当响应有图片时，`content` 还必须包含由同一 `structuredContent` 的 `images` metadata 顺序生成的 `ImageContent`；二者的 `content_index`、`image_id` 和 candidate/tile 映射必须一致。TextContent 必须是等价 JSON，不得只写摘要而省略结构化字段。`structuredContent` 本身不得包含绝对路径或图片 base64；图片 bytes 只出现在 ImageContent。
 
-`rerank=auto` 中 provider 不可用、QuerySpec 未调用或视觉重排失败时仍为 `isError=false`，返回确定性本地结果、warning 和 `reranked_by_llm=false`；`rerank=required` 无法重排时使用 `isError=true` 的 `RERANK_REQUIRED_UNAVAILABLE` 工具错误。硬过滤正常得到空集也是 `isError=false` 的成功空结果；未知 ID、release unavailable、图片读取失败等工具执行失败使用 `isError=true`，见第 6 节。
+`rerank=auto` 中 provider 不可用、QuerySpec 未调用或视觉重排失败时仍为 `isError=false`，返回确定性本地结果、warning 和 `reranked_by_llm=false`；消费 host-supplied QuerySpec 本身不构成重排，也不能设置 `reranked_by_llm=true` 或 `score_source=llm_rerank`。`rerank=required` 无法重排时使用 `isError=true` 的 `RERANK_REQUIRED_UNAVAILABLE` 工具错误。硬过滤正常得到空集也是 `isError=false` 的成功空结果；未知 ID、release unavailable、图片读取失败等工具执行失败使用 `isError=true`，见第 6 节。
 
 ### 2.3 图片 metadata
 
@@ -127,6 +127,8 @@ compare_blocks
 ```
 
 省略 `minecraft_version` 时必须使用 default version；显式输入必须匹配上述严格版本格式并查找其 current pointer。格式非法、类型错误或其它 input shape 错误返回 JSON-RPC `-32602`；格式合法但未发布版本返回 `VERSION_NOT_AVAILABLE` 且不回退。任何 `release`、`release_id`、`selector` 输入均为未知字段并返回 `-32602`。该 pattern 不增加当前版本支持，Minecraft baseline 仍为 `26.2`；新增 Minecraft 版本需生成对应发布数据和契约收敛。
+
+上述对象是四工具共享的公共输入部分；`search_blocks` 的完整 input 另按第 5.1 节增加可选 `query_spec`，其嵌套对象不因公共字段 Schema 而放宽，仍必须完整符合既有 `query-spec-output.v1`。
 
 ## 4. `index_info`
 
@@ -181,7 +183,7 @@ compare_blocks
 
 ### 5.1 搜索输入契约
 
-`minecraft_version` 可省略；省略时使用 `default_minecraft_version` 对应的 current。MCP 输入不接受 `release`、`selector` 或 `release_id`。
+`minecraft_version` 可省略；省略时使用 `default_minecraft_version` 对应的 current。MCP 输入不接受 `release`、`selector` 或 `release_id`。D-051 允许一个可选的顶层 `query_spec`；它不是 selector、provider 配置或 release identity。
 
 ```json
 {
@@ -202,58 +204,63 @@ compare_blocks
 |---|---|
 | `query` | 必填，1–2000 Unicode 字符；不得是 SQL 或路径指令 |
 | `limit` | 可选整数 1–12，默认 8；它不改变 Top-24 阶段 |
-| `context.family` | 当前 R4 只能为 null；非 null 在 input shape 有效后返回 `QUERY_INVALID` |
+| `context.family` | 当前 R4 可为 null 或任意 string；二者均为不分组、不限额、不推断、不产生 family warning/metadata 且不改变候选顺序的确定性 no-op；非 string 且非 null 返回 JSON-RPC `-32602` |
 | `context.compare_states` | boolean，默认 false |
 | `context.rerank` | `auto`、`local_only`、`required`，默认 `auto` |
+| `query_spec` | 可选；必须是完整、严格通过既有 `query-spec-output.v1` 的对象 |
+
+### 5.1.1 Host-supplied `query_spec`
+
+`query_spec` 的完整 shape **MUST** 直接使用 [`schemas/provider/query-spec-output.v1.json`](../schemas/provider/query-spec-output.v1.json)，包括 `schema_id`、`source`、`hard`、`soft`、`ambiguities`、`needs_user_choice`、`suggested_followups` 和 `unknown_terms` 及其全部 nested constraints。不得在 MCP 文档或工具中复制为第二个 Schema，也不得接受部分对象、`null`、未知 nested fields 或 host/model metadata。`source` 必须仍为 `llm`；它只表示语义由 LLM 生产，不代表 Blockpedia 已验证 provider/model 或本次执行了 server-side provider call。
+
+输入 shape、类型、required、枚举、边界和任意 nested unknown field 错误必须 strict/fail closed，返回 JSON-RPC `-32602`。Schema 通过但 query condition 的语义或 invariant 无效时，继续返回现有业务 `QUERY_INVALID`；不得因 supplied spec 无效而隐式走 server-side QuerySpec generation。调用方省略 `query_spec` 才请求既有生成路径。
+
+有效 host spec 只抑制 server-side QuerySpec generation，并且只在本次请求内存中使用，绝不持久化或写入 cache、logs、workspace、release 或 current。它不能选择或改写 release-bound `profile_id`、`adapter`、`model_id`、`base_url`、`secret_reference` 或其它 provider snapshot。`local_only` 仍禁止所有 provider call 和 visual rerank；`auto`/`required` 仍可按既有 snapshot 仅执行 visual rerank，能力、secret、warning、local downgrade 和 `required` fail-closed 语义不变。
+
+搜索合并仍由本地 deterministic parser 和过滤器拥有最终权威：query 原文明确的 hard constraints 不能被 host spec 弱化；host hard 只有经本地解析确认后才保留为 hard，未确认的 host hard 不得成为 hard filter。歧义未解决时只应用安全的 soft intent，不应用未经确认的 semantic hard；host soft intent 仅能在既有 bounded、去重范围内合并，不创建新的 candidate identity 或 machine fact。完整 Schema 接受的 `soft.avoid_for` 当前不参与 positive recall、hard exclusion 或 ranking；沿用现有 `warnings` 输出机制提示该语义约束未应用，不增加新评分规则或字段。
+
+**有限语义不变量（D-051）**：Schema/type/range/unknown-field 错误仍返回 JSON-RPC `-32602`。Schema normalization 后，若 `hard.minecraft_version.value` 非 null，其规范化后的精确值必须等于已解析请求版本；不等即 `QUERY_INVALID`。将 `hard.behaviors` 的 `transparent`/`emissive` 分别规范化为 `behavior.transparent`/`behavior.emissive`，并将 `hard.transparency`/`hard.emission` 规范化到同一字段；同一 canonical boolean fact 的 `eq`/`not_eq` 与 boolean `value` 转换为 `{true,false}` 的允许集合，交集为空即 `QUERY_INVALID`，例如 `behaviors.transparent=eq true` 与 `transparency=eq false`。同一规则适用于同一 `behaviors` field 和同一 `support.direction`；不臆测不同 soft terms 或未定义的形状关系。`needs_user_choice` 与 `ambiguities` 采用确定规则：非空必须为 `true`，为空必须为 `false`；`suggested_followups` 只满足 Schema 数组约束，不强制非空。未被本地解析确认的 host hard 不是 `QUERY_INVALID`，而是从 effective spec 删除并可产生现有 warning；soft disagreement 也不转为 `QUERY_INVALID`。
+
+**Original/effective 分离**：不变量通过后，原始 validated canonical host object 只在内存中用于 `search_id` identity 和 warning 生成；对象本身不得发送给 visual rerank，不得持久化、写日志、写 cache 或 output。系统另构造 effective sanitized QuerySpec：保留本地确认的 host hard、合并本地 explicit hard（本地权威不可弱化），删除全部未确认 host hard，并在 recall、filter、scoring、contact-sheet 和 rerank 之前将 `soft.avoid_for` 设为 `[]`。deterministic recall/filtering 和 visual rerank 只能接收 effective spec；host spec 本身不产生 `reranked_by_llm=true` 或 `score_source=llm_rerank`。
 
 ### 5.2 处理和输出 `mcp-search-blocks-output.v1`
 
-处理必须严格遵守 [`search-and-ranking.md`](search-and-ranking.md)：解析 release → hard filter → FTS/字段评分 → Top-24 → 保持稳定顺序 → 8–12 联系表 → 同一个 `adapter`/`model_id` 的 strict visual rerank。当前 R4 不执行 family 分组或限额，也不在输出中加入 family metadata；非 null `context.family` 返回 `QUERY_INVALID`。输出 `data` 至少包含：
+处理必须严格遵守 [`search-and-ranking.md`](search-and-ranking.md)：解析 release →（缺少 host spec 时才生成 QuerySpec）→ 合并并验证 QuerySpec → 构造 effective sanitized QuerySpec（删除未确认 hard、`soft.avoid_for=[]`）→ hard filter → FTS/字段评分 → Top-24 → 保持稳定顺序 → 8–12 联系表 → 仅使用 effective sanitized QuerySpec 的 strict visual rerank。当前 R4 不执行 family 分组或限额。`mcp-search-blocks-output.v1` 的 envelope 和 `data` **MUST** 严格使用闭合 Schema 的字段，不得加入任何未声明的输入、召回或解释性输出字段；host spec 只存在于输入内存路径。输出 `data` 的完整 shape 以真实 Schema 为唯一 owner：
 
 ```json
 {
   "schema_version": "mcp-search-blocks-output.v1",
-  "search_id": "S_01J",
-  "query": "黄色的扁片方块，用于屋檐，不要红石组件",
-  "query_spec": {},
-  "hard_filters": [
-    {"field": "behavior.redstone_related", "operator": "exclude", "value": true, "source": "user_explicit"}
-  ],
-  "top_24": {"count": 0, "candidate_ids": []},
-  "candidates": [
-    {
-      "candidate_id": "A1",
-      "variant_id": "minecraft:yellow_carpet",
-      "block_id": "minecraft:yellow_carpet",
-      "display_name": "黄色地毯",
-      "recommended_state": "minecraft:yellow_carpet",
-      "qualification": "eligible",
-      "score": 0.91,
-      "score_source": "local|llm_rerank",
-      "score_breakdown": {"shape": 0.0, "color": 0.0, "use": 0.0, "name_synonym": 0.0, "style": 0.0, "behavior": 0.0},
-      "reason": "",
-      "warnings": [],
-      "image_id": "img_A1"
-    }
-  ],
-  "contact_sheet": {
-    "image_id": "img_contact",
-    "tile_mapping": [{"candidate_id": "A1", "variant_id": "minecraft:yellow_carpet", "block_id": "minecraft:yellow_carpet"}]
-  },
-  "images": [],
-  "reranked_by_llm": false,
-  "visual_constraints_verified": false,
-  "needs_user_choice": false,
-  "ambiguity_points": [],
-  "suggested_followups": [],
+  "request_id": "mcp_01J",
+  "minecraft_version": "26.2",
+  "resolved_release_id": "rel_01J",
+  "manifest_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "warnings": [],
-  "search_ranking_version": "search-ranking.v1"
+  "data": {
+    "search_id": "S_01J",
+    "query": "黄色的扁片方块，用于屋檐，不要红石组件",
+    "hard_filters": [
+      {
+        "field": "behavior.redstone_related",
+        "operator": "exclude",
+        "value": true,
+        "source": "user_explicit",
+        "reason": "用户明确要求不要红石组件。"
+      }
+    ],
+    "exclusion_summary": [],
+    "candidates": [],
+    "contact_sheet": {"image_id": null, "tile_mapping": []},
+    "images": [],
+    "reranked_by_llm": false
+  }
 }
 ```
 
-`top_24` 是本地召回事实，不得因 `limit` 只记录最终候选。`candidate_id` 只在本次响应内稳定，图片映射、结构对象和 TextContent 必须一一对应。LLM 失败、未配置或不要求时，`rerank=auto` 必须返回 `isError=false`、warning 和 `reranked_by_llm=false`，并使用确定性本地结果；不得伪装成模型已重排。
+`data` 只能包含 `mcp-search-blocks-output.v1` 声明的成员；每个 candidate（如有）必须且只能包含 Schema 要求的 `candidate_id`、`variant_id`、`block_id`、`display_name`、`recommended_state_id`、`candidate_qualification`、`local_score`、`final_score`、`score_source`、`score_breakdown`、`reason`、`warnings` 和 `machine_fact_refs`；联系表和图片分别只能使用 Schema 定义的 `contact_sheet`、`images` 形状。任何 host input 都不得通过 output envelope 回显。
 
-硬过滤后为空是正常的成功业务结果：`isError=false`，返回空 `candidates`/联系表、已应用约束、排除摘要和建议追问；不得返回通过放宽 hard constraint 得到的候选。不得为正常空集生成 `mcp-error.v1`，`NO_CANDIDATES` 也不是该 Schema 的顶层 `error_code`。
+`Top-24` 只是本地召回的内部阶段，不是 output member；不得因 `limit` 把它写入响应。提供 host spec 时，`search_id` 必须按既有 request/query identity 约定绑定其已校验 canonical representation/hash，使不同 host intent 不共享同一 identity；未提供时保持既有 identity 路径，不在 MCP 输出中暴露 hash 实现细节。`candidate_id` 只在本次响应内稳定，图片映射、结构对象和 TextContent 必须一一对应。LLM 失败、未配置或不要求时，`rerank=auto` 必须返回 warning 和 `reranked_by_llm=false`；消费 host-supplied QuerySpec 本身也永远不能设置 `reranked_by_llm=true` 或 `score_source=llm_rerank`，只有实际成功的 visual rerank 才能设置这些值；不得伪装成模型已重排。
+
+硬过滤后为空是正常的成功业务结果：返回闭合 Schema 允许的空 `candidates`、空联系表、已应用 `hard_filters` 和 `exclusion_summary`；不得返回通过放宽 hard constraint 得到的候选。不得为正常空集生成 `mcp-error.v1`，`NO_CANDIDATES` 也不是该 Schema 的顶层 `error_code`。
 
 ## 6. `get_block_details`
 
@@ -325,7 +332,7 @@ details 必须为每个主要可发布视觉变体返回四视角 PNG `ImageCont
 }
 ```
 
-`block_ids` 必须为 2–6 个不重复的合法 `minecraft:` ID；所有 ID 必须在同一 release。数量、重复项、ID 格式、类型或其它 input shape 不合法时，必须在工具执行前返回 JSON-RPC `-32602`，不得生成 `mcp-error.v1` 工具结果。`context` 可为 0–1000 字符；`compare_states=true` 时允许输出给定 block IDs 的多状态/多变体，但不解除不存在的 family limit，也不生成 family metadata。格式合法但未知 ID 返回明确 `BLOCK_NOT_FOUND` 及所有无效 ID，不部分成功或替换候选。
+`block_ids` 必须为 2–6 个不重复的合法 `minecraft:` ID；所有 ID 必须在同一 release。数量、重复项、ID 格式、类型或其它 input shape 不合法时，必须在工具执行前返回 JSON-RPC `-32602`，不得生成 `mcp-error.v1` 工具结果。`context` 可为 0–1000 字符；`compare_states=true` 时允许输出给定 block IDs 的多状态/多变体，但不引入 family 分组、限制或 metadata。格式合法但未知 ID 返回明确 `BLOCK_NOT_FOUND` 及所有无效 ID，不部分成功或替换候选。
 
 ### 7.2 输出 `mcp-compare-blocks-output.v1`
 
@@ -402,7 +409,7 @@ JSON-RPC/MCP 协议错误表示请求没有正确调用工具，使用标准 `er
 | `RELEASE_INTEGRITY_FAILED` | manifest/checksum/quality hash、index format 或 immutable release 校验失败；v1 index 的 `details.integrity_component` 为 `index` | 否 |
 | `INDEX_OPEN_FAILED` | 只读数据库无法打开 | 否 |
 | `INDEX_INFO_UNAVAILABLE` | index metadata 缺失 | 否 |
-| `QUERY_INVALID` | input shape 有效但搜索业务规则非法，包括非 null 的 `context.family` | 否 |
+| `QUERY_INVALID` | input shape 有效但搜索业务规则非法，包括 host-supplied QuerySpec 的语义/不变量错误 | 否 |
 | `QUERY_PARSE_FAILED` | 无法得到安全 QuerySpec | 否 |
 | `HARD_CONSTRAINT_UNSUPPORTED` | 请求包含当前 release 不支持的硬约束 | 否 |
 | `BLOCK_NOT_FOUND` | ID 不在 release | 否 |
@@ -420,10 +427,10 @@ JSON-RPC/MCP 协议错误表示请求没有正确调用工具，使用标准 `er
 
 1. `tools/list` 严格只有四个工具；不存在 HTTP、resources、任意 SQL/文件读写接口。
 2. 每行 stdout 可独立解析为 JSON-RPC/MCP 消息；stderr 可有诊断但不进入 stdout。
-3. 省略版本使用 `default_minecraft_version`；malformed `minecraft_version` 返回 JSON-RPC `-32602`，格式合法但未发布版本返回 `VERSION_NOT_AVAILABLE` 且不回退；显式版本使用该版本 current；未知/未发布版本和 hash mismatch 均符合错误表；非法 `block_id`、compare 数量和其它 input shape 返回 JSON-RPC `-32602`，非 null 的 `context.family` 返回 `QUERY_INVALID`，格式合法但未知 ID 才返回 `BLOCK_NOT_FOUND`；历史 `release_id` selector 被拒绝。
+3. 省略版本使用 `default_minecraft_version`；malformed `minecraft_version` 返回 JSON-RPC `-32602`，格式合法但未发布版本返回 `VERSION_NOT_AVAILABLE` 且不回退；显式版本使用该版本 current；未知/未发布版本和 hash mismatch 均符合错误表；非法 `block_id`、compare 数量和其它 input shape 返回 JSON-RPC `-32602`，`search_blocks.query_spec` 及其 nested unknown fields 也按完整 `query-spec-output.v1` strict 校验并返回 `-32602`；Schema 有效但 QuerySpec 语义/不变量无效返回 `QUERY_INVALID`，`context.family=null` 或任意 string 均以 `isError=false` 的 `mcp-search-blocks-output.v1` 成功 no-op，非 string 且非 null 的 family 返回 JSON-RPC `-32602`，格式合法但未知 ID 才返回 `BLOCK_NOT_FOUND`；host spec 无效不得隐式调用 server-side QuerySpec，历史 `release_id` selector 被拒绝。
 4. 四工具只读不可变 release；运行所有成功、失败、降级和图片路径分支后，SQLite、文件、cache、logs 和 current hash 不变。
 5. `structuredContent` 与 TextContent JSON 深相等；成功降级 `isError=false`，工具执行错误 `isError=true`，协议错误使用标准 JSON-RPC error；未知 RPC method 返回 `-32601`，合法 `tools/call` 的未知 tool name 返回 Invalid Params `-32602`。
 6. `search_blocks`/`compare_blocks` 返回稳定编号 PNG 联系表 ImageContent；`get_block_details` 返回四视角 PNG；`index_info` 无图片。
 7. 图片 metadata 含 ID、MIME、尺寸、hash、purpose、content index 和映射，不含绝对路径；mapping 与 PNG 联系表、结构候选 100% 一致。
-8. provider 不可用不改变候选事实；`rerank=auto` 返回 `isError=false`、warning 和 `reranked_by_llm=false`，`rerank=required` 返回顶层 `RERANK_REQUIRED_UNAVAILABLE`，且 provider code 仅在 `details.provider_error_code`。
+8. provider 不可用不改变候选事实；`rerank=auto` 返回 `isError=false`、warning 和 `reranked_by_llm=false`，`rerank=required` 返回顶层 `RERANK_REQUIRED_UNAVAILABLE`，且 provider code 仅在 `details.provider_error_code`。host QuerySpec 仅抑制 QuerySpec generation，不得单独宣称 provider/model 已调用或验证；`local_only` 不得发生任何 provider call。
 9. 仅使用 `schema_meta.format_version=2` 的原创 PNG/SQLite release fixture 通过协议测试；v1 fixture/release 返回 `RELEASE_INTEGRITY_FAILED` 且 `details.integrity_component="index"`；缺少真实本地 release 只能报告 `SKIPPED_LOCAL_RELEASE_MISSING`，不得伪造通过。

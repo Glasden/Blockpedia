@@ -54,6 +54,7 @@ def _input_schema(tool_name: str) -> dict[str, Any]:
             {
                 "query": {"type": "string", "minLength": 1, "maxLength": 2000},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 12, "default": 8},
+                "query_spec": load_schema("query-spec-output.v1"),
                 "context": {
                     "type": "object",
                     "additionalProperties": False,
