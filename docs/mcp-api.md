@@ -441,6 +441,21 @@ python3.14 tools/build_mcp.py --data-root /path/to/blockpedia-data
 
 产物位于 `build/mcp/<commit前12位>-<平台>/`，其中有独立的 `venv/`、源码与 Schema 快照 `source/`、`bootstrap.py`、`revision.json`；Linux 另有 `blockpedia-mcp.sh`。已有同名产物不会被覆盖；需要重建时使用另一输出根 `--out-root`，或自行处理旧构建目录。venv 不能跨操作系统、CPU 架构或机器复制。
 
+当前 ARM64 宿主机若没有 CPython 3.14.7，可在同架构 Docker 容器中构建并运行，保持产物在容器内使用：
+
+```bash
+mkdir -p build/mcp
+docker run --rm --platform linux/arm64 --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -v "$PWD:/src:ro" -v "$PWD/build/mcp:/out" -w /src python:3.14.7 \
+  python tools/build_mcp.py --python /usr/local/bin/python --out-root /out
+docker run --rm -i --platform linux/arm64 \
+  -v "$PWD/build/mcp/<commit前12位>-linux-aarch64:/artifact:ro" \
+  -v "/absolute/blockpedia-data:/data:ro" \
+  python:3.14.7 /artifact/blockpedia-mcp.sh --data-root /data
+```
+
+若当前提交的产物已构建，直接运行第二条命令。将它拆为 MCP 客户端的 `command=docker` 与 `args` 即可按客户端连接启动。保留 `-i`，不要使用分配终端的 `-t`；`--rm` 在连接结束后清理容器。宿主机必须能访问所选数据根；Windows 显卡机的本地路径不会自动出现在 ARM64 主机。
+
 把产物启动器配置为 MCP 客户端的 stdio 命令，传入已发布数据所在的 `--data-root`。例如 Linux 客户端：
 
 ```json
