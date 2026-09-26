@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import os
 import struct
+import subprocess
+import sys
 import zlib
 from pathlib import Path
 
@@ -301,6 +303,47 @@ def test_r1_png_analysis_reuses_one_read_and_decode(monkeypatch, tmp_path: Path)
     assert not validator.issues
 
 
+@pytest.mark.parametrize("corruption", [None, "crc", "truncated"])
+def test_r1_and_features_share_png_acceptance(tmp_path: Path, corruption: str | None) -> None:
+    from blockpedia.features import PngDecodeError, decode_rgba_png
+
+    pixels = bytes((80, 140, 200, 255)) * 16
+    raw = bytearray(_rgba_png(4, 4, pixels))
+    if corruption == "crc":
+        raw[32] ^= 1
+    elif corruption == "truncated":
+        del raw[-12:]
+    path = tmp_path / "preview.png"
+    path.write_bytes(raw)
+    validator = Validator(tmp_path, tmp_path)
+    analysis = _read_png(path, validator)
+    if corruption is None:
+        assert analysis is not None and not validator.issues
+        assert decode_rgba_png(raw).pixels == pixels
+    else:
+        assert analysis is None and validator.issues[0].code == "PNG_DECODE_FAILED"
+        with pytest.raises(PngDecodeError):
+            decode_rgba_png(raw)
+
+
+def test_standalone_r1_tool_does_not_load_studio(tmp_path: Path) -> None:
+    tool = Path(__file__).resolve().parents[1] / "tools" / "validate_r1_export.py"
+    code = (
+        "import runpy, sys\n"
+        f"sys.argv = [{str(tool)!r}, '--help']\n"
+        "try:\n"
+        f"    runpy.run_path({str(tool)!r}, run_name='__main__')\n"
+        "except SystemExit as exc:\n"
+        "    assert exc.code == 0\n"
+        "assert 'blockpedia.services' not in sys.modules\n"
+        "assert 'blockpedia.provider' not in sys.modules\n"
+        "assert 'httpx' not in sys.modules\n"
+    )
+    result = subprocess.run([sys.executable, "-I", "-c", code], cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
+
+
 def test_r1_progress_does_not_add_png_reads_or_decodes(monkeypatch, tmp_path: Path) -> None:
     from tools import validate_r1_export as validator_module
 
@@ -398,10 +441,9 @@ def test_r1_inventory_does_not_follow_root_symlink(tmp_path: Path) -> None:
 
 def _analysis_from_pixels(width: int, height: int, pixels: bytes) -> _PngAnalysis:
     raw = _rgba_png(width, height, pixels)
-    parsed_width, parsed_height, bit_depth, color_type, interlace, idat = _parse_png(raw)
-    assert (parsed_width, parsed_height, bit_depth, color_type, interlace) == (width, height, 8, 6, 0)
-    decoded = zlib.decompress(idat)
-    return _analyze_png_pixels(decoded, width, height, width * 4)
+    parsed = _parse_png(raw)
+    assert (parsed.width, parsed.height) == (width, height)
+    return _analyze_png_pixels(parsed.scanlines, width, height, width * 4)
 
 
 def test_r1_transparent_edge_on_quadrant_is_accepted() -> None:

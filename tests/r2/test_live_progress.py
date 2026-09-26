@@ -108,6 +108,14 @@ def test_async_check_refresh_sse_and_import_call_validator_once(
         progress=(7, 10, "records"),
     )
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2])
+    state_writes = []
+    write_state = service.imports._write_state
+
+    def observed_write(state, **kwargs):
+        state_writes.append(state)
+        return write_state(state, **kwargs)
+
+    monkeypatch.setattr(service.imports, "_write_state", observed_write)
     app = __import__("blockpedia.web", fromlist=["create_app"]).create_app(
         data_root=DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], service=service, start_worker=False
     )
@@ -131,6 +139,9 @@ def test_async_check_refresh_sse_and_import_call_validator_once(
             refreshed_data = refreshed.json()["data"]
             assert refreshed_data["status"] == "running"
             assert refreshed_data["progress"] == {"completed": 7, "total": 10, "unit": "records"}
+            assert not [state for state in state_writes if state.phase in {"SNAPSHOT_EXPORT", "VALIDATE_EXPORT"} and state.progress["completed"] > 0]
+            recent = service.imports.list_checks("26.2")
+            assert recent[0]["progress"] == refreshed_data["progress"]
 
             state_dir = tmp_path / "cache" / "import-checks" / check_id
             assert ref not in (state_dir / "state.json").read_text(encoding="utf-8")

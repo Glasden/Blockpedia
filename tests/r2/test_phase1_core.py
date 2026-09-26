@@ -118,8 +118,26 @@ def test_import_projection_validator_once_and_feature_boundary(monkeypatch: pyte
     assert block_count is not None and block_count["n"] == 2
     assert variant_count is not None and variant_count["n"] == 1
     assert skipped_state_count is not None and skipped_state_count["n"] == 1
-    for _ in range(6):
+    plans = 0
+    claims = 0
+    plan = service.worker._ensure_feature_jobs
+    claim = service.worker._claim_pending_job
+
+    def counted_plan(*args):
+        nonlocal plans
+        plans += 1
+        return plan(*args)
+
+    def delayed_claim(*args):
+        nonlocal claims
+        claims += 1
+        return None if claims <= 2 else claim(*args)
+
+    monkeypatch.setattr(service.worker, "_ensure_feature_jobs", counted_plan)
+    monkeypatch.setattr(service.worker, "_claim_pending_job", delayed_claim)
+    for _ in range(8):
         service.tick(run_id)
+    assert plans == 1
     run = service.get_run(run_id)
     assert run["status"] == "paused"
     assert run["boundary_event"] == "R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING"
@@ -130,7 +148,59 @@ def test_import_projection_validator_once_and_feature_boundary(monkeypatch: pyte
     assert "details_json" not in json.dumps(run)
     assert service.query_workspace(run_id, "stone")
     assert str(tmp_path) not in json.dumps(check.to_dict())
+    db.close()
     service.close()
+
+
+def test_pause_before_first_feature_stage_does_not_skip_planning(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, export_fixture: Path) -> None:
+    from conftest import PassingToolchainProbe
+
+    service = StudioService(DataRoot(tmp_path), toolchain_probe=PassingToolchainProbe())
+    entered, release = threading.Event(), threading.Event()
+    errors = []
+    thread = None
+    try:
+        checked = service.check_import(export_fixture, "26.2")
+        run_id = service.import_checked(checked.check_id)["run_id"]
+        for _ in range(5):
+            service.tick(run_id)
+        begin = service.worker._begin_stage
+
+        def delayed_begin(database, target_run_id, stage):
+            if stage == "EXTRACT_FEATURES" and not entered.is_set():
+                entered.set()
+                assert release.wait(5)
+            return begin(database, target_run_id, stage)
+
+        def tick():
+            try:
+                service.tick(run_id)
+            except Exception as exc:
+                errors.append(exc)
+
+        monkeypatch.setattr(service.worker, "_begin_stage", delayed_begin)
+        thread = threading.Thread(target=tick)
+        thread.start()
+        assert entered.wait(5)
+        assert service.pause(run_id)["status"] == "paused"
+        release.set()
+        thread.join(5)
+        assert not thread.is_alive() and not errors
+        with service.worker.open_database(run_id) as database:
+            assert database.fetchone("SELECT status FROM stage_runs WHERE stage='EXTRACT_FEATURES'")["status"] == "pending"
+            assert database.fetchone("SELECT COUNT(*) AS n FROM jobs WHERE stage='EXTRACT_FEATURES'")["n"] == 0
+        service.resume(run_id)
+        service.tick(run_id)
+        assert service.get_run(run_id)["boundary_event"] == "R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING"
+        with service.worker.open_database(run_id) as database:
+            count = database.fetchone("SELECT COUNT(*) AS n FROM variants")["n"]
+            assert database.fetchone("SELECT COUNT(*) AS n FROM features")["n"] == count
+            assert database.fetchone("SELECT COUNT(*) AS n FROM jobs WHERE stage='EXTRACT_FEATURES' AND status='succeeded'")["n"] == count
+    finally:
+        release.set()
+        if thread is not None:
+            thread.join(5)
+        service.close()
 
 
 def test_forced_fts_fallback_and_schema_mismatch(tmp_path: Path) -> None:

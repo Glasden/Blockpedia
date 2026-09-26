@@ -654,6 +654,9 @@ class WorkerService:
         with self.run_lock(run_id):
             now = utc_now()
             with database.transaction() as connection:
+                run = connection.execute("SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
+                if run is None or run["status"] not in {"pending", "running"}:
+                    return False
                 row = connection.execute("SELECT status,worker_id FROM stage_runs WHERE run_id=? AND stage=?", (run_id, stage)).fetchone()
                 if row is None:
                     return False
@@ -673,6 +676,8 @@ class WorkerService:
                 )
                 if run_update.rowcount != 1:
                     return False
+                if stage == "EXTRACT_FEATURES" and row["status"] == "pending":
+                    self._ensure_feature_jobs(connection, run_id)
                 connection.execute(
                     "INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)",
                     (_id("audit"), "STAGE_STARTED", run_id, _json({"stage": stage, "worker_id": self.worker_id}), now),
@@ -797,7 +802,6 @@ class WorkerService:
     def _extract_one(self, database: WorkspaceDatabase, run_id: str) -> None:
         workspace_dir = database.path.parent
         with self.run_lock(run_id):
-            self._ensure_feature_jobs(database, run_id)
             running = database.fetchone("SELECT 1 FROM jobs WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running'", (run_id,))
             if running is not None:
                 job = database.fetchone(
@@ -906,16 +910,15 @@ class WorkerService:
                 return None
             return connection.execute("SELECT * FROM jobs WHERE job_id=?", (row["job_id"],)).fetchone()
 
-    def _ensure_feature_jobs(self, database: WorkspaceDatabase, run_id: str) -> None:
-        rows = database.fetchall("SELECT variant_id,source_json FROM variants WHERE status='selected' ORDER BY variant_id")
-        with database.transaction() as connection:
-            for row in rows:
-                source = row["source_json"]
-                signature = _hash(source)
-                connection.execute(
-                    "INSERT OR IGNORE INTO jobs(job_id,run_id,stage,logical_key,input_signature,status,priority,cursor_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (_id("job"), run_id, "EXTRACT_FEATURES", row["variant_id"], signature, "pending", 0, "{}", utc_now()),
-                )
+    def _ensure_feature_jobs(self, connection: Any, run_id: str) -> None:
+        """Plan once in the transaction that starts or recovers this stage."""
+        rows = connection.execute("SELECT variant_id,source_json FROM variants WHERE status='selected' ORDER BY variant_id").fetchall()
+        for row in rows:
+            signature = _hash(row["source_json"])
+            connection.execute(
+                "INSERT OR IGNORE INTO jobs(job_id,run_id,stage,logical_key,input_signature,status,priority,cursor_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (_id("job"), run_id, "EXTRACT_FEATURES", row["variant_id"], signature, "pending", 0, "{}", utc_now()),
+            )
 
     def _finish_extract_stage(self, database: WorkspaceDatabase, run_id: str) -> None:
         with self.run_lock(run_id):

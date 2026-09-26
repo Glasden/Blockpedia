@@ -468,7 +468,6 @@ class ImportService:
         self._checks: dict[str, ImportCheck] = {}
         self._checks_lock = threading.RLock()
         self._active_checks: dict[tuple[str, str], str] = {}
-        self._last_progress_write: dict[str, float] = {}
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="blockpedia-import-check")
         self._closed = False
         self._mark_interrupted_checks()
@@ -497,7 +496,7 @@ class ImportService:
         with self._checks_lock:
             active_id = self._active_checks.get(key)
             if active_id is not None:
-                active = self._load_check_cache(active_id)
+                active = self._current_check(active_id)
                 if active.status in {"pending", "running"}:
                     return ImportCheckStart(active, reused=True, response_status=202)
                 self._active_checks.pop(key, None)
@@ -562,20 +561,11 @@ class ImportService:
         return self.start_check(str(source_directory), minecraft_version).check
 
     def wait_for_check(self, check_id: str, *, timeout: float | None = None) -> ImportCheck:
-        # Futures are intentionally not retained: state.json is the sole
-        # progress truth.  Polling here is only a compatibility convenience.
+        # Live progress is observational; only phase/terminal state is durable.
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            try:
-                result = self._load_check_cache(check_id)
-                persisted = True
-            except ImportCheckNotFound:
-                with self._checks_lock:
-                    result = self._checks.get(check_id)
-                if result is None:
-                    raise
-                persisted = False
-            if persisted and result.status in {"passed", "failed"}:
+            result = self.get_check(check_id)
+            if result.status in {"passed", "failed"}:
                 return result
             if deadline is not None and time.monotonic() >= deadline:
                 return result
@@ -584,14 +574,7 @@ class ImportService:
     def get_check(self, check_id: str) -> ImportCheck:
         if not _safe_check_id(check_id):
             raise ImportCheckNotFound(check_id)
-        try:
-            result = self._load_check_cache(check_id)
-        except ImportCheckNotFound:
-            with self._checks_lock:
-                result = self._checks.get(check_id)
-            if result is None:
-                raise
-        return result
+        return self._current_check(check_id)
 
     def resolve_checked_snapshot(self, check_id: str) -> tuple[ImportCheck, Path]:
         """Resolve a passed immutable check snapshot without rerunning validation."""
@@ -657,7 +640,9 @@ class ImportService:
             except (OSError, ValueError, TypeError):
                 continue
             if isinstance(payload, Mapping) and payload.get("check_id") == check_dir.name:
-                yield dict(payload)
+                with self._checks_lock:
+                    live = self._checks.get(check_dir.name)
+                yield live.to_dict() if live is not None else dict(payload)
 
     def _latest_check_locked(self, minecraft_version: str, export_id: str) -> ImportCheck | None:
         candidates = [
@@ -668,7 +653,7 @@ class ImportService:
         if not candidates:
             return None
         try:
-            return self._load_check_cache(str(candidates[0]["check_id"]))
+            return self.get_check(str(candidates[0]["check_id"]))
         except ImportCheckNotFound:
             return None
 
@@ -893,7 +878,6 @@ class ImportService:
                         "bytes": max(0, int(bytes_completed)),
                     },
                     progress_subphase="SNAPSHOT_COPY_HASH",
-                    force=True,
                 )
 
             snapshot = check_dir / "snapshot" / source.name
@@ -947,7 +931,6 @@ class ImportService:
                     status="running",
                     progress={"completed": completed_value, "total": total_value, "unit": unit_value},
                     progress_subphase=subphase,
-                    force=True,
                 )
 
             report = self._call_validator(snapshot, on_progress)
@@ -978,8 +961,8 @@ class ImportService:
                 progress_subphase=None,
                 workspace=current.workspace,
             )
-            self._store_result(final)
             self._write_state(final, force=True)
+            self._store_result(final)
             with self._checks_lock:
                 self._active_checks.pop((minecraft_version, source.name), None)
         except DirectoryRefNotFound:
@@ -1047,17 +1030,9 @@ class ImportService:
                 "updated_at": utc_now(),
             }
         )
-        self._store_result(updated)
-        now = time.monotonic()
         if force:
             self._write_state(updated, force=True)
-            if status in {"passed", "failed"} or phase == "FINALIZE":
-                self._last_progress_write[result.check_id] = now
-            return
-        if now - self._last_progress_write.get(result.check_id, 0.0) < 0.10:
-            return
-        self._last_progress_write[result.check_id] = now
-        self._write_state(updated, force=force)
+        self._store_result(updated)
 
     def _store_result(self, result: ImportCheck) -> None:
         with self._checks_lock:

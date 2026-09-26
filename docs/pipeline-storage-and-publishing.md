@@ -82,7 +82,7 @@ MCP                   → 只读根 current.json 与指定版本 release
 
 ### 3.1 Import check handoff and recent-check discovery
 
-`cache/import-checks/{check_id}/state.json` 是 import check 的 authoritative state。首页、导出目录 listing 和 `GET /api/imports/checks?minecraft_version=&limit=` 只在请求时安全扫描严格 check ID 目录和 `state.json`，按 `(minecraft_version, export_id)` 选择最新 actionable check；扫描结果不落第二份索引。禁止 `index.json`、`owner_instance_id` 或其它 owner instance marker、额外 SQLite 表、通用 migration 或任意生成框架。目录 entry 必须拒绝 symlink/junction/reparse/link，summary 只允许脱敏的版本、export ID、状态、时间、anchor 状态、进度和稳定错误码。
+`cache/import-checks/{check_id}/state.json` 保存 import check 的阶段和终态；运行中进度从本进程内存读取并覆盖列表中的旧计数。首页、导出目录 listing 和 `GET /api/imports/checks?minecraft_version=&limit=` 只在请求时安全扫描严格 check ID 目录和 `state.json`，按 `(minecraft_version, export_id)` 选择最新 actionable check；扫描结果不落第二份索引。禁止 `index.json`、`owner_instance_id` 或其它 owner instance marker、额外 SQLite 表、通用 migration 或任意生成框架。目录 entry 必须拒绝 symlink/junction/reparse/link，summary 只允许脱敏的版本、export ID、状态、时间、anchor 状态、进度和稳定错误码。
 
 同一 WebUI 进程的 `ImportService` 使用一个 coordinator `RLock`，协调键为 `(minecraft_version, export_id)`。不同 opaque chooser ref 解析到同一 export 不能产生两个 active check；exact active duplicate 返回 `202` 和相同 `check_id`/`reused=true`。passed check 的复用只比较 canonical source entry 当前 raw `manifest.json` 与 `checksums.sha256` 的 SHA-256 是否分别等于 passed state 的 declared anchors；这是轻量 declared-anchor comparison，不是对 live export 每个 artifact 未变的证明。immutable checked snapshot 和一次 validator pass 才是完整 integrity 依据。anchor 不匹配、failed 或 interrupted 时新建 `202` check；进程重启后的 active check 固定为 `IMPORT_CHECK_INTERRUPTED`，不自动 resume。
 
@@ -90,7 +90,7 @@ state 只做最小扩展：`created_at`、`updated_at`、validator subphase/prog
 
 `POST /api/imports` 是严格的 `{check_id, copy_mode: "copy_to_workspace"}` 请求，**不含 `project_id`**，代码和 Schema 也不得加入该字段。请求在同一 coordinator lock 内先预留 `import_id`/`run_id` 并把 association 写为 `creating`，再由既有 workspace builder 从 immutable snapshot 建库。相同 passed check 是幂等入口：`creating` 重复请求返回 `202`/同一 `run_id`，有效 `created` 返回 `200`/同一 `run_id`，首次完成创建可返回 `201`；任何分支都不能分配第二 workspace。只有验证过最终 `work.sqlite3` 后 UI 才能 deep-link。重启发现 `creating` 时先 reconcile 原 reservation 的 final workspace；无有效 workspace 则保留原 ID，进入稳定 failure/retry，重试不得静默生成第二 run。
 
-check progress 只展示 `snapshot → validate → finalize` 三个宏观阶段。snapshot callback 接既有 copy/hash loop；validator callback 接既有 inventory、Schema、JSONL、reference、render、checksum loops，不增加 scan/read/hash/decode。`completed` 在同一 validator subphase 内单调递增；只有已有总量时填写 `total`，否则为 `null`/`0`，UI 使用带 live count 的 indeterminate bar。state persistence 节流，phase transition/terminal 强制写入；SSE 发完整 snapshots，不逐 item 广播。
+check progress 只展示 `snapshot → validate → finalize` 三个宏观阶段。snapshot callback 接既有 copy/hash loop；validator callback 接既有 inventory、Schema、JSONL、reference、render、checksum loops，不增加 scan/read/hash/decode。`completed` 在同一 validator subphase 内单调递增；只有已有总量时填写 `total`，否则为 `null`/`0`，UI 使用带 live count 的 indeterminate bar。普通进度 callback 只更新内存，phase transition/terminal 才持久化；SSE 发完整 snapshots，不逐 item 广播。
 
 ## 4. Python/SDK 锁定和 `PREPARE`
 
@@ -423,7 +423,7 @@ recover 不能删除成功产物，也不能把未知结果当作 AI 已返回�
 
 同一 passed check 的 import 请求必须在 export lock 内完成“检查 association → 保留已有 reservation 或建立 reservation → 写 `creating` → 构建/验证 workspace”的顺序。`creating` 的 duplicate 不得重新 copy、创建新 run 或调用 validator。重启 reconcile 必须优先检查同一 `run_id` 的最终 workspace；旧 state 缺少 association 时再按版本、export ID 和 manifest hash 扫描既有数据库。无效或不完整结果保留原 reservation 和稳定 `error_code`，显式 retry 仍复用原 ID；不得自动 resume source check 或隐式分配第二 run。
 
-check 的 progress callback 只观察既有循环：snapshot 阶段接 copy/hash loop，validate 阶段接 validator 已有 inventory/Schema/JSONL/reference/render/checksum loop，finalize 阶段接既有 atomic state/snapshot finalize。callback 不能新增读取、扫描、hash、解码或第二份报告；callback 开关前后报告、PNG read/decode 计数和最终 hash 必须一致。state 写入节流但 phase/terminal 强制，subphase `completed` 单调递增，未知 `total` 保持 null/0。
+check 的 progress callback 只观察既有循环：snapshot 阶段接 copy/hash loop，validate 阶段接 validator 已有 inventory/Schema/JSONL/reference/render/checksum loop，finalize 阶段接既有 atomic state/snapshot finalize。callback 不能新增读取、扫描、hash、解码或第二份报告；callback 开关前后报告、PNG read/decode 计数和最终 hash 必须一致。普通进度不持久化，phase/terminal 才写入，subphase `completed` 单调递增，未知 `total` 保持 null/0。
 
 ## 7. 错误、恢复和重试语义
 

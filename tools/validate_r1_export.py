@@ -15,12 +15,15 @@ import os
 import re
 import stat
 import sys
-import zlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
 
 from jsonschema import Draft202012Validator
+
+# Keep the standalone repository tool usable without installing Studio.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from blockpedia.png import _parse_rgba_png as _parse_png, _unfilter
 
 SCHEMA_IDS = (
     "export-block.v1",
@@ -1075,24 +1078,11 @@ def _read_png(path: Path, validator: Validator) -> _PngAnalysis | None:
             validator.add("PNG_SIGNATURE_INVALID", path.name)
             validator._png_cache[path] = None
             return None
-        width, height, bit_depth, color_type, interlace, idat = _parse_png(raw)
-        if bit_depth != 8 or color_type != 6 or interlace != 0:
-            validator.add("PNG_RGBA_REQUIRED", path.name)
-            analysis = _PngAnalysis(
-                width, height, "unknown", False, None, 0, 0,
-                (0, 0, 0, 0), True, False, False, False,
-            )
-            validator._png_cache[path] = analysis
-            return analysis
-        decoded = zlib.decompress(idat)
-        row_bytes = width * 4
-        expected_length = height * (row_bytes + 1)
-        if len(decoded) != expected_length:
-            raise ValueError("decoded scanline length mismatch")
-        analysis = _analyze_png_pixels(decoded, width, height, row_bytes)
+        parsed = _parse_png(raw)
+        analysis = _analyze_png_pixels(parsed.scanlines, parsed.width, parsed.height, parsed.width * 4)
         validator._png_cache[path] = analysis
         return analysis
-    except (OSError, ValueError, zlib.error, IndexError) as exc:
+    except (OSError, ValueError, IndexError) as exc:
         validator.add("PNG_DECODE_FAILED", f"{path.name}: {type(exc).__name__}")
         validator._png_cache[path] = None
         return None
@@ -1113,7 +1103,7 @@ def _analyze_png_pixels(decoded: bytes, width: int, height: int, row_bytes: int)
     for y in range(height):
         filter_type = decoded[offset]
         offset += 1
-        row = _unfilter_png_row(filter_type, decoded[offset : offset + row_bytes], previous, 4)
+        row = _unfilter(decoded[offset : offset + row_bytes], previous, filter_type, 4)
         offset += row_bytes
         rows.append(bytes(row))
         for x in range(width):
@@ -1201,66 +1191,6 @@ def _is_canonical_missing_checker(
             if (red, green, blue, alpha) != (*expected, 255):
                 return False
     return True
-
-
-def _parse_png(raw: bytes) -> tuple[int, int, int, int, int, bytes]:
-    if len(raw) < 33:
-        raise ValueError("PNG is truncated")
-    offset = 8
-    header: tuple[int, int, int, int, int] | None = None
-    idat_parts: list[bytes] = []
-    while offset + 12 <= len(raw):
-        length = int.from_bytes(raw[offset : offset + 4], "big")
-        chunk_start = offset + 8
-        chunk_end = chunk_start + length
-        if chunk_end + 4 > len(raw):
-            raise ValueError("PNG chunk is truncated")
-        chunk_type = raw[offset + 4 : offset + 8]
-        chunk_data = raw[chunk_start:chunk_end]
-        if chunk_type == b"IHDR":
-            if len(chunk_data) != 13:
-                raise ValueError("invalid IHDR")
-            header = (
-                int.from_bytes(chunk_data[0:4], "big"),
-                int.from_bytes(chunk_data[4:8], "big"),
-                chunk_data[8],
-                chunk_data[9],
-                chunk_data[12],
-            )
-        elif chunk_type == b"IDAT":
-            idat_parts.append(chunk_data)
-        elif chunk_type == b"IEND":
-            break
-        offset = chunk_end + 4
-    if header is None or not idat_parts:
-        raise ValueError("PNG is missing IHDR or IDAT")
-    return (*header, b"".join(idat_parts))
-
-
-def _unfilter_png_row(filter_type: int, filtered: bytes, previous: bytearray, bytes_per_pixel: int) -> bytearray:
-    row = bytearray(filtered)
-    if filter_type == 0:
-        return row
-    if filter_type not in {1, 2, 3, 4}:
-        raise ValueError(f"unsupported PNG filter {filter_type}")
-    for index in range(len(row)):
-        left = row[index - bytes_per_pixel] if index >= bytes_per_pixel else 0
-        above = previous[index]
-        upper_left = previous[index - bytes_per_pixel] if index >= bytes_per_pixel else 0
-        if filter_type == 1:
-            predictor = left
-        elif filter_type == 2:
-            predictor = above
-        elif filter_type == 3:
-            predictor = (left + above) // 2
-        else:
-            p = left + above - upper_left
-            pa = abs(p - left)
-            pb = abs(p - above)
-            pc = abs(p - upper_left)
-            predictor = left if pa <= pb and pa <= pc else above if pb <= pc else upper_left
-        row[index] = (row[index] + predictor) & 0xFF
-    return row
 
 
 def _check_image_quality(analysis: _PngAnalysis, validator: Validator, variant_id: str) -> None:
