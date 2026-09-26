@@ -422,3 +422,37 @@ JSON-RPC/MCP 协议错误表示请求没有正确调用工具，使用标准 `er
 7. 图片 metadata 含 ID、MIME、尺寸、hash、purpose、content index 和映射，不含绝对路径；mapping 与 PNG 联系表、结构候选 100% 一致。
 8. MCP 不初始化/调用 provider，不读取 Keyring、active profile 或 provider snapshot；candidate 始终为 local，`reranked_by_llm=false`。
 9. focused fixture 只验证 pointer/default/显式版本切换、路径逃逸/明显链接或 reparse 拒绝、指定 index/按需 PNG 的读取失败 fail closed、keywords strict input、outputSchema strict `oneOf`、parity、snapshot refresh、event-loop isolation 和 zero writes；不以 fixture 声称 MCP 运行时验证 v2/index format、manifest/checksum/schema/quality/PNG 全量完整性。缺少真实本地 release 只能报告 `SKIPPED_LOCAL_RELEASE_MISSING`，不得伪造通过。
+
+## 10. 从源码构建 MCP
+
+[build_mcp.py](../tools/build_mcp.py) 从**已提交的 HEAD** 构建平台本地 MCP 入口。构建机需要 Git 和 CPython `3.14.7`；脚本只打包 `src/blockpedia`、`schemas`、`requirements-mcp.lock`，新建 venv，以 `--require-hashes --only-binary` 安装，并实际完成 stdio `initialize`/`tools/list` 冒烟。构建不使用 Node、wheel 构建后端或服务进程。
+
+从仓库根目录执行（`--data-root` 可省略；提供时必须是已存在的数据根）：
+
+```powershell
+# Windows AMD64
+python tools\build_mcp.py --python "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe" --data-root "D:\Code\blockpedia\run\blockpedia-data"
+```
+
+```bash
+# 分别在 Linux x86_64 与 Linux aarch64 机器上执行
+python3.14 tools/build_mcp.py --data-root /path/to/blockpedia-data
+```
+
+产物位于 `build/mcp/<commit前12位>-<平台>/`，其中有独立的 `venv/`、源码与 Schema 快照 `source/`、`bootstrap.py`、`revision.json`；Linux 另有 `blockpedia-mcp.sh`。已有同名产物不会被覆盖；需要重建时使用另一输出根 `--out-root`，或自行处理旧构建目录。venv 不能跨操作系统、CPU 架构或机器复制。
+
+把产物启动器配置为 MCP 客户端的 stdio 命令，传入已发布数据所在的 `--data-root`。例如 Linux 客户端：
+
+```json
+{"mcpServers":{"blockpedia":{"command":"/absolute/build/mcp/<版本>-linux-aarch64/blockpedia-mcp.sh","args":["--data-root","/absolute/blockpedia-data"]}}}
+```
+
+Windows 客户端直接启动产物中的 `venv\Scripts\python.exe`，参数依次为 `-I`、`bootstrap.py` 的绝对路径、`--data-root`、数据根绝对路径。例如：
+
+```json
+{"mcpServers":{"blockpedia":{"command":"D:\\Code\\blockpedia\\build\\mcp\\<版本>-windows-x86_64\\venv\\Scripts\\python.exe","args":["-I","D:\\Code\\blockpedia\\build\\mcp\\<版本>-windows-x86_64\\bootstrap.py","--data-root","D:\\Code\\blockpedia\\run\\blockpedia-data"]}}}
+```
+
+直接传递 argv，不经 `cmd.exe` 或批处理展开路径。客户端负责启动并在连接结束时关闭 stdio 子进程。
+
+`revision.json` 标识**程序源码提交**，`current.json` 标识**已发布的数据 release**。两者独立：切换数据 release 无需重建程序，MCP 下一请求读取新指针。MCP 专属锁不含 Keyring、`SecretStorage` 或 `jeepney`；Studio 离线 AI 仍使用原有 `requirements.lock`。构建冒烟只证明协议启动与四工具声明，真实查询应在目标平台对已发布数据或测试 fixture 验证。本轮已实测 Windows AMD64 和 Linux aarch64；Linux x86_64 运行验收按用户要求暂缓。
