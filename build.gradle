@@ -57,3 +57,16 @@ tasks.withType(AbstractArchiveTask).configureEach {
     preserveFileTimestamps = false
     reproducibleFileOrder = true
 }
+
+tasks.register('verifyRenderCamera', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.blockpedia.exporter.RenderCameraCheck'
+    enableAssertions = true
+}
+
+tasks.named('test') {
+    exclude '**/RenderCameraCheck.class' // Executed by verifyRenderCamera, without a test framework.
+}
+
+check.dependsOn verifyRenderCamera

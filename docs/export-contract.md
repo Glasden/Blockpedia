@@ -8,7 +8,7 @@
 
 代表状态、方块 ID、几何、碰撞、行为和图片来自运行时。Python 不补造这些事实，不重选、不重渲染。状态策略、动画控制、材料判断和标准相机见 [状态与渲染](state-policy-and-rendering.md)。
 
-普通渲染器已对 BannerBlock/WallBannerBlock 应用中心缩放 0.72，使用 camera.v2。此修复保留；专用 banner-repair 命令和 base-export 修补实现移除。
+普通渲染器使用 camera.v3 修正公共四视图的前后与俯仰方向，并保留 BannerBlock/WallBannerBlock 的中心缩放 0.72。旧 camera.v1/v2 包继续可读；专用 banner-repair 命令和 base-export 修补实现移除。
 
 ## 包和身份
 

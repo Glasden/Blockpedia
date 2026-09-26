@@ -45,7 +45,7 @@ record RenderEnvironment(
             device.driver(),
             device.backend(),
             "512x512",
-            JsonCanonical.sha256String("camera.v2:projection=orthographic;extent=2.0x2.0;invertY=false;zNear=-10.0;zFar=10.0;modelView=identity,translate(0.5,0.5,1.0),translate(0.5,0.5,0.5),rotateY(-yaw),rotateX(-pitch),translate(-0.5,-0.5,-0.5);views=isometric(yaw=45.0,pitch=30.0),front(yaw=0.0,pitch=0.0),side(yaw=90.0,pitch=0.0),top(yaw=0.0,pitch=-90.0);banner_types=BannerBlock,WallBannerBlock;banner_parent_transform=" + ExporterConstants.BANNER_PARENT_TRANSFORM),
+            JsonCanonical.sha256String(ExporterConstants.CAMERA_POLICY_VERSION + ":projection=orthographic;extent=2.0x2.0;invertY=false;zNear=-10.0;zFar=10.0;modelView=identity,translate(0.5,0.5,1.0),translate(0.5,0.5,0.5),rotateX(pitch),rotateY(180+yaw),translate(-0.5,-0.5,-0.5);views=isometric(yaw=45.0,pitch=30.0),front(yaw=0.0,pitch=0.0),side(yaw=90.0,pitch=0.0),top(yaw=0.0,pitch=90.0);banner_types=BannerBlock,WallBannerBlock;banner_parent_transform=" + ExporterConstants.BANNER_PARENT_TRANSFORM),
             JsonCanonical.sha256String("lighting.v1:full_bright:overlay=no_overlay:shader_disabled"),
             JsonCanonical.sha256String("background.v1:transparent"),
             JsonCanonical.sha256String("backboard.v1:none"),

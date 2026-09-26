@@ -1,6 +1,6 @@
 # 状态策略与标准渲染设计
 
-> D-054：普通渲染算法保持；camera.v2 的 BannerBlock/WallBannerBlock 居中缩放继续使用。专用 banner-repair/refresh 与本地 checksum/inventory gate 已移除，涉及这些操作的旧要求只作历史背景。
+> D-054：BannerBlock/WallBannerBlock 居中缩放继续使用。当前新导出使用下述 camera.v3 修正公共相机方向；专用 banner-repair/refresh 与本地 checksum/inventory gate 已移除，涉及这些操作的旧要求只作历史背景。
 
 ## 1. 范围、术语和关联文档
 
@@ -113,10 +113,12 @@ entities/particles/UI: disabled
 isometric: orthographic, yaw=45°, pitch=30°
 front:     orthographic, yaw=0°,  pitch=0°
 side:      orthographic, yaw=90°, pitch=0°
-top:       orthographic, yaw=0°,  pitch=-90°
+top:       orthographic, yaw=0°,  pitch=90°
 ```
 
-普通对象的角度、正交缩放、象限边界和边距继续属于 `camera.v1`；历史记录和非目标内容不得因 D-045 改变。新 replacement manifest 的 effective camera policy identity 为 `camera.v2`，但复用的非目标 artifacts 保持 byte-identical 的历史 camera semantics。仅对 D-045 精确目标集合启用 `camera.v2` 的 banner-camera logical policy，不建立通用按类别动态相机规则。对运行时类型 `BannerBlock` 和 `WallBannerBlock`，在 vanilla special renderer transform 外冻结共同的 parent center-pivot correction：`translate(0.5,0.5,0.5)` → `scale(0.72,0.72,0.72)` → `translate(-0.5,-0.5,-0.5)`，然后保持既有 special renderer submit path；该 correction 同时进入 camera hash 和 renderer options/environment identity。对象必须在四视图中完整可见，并使用同一中心和尺度规则。对象过小、出框或只剩背景都算失败。
+`camera.v3` 修正所有新导出的公共相机朝向：front 从北侧（−Z）看向物体，side 从东侧（+X）看，top 从上方（+Y）看，isometric 从东北上方看。中心旋转按 `rotateX(pitch)` → `rotateY(180° + yaw)` 组合，避免原来的背面正视图和仰视图。保留正交范围、中心、尺度和象限布局，以及 Minecraft 26.2 的 reversed-Z 投影、深度清屏值 0 和原版深度测试。实际变换进入 camera hash，进而改变 render environment/input identity；历史 `camera.v1`/`camera.v2` 包继续可读，已有图片不原地重写。
+
+保留 D-045 的旗帜居中缩放：对运行时类型 `BannerBlock` 和 `WallBannerBlock`，在 vanilla special renderer transform 外使用 `translate(0.5,0.5,0.5)` → `scale(0.72,0.72,0.72)` → `translate(-0.5,-0.5,-0.5)`，然后保持既有 special renderer submit path。对象必须在四视图中完整可见；对象过小、出框或只剩背景都算失败。
 
 ### 7.3 透明、附着和连接对象
 

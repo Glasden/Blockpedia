@@ -40,6 +40,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import org.joml.Matrix4f;
 import org.joml.Matrix4fStack;
 import org.joml.Vector4f;
 
@@ -181,12 +182,7 @@ final class RenderExporter {
         GpuBufferSlice projectionSlice = projectionBuffer.getBuffer(projection);
         RenderSystem.setProjectionMatrix(projectionSlice, com.mojang.blaze3d.ProjectionType.ORTHOGRAPHIC);
 
-        modelView.identity();
-        modelView.translate(0.5f, 0.5f, 1.0f);
-        modelView.translate(0.5f, 0.5f, 0.5f);
-        modelView.rotateY((float) Math.toRadians(-view.yaw));
-        modelView.rotateX((float) Math.toRadians(-view.pitch));
-        modelView.translate(-0.5f, -0.5f, -0.5f);
+        view.setupModelView(modelView);
 
         BlockModelResolver resolver = new BlockModelResolver(minecraft.getModelManager());
         BlockModelRenderState modelState = new BlockModelRenderState();
@@ -500,11 +496,11 @@ final class RenderExporter {
         }
     }
 
-    private enum View {
+    enum View {
         ISOMETRIC("isometric", 45.0f, 30.0f, 0, 0),
         FRONT("front", 0.0f, 0.0f, ExporterConstants.QUADRANT_SIZE, 0),
         SIDE("side", 90.0f, 0.0f, 0, ExporterConstants.QUADRANT_SIZE),
-        TOP("top", 0.0f, -90.0f, ExporterConstants.QUADRANT_SIZE, ExporterConstants.QUADRANT_SIZE);
+        TOP("top", 0.0f, 90.0f, ExporterConstants.QUADRANT_SIZE, ExporterConstants.QUADRANT_SIZE);
 
         private final String id;
         private final float yaw;
@@ -518,6 +514,16 @@ final class RenderExporter {
             this.pitch = pitch;
             this.originX = originX;
             this.originY = originY;
+        }
+
+        void setupModelView(Matrix4f modelView) {
+            modelView.identity();
+            modelView.translate(0.5f, 0.5f, 1.0f);
+            modelView.translate(0.5f, 0.5f, 0.5f);
+            // View from north at yaw zero, then pitch in camera space to look down.
+            modelView.rotateX((float) Math.toRadians(pitch));
+            modelView.rotateY((float) Math.toRadians(180.0f + yaw));
+            modelView.translate(-0.5f, -0.5f, -0.5f);
         }
     }
 }
