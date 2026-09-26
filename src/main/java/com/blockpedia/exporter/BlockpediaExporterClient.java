@@ -1,7 +1,6 @@
 package com.blockpedia.exporter;
 
 import com.mojang.brigadier.CommandDispatcher;
-import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
@@ -31,13 +30,7 @@ public final class BlockpediaExporterClient implements ClientModInitializer {
         dispatcher.register(
             ClientCommands.literal("blockindex")
                 .then(ClientCommands.literal("export")
-                    .executes(context -> queueExport(context.getSource()))
-                    .then(ClientCommands.literal("banner-repair")
-                        .then(ClientCommands.argument("base_export_id", StringArgumentType.word())
-                            .executes(context -> queueBannerRepair(
-                                context.getSource(),
-                                StringArgumentType.getString(context, "base_export_id")
-                            )))))
+                    .executes(context -> queueExport(context.getSource())))
         );
     }
 
@@ -55,27 +48,6 @@ public final class BlockpediaExporterClient implements ClientModInitializer {
             return 0;
         }
         source.sendFeedback(Component.literal("Blockpedia export queued."));
-        return 1;
-    }
-
-    private static int queueBannerRepair(FabricClientCommandSource source, String baseExportId) {
-        if (!ExportIdentity.isValidExportId(baseExportId)) {
-            source.sendError(Component.literal("Invalid base export ID."));
-            return 0;
-        }
-        if (activeJob != null) {
-            source.sendError(Component.literal("Blockpedia export is already running."));
-            return 0;
-        }
-        try {
-            activeJob = new ExportJob(source.getClient(), baseExportId);
-        } catch (Throwable throwable) {
-            String message = throwable.getMessage() == null
-                ? throwable.getClass().getSimpleName() : throwable.getMessage();
-            source.sendError(Component.literal("Blockpedia banner repair could not start: " + message));
-            return 0;
-        }
-        source.sendFeedback(Component.literal("Blockpedia banner repair queued for " + baseExportId + "."));
         return 1;
     }
 
@@ -101,7 +73,6 @@ public final class BlockpediaExporterClient implements ClientModInitializer {
 
     private static final class ExportJob {
         private final Minecraft minecraft;
-        private final String baseExportId;
         private final CompletableFuture<Void> resourceReload;
         private ExportPackage exportPackage;
         private Stage stage = Stage.QUEUED;
@@ -110,12 +81,7 @@ public final class BlockpediaExporterClient implements ClientModInitializer {
         private boolean animationFreezeGateCleared;
 
         private ExportJob(Minecraft minecraft) {
-            this(minecraft, null);
-        }
-
-        private ExportJob(Minecraft minecraft, String baseExportId) {
             this.minecraft = minecraft;
-            this.baseExportId = baseExportId;
             boolean gateEnabled = false;
             try {
                 AnimationFreezeGate.enable();
@@ -142,12 +108,8 @@ public final class BlockpediaExporterClient implements ClientModInitializer {
                     if (reloadFailure != null) {
                         throw new IOException("resource reload failed", reloadFailure);
                     }
-                    feedback(baseExportId == null
-                        ? "Blockpedia export running: EXPORT_REGISTRY"
-                        : "Blockpedia banner repair running: EXPORT_REGISTRY");
-                    exportPackage = baseExportId == null
-                        ? ExportPackage.prepare(minecraft)
-                        : ExportPackage.prepareBannerRepair(minecraft, baseExportId);
+                    feedback("Blockpedia export running: EXPORT_REGISTRY");
+                    exportPackage = ExportPackage.prepare(minecraft);
                     stage = Stage.EXPORT_REGISTRY;
                 }
                 case EXPORT_REGISTRY -> {

@@ -40,15 +40,22 @@ def test_jcs_boundary_vectors() -> None:
         raise AssertionError("non-finite numbers must be rejected")
 
 
-def test_r1_validator_rejects_a_checksum_tamper(tmp_path: Path) -> None:
-    export_dir = tmp_path / "export"
-    export_dir.mkdir()
-    (export_dir / "checksums.sha256").write_text("not a checksum\n", encoding="utf-8")
-
-    report = validate_export(Path(__file__).resolve().parents[1], export_dir)
-
-    assert report["status"] == "failed"
-    assert any(issue["code"] == "CHECKSUM_LINE_INVALID" for issue in report["issues"])
+def test_r1_does_not_treat_historical_hashes_as_gates(tmp_path: Path) -> None:
+    import importlib.util
+    import json
+    spec = importlib.util.spec_from_file_location("r1_fixture", Path(__file__).parent / "r2" / "conftest.py")
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    export = fixture.make_export(tmp_path)
+    (export / "checksums.sha256").unlink()
+    variants = [json.loads(line) for line in (export / "variants.jsonl").read_text().splitlines()]
+    for variant in variants:
+        for field in ("image_sha256", "mask_sha256", "render_metadata_sha256"):
+            if variant.get("render"):
+                variant["render"][field] = "sha256:" + "0" * 64
+    (export / "variants.jsonl").write_text("".join(json.dumps(row) + "\n" for row in variants))
+    report = validate_export(Path(__file__).resolve().parents[1], export)
+    assert report["status"] == "passed", report["issues"]
 
 
 def test_r1_validator_reports_helpful_missing_package_errors(tmp_path: Path) -> None:
@@ -59,7 +66,8 @@ def test_r1_validator_reports_helpful_missing_package_errors(tmp_path: Path) -> 
     assert report["status"] == "failed"
     codes = {issue["code"] for issue in report["issues"]}
     assert "MANIFEST_READ_FAILED" in codes
-    assert "CHECKSUM_FILE_READ_FAILED" in codes
+    assert "REQUIRED_FILE_MISSING" in codes
+    assert not any(code.startswith("CHECKSUM") for code in codes)
 
 
 def _make_progress_fixture(export_dir: Path) -> None:
@@ -94,7 +102,6 @@ def test_r1_validator_progress_is_monotonic_and_uses_stable_units(tmp_path: Path
         "JSONL_RECORDS",
         "CROSS_REFERENCES",
         "RENDERS",
-        "CHECKSUMS",
         "FINALIZE",
     }
     assert {phase for phase, _, _, _ in events} == expected_phases
@@ -107,11 +114,9 @@ def test_r1_validator_progress_is_monotonic_and_uses_stable_units(tmp_path: Path
     assert len(events_by_phase["JSONL_RECORDS"]) == 8
     assert len(events_by_phase["CROSS_REFERENCES"]) == 8
     assert len(events_by_phase["RENDERS"]) == 3
-    assert len(events_by_phase["CHECKSUMS"]) == 7
     assert events_by_phase["JSONL_RECORDS"][-1][1:] == (7, None, "records")
     assert {event[2] for event in events_by_phase["CROSS_REFERENCES"][1:]} == {7}
     assert {event[2] for event in events_by_phase["RENDERS"]} == {2}
-    assert {event[2] for event in events_by_phase["CHECKSUMS"]} == {6}
     previous: dict[str, int] = {}
     totals: dict[str, int | None] = {}
     for phase, completed, total, unit in events:
@@ -288,18 +293,11 @@ def test_r1_png_analysis_reuses_one_read_and_decode(monkeypatch, tmp_path: Path)
     assert first is not None
     assert (first.width, first.height, first.pixel_format, first.has_object) == (4, 4, "RGBA", True)
     _check_image_quality(first, validator, "minecraft:test")
-    digest = validator._sha256_prefixed(png_path)
-    checksum_path = tmp_path / "checksums.sha256"
-    checksum_path.write_bytes(f"{digest.removeprefix('sha256:')}  preview.png\n".encode("utf-8"))
-    validator._files = {"preview.png": png_path}
-    validator._check_checksums()
-
     assert isinstance(first, _PngAnalysis)
     assert second is first
     assert read_counts[png_path] == 1
     assert decode_count == 1
     assert png_path not in validator._bytes_cache
-    assert png_path in validator._digest_cache
     assert not validator.issues
 
 
@@ -550,3 +548,30 @@ def test_r1_dynamic_block_entity_fixture_skips_are_exact_and_pre_render() -> Non
     assert render_flow.index("isUnsupportedDynamicBlockEntity") < render_flow.index("RenderPaths.forBlockId(block.blockId.toString())")
     signature = package_source[package_source.index("String logicalInputSignature = JsonCanonical.sha256Framed") :]
     assert signature.index("ExporterConstants.DEDUPE_POLICY_VERSION") < signature.index("ExporterConstants.PRE_RENDER_SKIP_POLICY_TOKEN") < signature.index("snapshot.hash()")
+
+
+@pytest.mark.parametrize('kind', ['symlink', 'hardlink', 'fifo'])
+def test_rejected_source_entries_are_never_read(tmp_path, monkeypatch, kind):
+    export = tmp_path / 'export_20260926T120000Z'
+    export.mkdir()
+    (export / 'renders').mkdir()
+    target = export / 'states.jsonl'
+    outside = tmp_path / 'outside.jsonl'
+    outside.write_bytes(b'private outside bytes\n')
+    try:
+        if kind == 'symlink': target.symlink_to(outside)
+        elif kind == 'hardlink': os.link(outside, target)
+        elif hasattr(os, 'mkfifo'): os.mkfifo(target)
+        else: pytest.skip('FIFO unavailable')
+    except OSError as exc:
+        pytest.skip(f'link creation unavailable: {type(exc).__name__}')
+    original = Path.read_bytes
+    def guarded_read(path):
+        assert path != target, 'unsafe source was opened'
+        return original(path)
+    monkeypatch.setattr(Path, 'read_bytes', guarded_read)
+    staging = tmp_path / 'staging'
+    staging.mkdir()
+    report = Validator(Path(__file__).parents[1], export, copy_to=staging).run()
+    assert report['status'] == 'failed'
+    assert not (staging / 'export' / 'states.jsonl').exists()

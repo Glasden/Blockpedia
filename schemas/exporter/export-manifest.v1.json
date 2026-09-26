@@ -114,11 +114,9 @@
     "platform",
     "render_environment",
     "policies",
-    "schema_inventory",
     "scope",
     "counts",
-    "files",
-    "integrity"
+    "files"
   ],
   "$defs": {
     "hash": {
@@ -293,7 +291,7 @@
         "registry": { "const": "block" },
         "registry_snapshot_sha256": { "$ref": "#/$defs/hash" }
       },
-      "required": ["namespace", "registry", "registry_snapshot_sha256"]
+      "required": ["namespace", "registry"]
     },
     "counts": {
       "type": "object",
@@ -352,8 +350,7 @@
         "states.jsonl",
         "variants.jsonl",
         "failures.jsonl",
-        "checksums.sha256",
-        "exporter.log",
+          "exporter.log",
         "renders/"
       ]
     },

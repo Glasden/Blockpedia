@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import types
+import uuid
 from pathlib import Path
 
 import pytest
@@ -157,7 +158,7 @@ def _new_injected_service(tmp_path: Path) -> StudioService:
     return StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
 
 
-def _web_import_check(client, export_fixture: Path) -> dict[str, object]:
+def _web_import(client, export_fixture: Path) -> dict[str, object]:
     directories = client.get("/api/directories", params={"minecraft_version": "26.2"})
     assert directories.status_code == 200
     entries = directories.json()["data"]["entries"]
@@ -166,23 +167,31 @@ def _web_import_check(client, export_fixture: Path) -> dict[str, object]:
     assert isinstance(ref, str)
     assert not Path(ref).is_absolute()
     started = client.post(
-        "/api/imports/check",
-        json={"source_directory": ref, "minecraft_version": "26.2"},
+        "/api/imports",
+        json={"run_id": "run_" + uuid.uuid4().hex, "source_directory_ref": ref, "minecraft_version": "26.2"},
     )
     assert started.status_code in {200, 202}
     started_data = started.json()["data"]
-    check_id = started_data["check_id"]
+    run_id = started_data["run_id"]
     deadline = time.monotonic() + 30
     latest = started_data
     while time.monotonic() < deadline:
-        response = client.get(f"/api/imports/checks/{check_id}")
+        response = client.get(f"/api/imports/{run_id}")
         assert response.status_code == 200
         latest = response.json()["data"]
-        if latest["status"] in {"passed", "failed"}:
+        if latest["status"] in {"succeeded", "failed", "interrupted"}:
             break
         time.sleep(0.02)
-    assert latest["status"] == "passed", latest
+    assert latest["status"] == "succeeded", latest
     return latest
+
+
+def _running_web_fixture(service: StudioService, run_id: str) -> None:
+    """Exercise HTTP controls from a known state, independent of worker scheduling."""
+    with service.worker.open_database(run_id) as database:
+        with database.transaction() as connection:
+            connection.execute("UPDATE runs SET status='running',current_stage='EXTRACT_FEATURES',boundary_event=NULL WHERE run_id=?", (run_id,))
+            connection.execute("UPDATE stage_runs SET status='running' WHERE run_id=? AND stage='EXTRACT_FEATURES'", (run_id,))
 
 
 @pytest.mark.parametrize("close_first", ("app_one", "app_two"))
@@ -318,8 +327,10 @@ def test_web_surface_is_loopback_without_auth_cors_csrf_or_r4_routes(web_context
     assert not any(token in name for name in middleware_names for token in ("cors", "auth", "csrf"))
     paths = {route.path for route in app.routes}
     assert {path for path in paths if path.startswith("/api/releases")} == {
-        "/api/releases/check",
+        "/api/releases",
         "/api/releases/build",
+        "/api/releases/publish",
+        "/api/releases/rollback",
     }
     assert {path for path in paths if path.startswith("/api/provider")} == {
         "/api/provider/profile",
@@ -358,7 +369,7 @@ def test_provider_probe_and_enable_accept_only_profile_id(web_context) -> None:
 def test_web_import_unknown_fields_use_stable_error_envelope(web_context, export_fixture: Path) -> None:
     client, _, tmp_path = web_context
     response = client.post(
-        "/api/imports/check",
+        "/api/imports",
         json={"source_directory": str(export_fixture), "minecraft_version": "26.2", "unknown": True},
     )
     payload = _assert_error_envelope(response, {400, 422})
@@ -368,13 +379,7 @@ def test_web_import_unknown_fields_use_stable_error_envelope(web_context, export
 
 def test_web_import_run_actions_and_workspace_search_use_injected_service(web_context, export_fixture: Path) -> None:
     client, service, tmp_path = web_context
-    check_data = _web_import_check(client, export_fixture)
-    imported = client.post(
-        "/api/imports",
-        json={"check_id": check_data["check_id"], "copy_mode": "copy_to_workspace"},
-    )
-    assert imported.status_code == 200
-    run_id = imported.json()["data"]["run_id"]
+    run_id = _web_import(client, export_fixture)["run_id"]
     read = client.get(f"/api/runs/{run_id}")
     assert read.status_code == 200
     _assert_safe_payload(read.json(), tmp_path)
@@ -382,7 +387,7 @@ def test_web_import_run_actions_and_workspace_search_use_injected_service(web_co
     conflict = client.post(f"/api/runs/{run_id}/pause", json={})
     _assert_error_envelope(conflict, {409})
 
-    service.tick(run_id)
+    _running_web_fixture(service, run_id)
     assert client.post(f"/api/runs/{run_id}/pause", json={}).status_code == 200
     assert client.post(f"/api/runs/{run_id}/resume", json={}).status_code == 200
     search = client.get(f"/api/runs/{run_id}/search", params={"query": "stone"})
@@ -392,9 +397,8 @@ def test_web_import_run_actions_and_workspace_search_use_injected_service(web_co
 
 def test_web_cancel_and_retry_failed_actions(web_context, export_fixture: Path) -> None:
     client, service, tmp_path = web_context
-    checked = _web_import_check(client, export_fixture)
-    run_id = client.post("/api/imports", json={"check_id": checked["check_id"], "copy_mode": "copy_to_workspace"}).json()["data"]["run_id"]
-    service.tick(run_id)
+    run_id = _web_import(client, export_fixture)["run_id"]
+    _running_web_fixture(service, run_id)
     cancelled = client.post(f"/api/runs/{run_id}/cancel", json={})
     assert cancelled.status_code == 200
     assert cancelled.json()["data"]["status"] == "cancelled"
@@ -410,9 +414,8 @@ def test_web_cancel_and_retry_failed_actions(web_context, export_fixture: Path) 
 
 def test_htmx_write_action_uses_service_and_does_not_echo_search_query(web_context, export_fixture: Path) -> None:
     client, service, tmp_path = web_context
-    checked = _web_import_check(client, export_fixture)
-    run_id = client.post("/api/imports", json={"check_id": checked["check_id"], "copy_mode": "copy_to_workspace"}).json()["data"]["run_id"]
-    service.tick(run_id)
+    run_id = _web_import(client, export_fixture)["run_id"]
+    _running_web_fixture(service, run_id)
     action = client.post(f"/ui/runs/{run_id}/pause", data={})
     assert action.status_code == 200
     _assert_safe_payload(action.text, tmp_path)
@@ -429,7 +432,7 @@ def test_unknown_query_route_and_wrong_method_use_error_envelopes(web_context) -
     _assert_error_envelope(unknown_query, {400, 422})
     unknown_route = _assert_error_envelope(client.get("/api/not-a-real-route"), {404})
     assert unknown_route["error_code"] in {"API_NOT_FOUND", "NOT_FOUND", "RUN_NOT_FOUND"}
-    wrong_method = _assert_error_envelope(client.get("/api/imports/check"), {400, 405, 422})
+    wrong_method = _assert_error_envelope(client.put("/api/imports"), {400, 405, 422})
     assert wrong_method["error_code"] in {"INVALID_INPUT", "METHOD_NOT_ALLOWED"}
 
 
@@ -437,7 +440,7 @@ def test_sentinel_paths_do_not_cross_json_html_or_stderr(web_context, capsys: py
     client, service, tmp_path = web_context
     sentinels = (r"C:\Sensitive\api-key.txt", r"\\server\share\api-key.txt", "/data/private/key.txt")
     for sentinel in sentinels:
-        response = client.post("/api/imports/check", json={"source_directory": sentinel, "minecraft_version": "26.2"})
+        response = client.post("/api/imports", json={"source_directory": sentinel, "minecraft_version": "26.2"})
         assert response.status_code in {400, 422}
         _assert_safe_payload(response.json(), tmp_path)
 
@@ -464,8 +467,8 @@ def test_startup_stale_detection_is_read_only_until_recover(web_module, tmp_path
 
     data_root = DataRoot(tmp_path)
     service = StudioService(data_root, repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
+    with TestClient(web_module.create_app(service=service, start_worker=False)) as client:
+        run_id = _web_import(client, export_fixture)["run_id"]
     with service.worker.open_database(run_id) as database:
         with database.transaction() as connection:
             connection.execute("UPDATE runs SET status='running',current_stage='IMPORT_EXPORT' WHERE run_id=?", (run_id,))

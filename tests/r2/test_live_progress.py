@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from tests.import_helpers import import_export
 from fastapi.testclient import TestClient
 from blockpedia.directory_chooser import DirectoryPathUnsafe, DirectoryRefInvalid, DirectoryRefStale, DirectoryChooser
 from blockpedia.paths import DataRoot
@@ -23,32 +24,8 @@ from blockpedia.web import (
 )
 
 
-def _fake_validator(monkeypatch: pytest.MonkeyPatch, *, entered=None, release=None, progress=(1, 1, "files")):
-    from tools import validate_r1_export
-
-    calls: list[tuple[Path, Path]] = []
-
-    def validate(repo_root, snapshot_dir, *, on_progress):
-        calls.append((Path(repo_root), Path(snapshot_dir)))
-        on_progress("VALIDATE_EXPORT", progress[0], progress[1], progress[2])
-        if entered is not None:
-            entered.set()
-        if release is not None:
-            assert release.wait(10)
-        return {"status": "passed", "issues": []}
-
-    monkeypatch.setattr(validate_r1_export, "validate_export", validate)
-    return calls
 
 
-def _wait_check(service: StudioService, check_id: str, timeout: float = 10.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        result = service.get_import_check(check_id)
-        if result.status in {"passed", "failed"}:
-            return result
-        time.sleep(0.02)
-    raise AssertionError("import check did not reach a terminal state")
 
 
 def test_directory_refs_are_opaque_and_stale_or_traversal_is_rejected(tmp_path: Path, export_fixture: Path) -> None:
@@ -65,8 +42,7 @@ def test_directory_refs_are_opaque_and_stale_or_traversal_is_rejected(tmp_path: 
 
     export_fixture.rename(export_fixture.with_name("old_export"))
     export_fixture.mkdir()
-    with pytest.raises(DirectoryRefStale):
-        chooser.consume(ref, "26.2")
+    assert chooser.consume(ref, "26.2") == export_fixture
 
 
 def test_directory_symlink_is_rejected_when_platform_allows_creation(tmp_path: Path, export_fixture: Path) -> None:
@@ -93,100 +69,16 @@ def test_directory_junction_is_rejected_when_platform_allows_creation(tmp_path: 
         DirectoryChooser(DataRoot(tmp_path)).list_directories("26.2")
 
 
-def test_async_check_refresh_sse_and_import_call_validator_once(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, export_fixture: Path
-) -> None:
-    # Threading events are required by the in-process executor.
-    import threading
-
-    entered_thread = threading.Event()
-    release_thread = threading.Event()
-    calls = _fake_validator(
-        monkeypatch,
-        entered=entered_thread,
-        release=release_thread,
-        progress=(7, 10, "records"),
-    )
-    service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2])
-    state_writes = []
-    write_state = service.imports._write_state
-
-    def observed_write(state, **kwargs):
-        state_writes.append(state)
-        return write_state(state, **kwargs)
-
-    monkeypatch.setattr(service.imports, "_write_state", observed_write)
-    app = __import__("blockpedia.web", fromlist=["create_app"]).create_app(
-        data_root=DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], service=service, start_worker=False
-    )
-    try:
-        with TestClient(app) as client:
-            entry = next(
-                item
-                for item in client.get("/api/directories", params={"minecraft_version": "26.2"}).json()["data"]["entries"]
-                if item["export_id"] == export_fixture.name
-            )
-            ref = entry["directory_ref"]
-            started = client.post(
-                "/api/imports/check",
-                json={"source_directory": ref, "minecraft_version": "26.2"},
-            )
-            assert started.status_code == 202
-            check_id = started.json()["data"]["check_id"]
-            assert entered_thread.wait(5)
-            refreshed = client.get(f"/api/imports/checks/{check_id}")
-            assert refreshed.status_code == 200
-            refreshed_data = refreshed.json()["data"]
-            assert refreshed_data["status"] == "running"
-            assert refreshed_data["progress"] == {"completed": 7, "total": 10, "unit": "records"}
-            assert not [state for state in state_writes if state.phase in {"SNAPSHOT_EXPORT", "VALIDATE_EXPORT"} and state.progress["completed"] > 0]
-            recent = service.imports.list_checks("26.2")
-            assert recent[0]["progress"] == refreshed_data["progress"]
-
-            state_dir = tmp_path / "cache" / "import-checks" / check_id
-            assert ref not in (state_dir / "state.json").read_text(encoding="utf-8")
-            assert str(export_fixture) not in (state_dir / "state.json").read_text(encoding="utf-8")
-
-            release_thread.set()
-            final = _wait_check(service, check_id)
-            assert final.status == "passed"
-            page = client.get(f"/imports/checks/{check_id}")
-            assert page.status_code == 200
-            assert check_id in page.text
-            assert f'name="check_id"' in page.text
-            imported = client.post(
-                "/api/imports",
-                json={"check_id": check_id, "copy_mode": "copy_to_workspace"},
-            )
-            assert imported.status_code == 200
-            assert len(calls) == 1
-
-            with client.stream("GET", f"/api/imports/checks/{check_id}/events") as response:
-                lines = list(response.iter_lines())
-                assert response.headers["cache-control"] == "no-cache, no-transform"
-                assert response.headers["x-accel-buffering"] == "no"
-            assert "event: snapshot" in lines
-            data_lines = [line for line in lines if line.startswith("data: ")]
-            packet = json.loads(data_lines[0][len("data: ") :])
-            assert set(packet) == {"snapshot", "html"}
-            assert "data-import-fragment" in packet["html"]
-    finally:
-        release_thread.set()
-        service.close()
 
 
 def test_run_snapshot_exposes_safe_progress_and_latest_steps(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, export_fixture: Path
 ) -> None:
-    _fake_validator(monkeypatch)
     from conftest import PassingToolchainProbe
 
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
     try:
-        ref = service.list_directories("26.2")["entries"][0]["directory_ref"]
-        check = service.start_import_check(ref, "26.2")
-        assert _wait_check(service, check.check_id).status == "passed"
-        run_id = service.import_checked(check.check_id)["run_id"]
+        run_id = import_export(service, export_fixture)["run_id"]
         for _ in range(6):
             service.tick(run_id)
         snapshot = service.get_run(run_id)
@@ -278,122 +170,88 @@ def test_workspace_schema_and_packaged_hash_are_unchanged() -> None:
     assert packaged == "sha256:04b240e87a0650aa5f9a798f0d112e27496cdbeb6513b620c9f8e597210ac73b"
 
 
-def test_active_check_deduplicates_and_passed_check_reuses_unchanged_anchors(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, export_fixture: Path
-) -> None:
+
+
+
+
+
+
+def test_one_import_has_memory_progress_and_single_copy(monkeypatch, tmp_path, export_fixture):
     import threading
-
-    entered = threading.Event()
-    release = threading.Event()
-    calls = _fake_validator(monkeypatch, entered=entered, release=release)
-    service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2])
+    from tools.validate_r1_export import Validator
+    from blockpedia import local_files
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    writes = []
+    original = Validator.run
+    write = local_files.write_bytes
+    def observed_run(self, *, on_progress=None):
+        calls.append(self.export_dir)
+        def progress(phase, completed, total, unit):
+            on_progress(phase, completed, total, unit)
+            if phase == "JSONL_RECORDS" and completed == 1:
+                entered.set()
+                assert release.wait(5)
+        return original(self, on_progress=progress)
+    def observed_write(path, payload, root):
+        writes.append(path)
+        return write(path, payload, root)
+    monkeypatch.setattr(Validator, "run", observed_run)
+    monkeypatch.setattr(local_files, "write_bytes", observed_write)
+    service = StudioService(DataRoot(tmp_path))
     try:
-        ref = service.list_directories("26.2")["entries"][0]["directory_ref"]
-        first = service.start_import_check(ref, "26.2")
-        assert entered.wait(5)
-        second = service.start_import_check(ref, "26.2")
-        assert second.check_id == first.check_id
-        assert getattr(second, "reused", False) is True
-        assert getattr(second, "response_status", None) == 202
-        release.set()
-        assert _wait_check(service, first.check_id).status == "passed"
-
-        reused = service.start_import_check(ref, "26.2")
-        assert reused.check_id == first.check_id
-        assert getattr(reused, "reused", False) is True
-        assert getattr(reused, "response_status", None) == 200
-        assert len(calls) == 1
-
-        manifest = export_fixture / "manifest.json"
-        manifest.write_bytes(manifest.read_bytes() + b"\n")
-        changed = service.start_import_check(ref, "26.2")
-        assert changed.check_id != first.check_id
-        assert _wait_check(service, changed.check_id).status == "passed"
-        assert len(calls) == 2
+        app = __import__("blockpedia.web", fromlist=["create_app"]).create_app(service=service, start_worker=False)
+        with TestClient(app) as client:
+            ref = client.get('/api/directories?minecraft_version=26.2').json()['data']['entries'][0]['directory_ref']
+            body = {'run_id': 'run_' + 'a' * 32, 'minecraft_version': '26.2', 'source_directory_ref': ref}
+            assert client.post('/api/imports', json=body).status_code == 202
+            assert entered.wait(5)
+            value = client.get('/api/imports/' + body['run_id']).json()['data']
+            assert value['status'] == 'running' and value['progress']['completed'] == 1
+            assert client.post('/api/imports', json=body).status_code == 202
+            assert not (tmp_path / 'cache' / 'import-checks').exists()
+            release.set()
+            result = service.imports.wait(body['run_id'])
+            assert result['status'] == 'succeeded'
+            assert client.post('/api/imports', json=body).status_code == 200
+            assert len(calls) == 1 and len(writes) == len(set(writes))
+            assert not any(path.name == 'checksums.sha256' for path in writes)
+            assert 'succeeded' in client.get('/api/imports/' + body['run_id'] + '/events').text
     finally:
         release.set()
         service.close()
-
-
-def test_import_uses_frozen_snapshot_after_chooser_ref_is_removed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, export_fixture: Path
-) -> None:
-    _fake_validator(monkeypatch)
-    service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2])
-    app = __import__("blockpedia.web", fromlist=["create_app"]).create_app(
-        data_root=DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], service=service, start_worker=False
-    )
+    reopened = StudioService(DataRoot(tmp_path))
     try:
-        with TestClient(app) as client:
-            entry = next(
-                item
-                for item in client.get("/api/directories", params={"minecraft_version": "26.2"}).json()["data"]["entries"]
-                if item["export_id"] == export_fixture.name
-            )
-            ref = entry["directory_ref"]
-            started = client.post(
-                "/api/imports/check",
-                json={"source_directory": ref, "minecraft_version": "26.2"},
-            )
-            check_id = started.json()["data"]["check_id"]
-            assert _wait_check(service, check_id).status == "passed"
+        assert reopened.get_import(body['run_id'])['import_id'] == result['import_id']
+    finally:
+        reopened.close()
 
-            with service.directory_chooser._lock:
-                service.directory_chooser._refs.pop(ref, None)
 
-            first = client.post("/api/imports", json={"check_id": check_id, "copy_mode": "copy_to_workspace"})
-            assert first.status_code == 200
-            first_data = first.json()["data"]
-            run_id = first_data["run_id"]
-            import_id = first_data["import_id"]
-            workspace = tmp_path / "workspace" / "26.2" / run_id
-            assert workspace.is_dir()
-            assert (workspace / "work.sqlite3").is_file()
-            assert len([path for path in (tmp_path / "workspace" / "26.2").iterdir() if (path / "work.sqlite3").is_file()]) == 1
-
-            duplicate = client.post("/api/imports", json={"check_id": check_id, "copy_mode": "copy_to_workspace"})
-            assert duplicate.status_code == 200
-            assert duplicate.json()["data"]["run_id"] == run_id
-            assert duplicate.json()["data"]["import_id"] == import_id
+def test_interrupted_import_retries_same_identity_after_restart(tmp_path, export_fixture, monkeypatch):
+    from blockpedia import importer
+    original = importer.commit_directory
+    def fail(*args):
+        raise OSError('interrupted before rename')
+    monkeypatch.setattr(importer, 'commit_directory', fail)
+    run_id = 'run_' + 'd' * 32
+    service = StudioService(DataRoot(tmp_path))
+    try:
+        ref = service.directory_chooser.register_path(export_fixture, '26.2')
+        service.start_import(run_id, ref, '26.2')
+        assert service.imports.wait(run_id)['status'] == 'failed'
     finally:
         service.close()
-
-
-def test_import_is_idempotent_and_catalog_exposes_safe_check_marker(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, export_fixture: Path
-) -> None:
-    _fake_validator(monkeypatch)
-    service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2])
-    app = __import__("blockpedia.web", fromlist=["create_app"]).create_app(
-        data_root=DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], service=service, start_worker=False
-    )
+    monkeypatch.setattr(importer, 'commit_directory', original)
+    service = StudioService(DataRoot(tmp_path))
     try:
+        assert service.get_import(run_id)['status'] == 'interrupted'
+        app = __import__('blockpedia.web', fromlist=['create_app']).create_app(service=service, start_worker=False)
         with TestClient(app) as client:
-            entry = next(
-                item
-                for item in client.get("/api/directories", params={"minecraft_version": "26.2"}).json()["data"]["entries"]
-                if item["export_id"] == export_fixture.name
-            )
-            assert entry["check_marker"] is None
-            started = client.post(
-                "/api/imports/check",
-                json={"source_directory": entry["directory_ref"], "minecraft_version": "26.2"},
-            )
-            check_id = started.json()["data"]["check_id"]
-            assert _wait_check(service, check_id).status == "passed"
-            marked = client.get("/api/directories", params={"minecraft_version": "26.2"}).json()["data"]["entries"]
-            marker = next(item["check_marker"] for item in marked if item["export_id"] == export_fixture.name)
-            assert marker["status"] == "passed"
-            assert marker["check_id"] == check_id
-            assert str(tmp_path) not in json.dumps(marker)
-
-            first = client.post("/api/imports", json={"check_id": check_id, "copy_mode": "copy_to_workspace"})
-            second = client.post("/api/imports", json={"check_id": check_id, "copy_mode": "copy_to_workspace"})
-            assert first.status_code == second.status_code == 200
-            assert first.json()["data"]["import_id"] == second.json()["data"]["import_id"]
-            assert first.json()["data"]["run_id"] == second.json()["data"]["run_id"]
-            catalog = client.get("/api/imports/checks", params={"minecraft_version": "26.2"})
-            assert catalog.status_code == 200
-            assert catalog.json()["data"]["checks"][0]["check_id"] == check_id
+            assert '?retry_run_id=' + run_id in client.get('/imports/' + run_id).text
+            new_ref = client.get('/api/directories?minecraft_version=26.2').json()['data']['entries'][0]['directory_ref']
+            assert new_ref != ref
+            assert client.post('/api/imports', json={'run_id': run_id, 'source_directory_ref': new_ref, 'minecraft_version': '26.2'}).status_code == 202
+            assert service.imports.wait(run_id)['status'] == 'succeeded'
+            assert len(list((tmp_path / 'workspace' / '26.2').glob('run_*/work.sqlite3'))) == 1
     finally:
         service.close()

@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-shell run-hero"><div><a class="back-link" href="/">← 返回导入工作台</a><h1>导入进度</h1><code>{{ imported.run_id }}</code></div></section>
+<section class="page-shell work-card"><div id="import-panel" data-event-panel="import" data-events-url="/api/imports/{{ imported.run_id }}/events" data-initial-status="{{ imported.status }}" data-initial-phase="{{ imported.phase }}" data-initial-terminal="{{ 'true' if imported.status in ['succeeded', 'failed', 'interrupted'] else 'false' }}">
+{% include "partials/import_progress.html" %}
+</div></section>
+{% endblock %}

@@ -10,6 +10,7 @@ import zlib
 from pathlib import Path
 
 import pytest
+from tests.import_helpers import import_export
 
 from blockpedia.features import PngDecodeError, axis_aligned_union, decode_rgba_png, extract_features, validate_rgba_png
 from blockpedia.importer import ImportNotAllowed
@@ -88,28 +89,19 @@ def test_import_projection_validator_once_and_feature_boundary(monkeypatch: pyte
     calls = 0
     from tools import validate_r1_export
 
-    original = validate_r1_export.validate_export
+    original = validate_r1_export.Validator.run
 
     def counted(*args, **kwargs):
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(validate_r1_export, "validate_export", counted)
+    monkeypatch.setattr(validate_r1_export.Validator, "run", counted)
     from conftest import PassingToolchainProbe
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    assert check.can_import
+    imported = import_export(service, export_fixture)
     assert calls == 1
-    check_dir = tmp_path / "cache" / "import-checks" / check.check_id
-    state_path = check_dir / "state.json"
-    metadata_path = check_dir / "metadata.json"
-    assert state_path.is_file()
-    assert metadata_path.is_file()
-    assert not list((tmp_path / "cache" / "import-checks").glob("*.json"))
-    assert "repo_root" not in state_path.read_text(encoding="utf-8")
-    assert "repo_root" not in metadata_path.read_text(encoding="utf-8")
-    imported = service.import_checked(check.check_id)
+    assert not (tmp_path / "cache" / "import-checks").exists()
     run_id = imported["run_id"]
     db = service.worker.database_for(run_id)
     block_count = db.fetchone("SELECT COUNT(*) AS n FROM blocks")
@@ -147,7 +139,7 @@ def test_import_projection_validator_once_and_feature_boundary(monkeypatch: pyte
     assert "cursor_json" not in json.dumps(run)
     assert "details_json" not in json.dumps(run)
     assert service.query_workspace(run_id, "stone")
-    assert str(tmp_path) not in json.dumps(check.to_dict())
+    assert str(tmp_path) not in json.dumps(imported)
     db.close()
     service.close()
 
@@ -160,10 +152,10 @@ def test_pause_before_first_feature_stage_does_not_skip_planning(monkeypatch: py
     errors = []
     thread = None
     try:
-        checked = service.check_import(export_fixture, "26.2")
-        run_id = service.import_checked(checked.check_id)["run_id"]
-        for _ in range(5):
-            service.tick(run_id)
+        run_id = import_export(service, export_fixture)["run_id"]
+        # A legacy workspace can already be running when its first feature starts.
+        with service.worker.open_database(run_id) as database:
+            database.execute("UPDATE runs SET status='running' WHERE run_id=?", (run_id,))
         begin = service.worker._begin_stage
 
         def delayed_begin(database, target_run_id, stage):
@@ -212,14 +204,13 @@ def test_forced_fts_fallback_and_schema_mismatch(tmp_path: Path) -> None:
     database.close()
     with path.open("ab") as handle:
         handle.write(b"not a database mutation")
-    # The SQLite file remains readable, while the packaged schema check is
-    # independently exercised by changing schema_meta in a fresh connection.
+    # Historical schema digests are no longer runtime tamper gates.
     raw = sqlite3.connect(path)
     raw.execute("UPDATE schema_meta SET schema_sha256='sha256:bad'")
     raw.commit()
     raw.close()
-    with pytest.raises(DatabaseSchemaMismatch):
-        WorkspaceDatabase.open(path)
+    with WorkspaceDatabase.open(path) as readable:
+        assert readable.fetchone("SELECT schema_version FROM schema_meta")[0] == "workspace.v1"
 
 
 def test_rejects_staging_and_cross_version(tmp_path: Path, export_fixture: Path) -> None:
@@ -274,79 +265,18 @@ def test_png_metadata_and_full_decoder_reject_corruption(corruption: str) -> Non
             parser(payload)
 
 
-def test_check_uses_immutable_snapshot_after_source_changes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, export_fixture: Path) -> None:
-    calls = 0
-    from tools import validate_r1_export
-    original = validate_r1_export.validate_export
-
-    def counted(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(validate_r1_export, "validate_export", counted)
-    from conftest import PassingToolchainProbe
-    service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    (export_fixture / "exporter.log").write_bytes(b"changed after check\n")
-    imported = service.import_checked(check.check_id)
-    assert imported["status"] == "pending"
-    assert calls == 1
-    assert list((tmp_path / "workspace" / "26.2").glob("*/work.sqlite3"))
-    assert not list((tmp_path / "workspace" / "26.2").glob(".*.staging"))
-    service.close()
 
 
-def test_import_rejects_tampered_check_snapshot(tmp_path: Path, export_fixture: Path) -> None:
-    from conftest import PassingToolchainProbe
-    service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    snapshot = DataRoot(tmp_path).resolve_ref(check.snapshot_ref)
-    (snapshot / "exporter.log").write_bytes(b"tampered snapshot\n")
-    with pytest.raises(ImportNotAllowed):
-        service.import_checked(check.check_id)
-    assert not list((tmp_path / "workspace" / "26.2").glob("*/work.sqlite3"))
-    assert not list((tmp_path / "workspace" / "26.2").glob(".*.staging"))
-    service.close()
 
 
-def test_default_prepare_matches_runtime_python(tmp_path: Path, export_fixture: Path) -> None:
-    service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2])
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
-    result = service.tick(run_id)
-    run = service.get_run(run_id)
-    if platform.python_version() == "3.14.7":
-        assert result["status"] == "running"
-        assert run["stages"][0]["status"] == "succeeded"
-    else:
-        assert result["status"] == "failed"
-        assert run["stages"][0]["status"] == "failed"
-        assert run["stages"][0]["error_code"] == "TOOLCHAIN_NOT_LOCKED"
-        assert run["stages"][0]["error_present"] is True
-    service.close()
 
 
-def test_prepare_rejects_injected_wrong_python(tmp_path: Path, export_fixture: Path) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    probe = ToolchainProbe(repo_root, python_version_getter=lambda: "3.14.3")
-    service = StudioService(DataRoot(tmp_path), repo_root=repo_root, toolchain_probe=probe)
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
-    result = service.tick(run_id)
-    run = service.get_run(run_id)
-    assert result["status"] == "failed"
-    assert run["stages"][0]["status"] == "failed"
-    assert run["stages"][0]["error_code"] == "TOOLCHAIN_NOT_LOCKED"
-    assert run["stages"][0]["error_present"] is True
-    service.close()
 
 
 def test_worker_start_advances_pending_run_with_injected_probe(tmp_path: Path, export_fixture: Path) -> None:
     from conftest import PassingToolchainProbe
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
+    run_id = import_export(service, export_fixture)["run_id"]
     service.worker.start(interval_seconds=0.01)
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -362,11 +292,8 @@ def test_worker_start_advances_pending_run_with_injected_probe(tmp_path: Path, e
 def test_feature_failure_converges_run_and_stage(tmp_path: Path, export_fixture: Path) -> None:
     from conftest import PassingToolchainProbe
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    imported = service.import_checked(check.check_id)
+    imported = import_export(service, export_fixture)
     run_id = imported["run_id"]
-    for _ in range(5):
-        service.tick(run_id)
     with service.worker.open_database(run_id) as database:
         preview = database.path.parent / "renders/minecraft/stone/preview.png"
         preview.unlink()
@@ -381,13 +308,10 @@ def test_feature_failure_converges_run_and_stage(tmp_path: Path, export_fixture:
 def test_non_stale_recover_and_boundary_resume_are_conflicts(tmp_path: Path, export_fixture: Path) -> None:
     from conftest import PassingToolchainProbe
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
+    run_id = import_export(service, export_fixture)["run_id"]
     service.tick(run_id)
     with pytest.raises(RunStateConflict):
         service.resume(run_id)
-    for _ in range(5):
-        service.tick(run_id)
     run = service.get_run(run_id)
     assert run["boundary_event"]
     with pytest.raises(RunStateConflict):
@@ -458,8 +382,7 @@ def test_property_membership_is_rejected() -> None:
 def test_fts_excludes_skipped_and_excluded_candidates(tmp_path: Path, export_fixture: Path) -> None:
     from conftest import PassingToolchainProbe
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
+    run_id = import_export(service, export_fixture)["run_id"]
     for _ in range(6):
         service.tick(run_id)
     assert service.query_workspace(run_id, "glass") == []
@@ -476,48 +399,38 @@ def test_fts_excludes_skipped_and_excluded_candidates(tmp_path: Path, export_fix
     service.close()
 
 
-def test_worker_pause_resume_cancel_and_explicit_stale_recovery(tmp_path: Path, export_fixture: Path) -> None:
-    from conftest import PassingToolchainProbe
-    service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
-    service.tick(run_id)
-    assert service.pause(run_id)["status"] == "paused"
-    assert service.resume(run_id)["status"] == "running"
-    for _ in range(4):
-        service.tick(run_id)
-    database = service.worker.database_for(run_id)
-    service.worker._ensure_feature_jobs(database, run_id)
-    job = database.fetchone("SELECT job_id FROM jobs WHERE stage='EXTRACT_FEATURES' LIMIT 1")
-    assert job is not None
-    with database.transaction() as connection:
-        connection.execute("UPDATE jobs SET status='running',heartbeat_at=?,auto_attempt=0,output_hash=NULL WHERE job_id=?", (utc_now(), job["job_id"]))
-    service.worker.stale_after_seconds = 300
-    with pytest.raises(RunStateConflict):
-        service.recover(run_id, job["job_id"])
-    with database.transaction() as connection:
-        connection.execute("UPDATE jobs SET status='running',heartbeat_at='2000-01-01T00:00:00Z',auto_attempt=0,output_hash=NULL WHERE job_id=?", (job["job_id"],))
-    service.worker.stale_after_seconds = 0
-    before = database.fetchone("SELECT status,auto_attempt FROM jobs WHERE job_id=?", (job["job_id"],))
-    markers = service.stale_markers(run_id)
-    after = database.fetchone("SELECT status,auto_attempt FROM jobs WHERE job_id=?", (job["job_id"],))
-    assert markers and before is not None and after is not None
-    assert (before["status"], before["auto_attempt"]) == (after["status"], after["auto_attempt"])
-    assert service.recover(run_id, job["job_id"])["recovered"]["status"] == "pending"
-    with database.transaction() as connection:
-        connection.execute("UPDATE jobs SET status='running',heartbeat_at='2000-01-01T00:00:00Z',auto_attempt=1 WHERE job_id=?", (job["job_id"],))
-    assert service.recover(run_id, job["job_id"])["recovered"]["status"] == "needs_review"
-    assert database.fetchone("SELECT 1 FROM audit_events WHERE event_type='WORKER_RECOVERED_STALE_RUNNING'") is not None
-    with pytest.raises(RunStateConflict):
-        service.cancel(run_id)
-    service.close()
+def test_explicit_local_recovery_can_repeat_without_promoting_files(tmp_path, export_fixture):
+    service = StudioService(DataRoot(tmp_path))
+    try:
+        run_id = import_export(service, export_fixture)["run_id"]
+        with service.worker.open_database(run_id) as db:
+            with db.transaction() as c:
+                service.worker._ensure_feature_jobs(c, run_id)
+                c.execute("UPDATE runs SET status='running',current_stage='EXTRACT_FEATURES' WHERE run_id=?", (run_id,))
+                c.execute("UPDATE stage_runs SET status='running',worker_id='dead',heartbeat_at='2000-01-01T00:00:00Z' WHERE run_id=? AND stage='EXTRACT_FEATURES'", (run_id,))
+                c.execute("UPDATE jobs SET status='running',worker_id='dead',heartbeat_at='2000-01-01T00:00:00Z' WHERE run_id=?", (run_id,))
+                job = c.execute("SELECT job_id FROM jobs WHERE run_id=?", (run_id,)).fetchone()[0]
+            payload = b"orphaned legacy feature output"
+            digest = "sha256:" + __import__("hashlib").sha256(payload).hexdigest()
+            artifact = db.path.parent / "orphan.json"
+            artifact.write_bytes(payload)
+            db.execute("UPDATE jobs SET output_hash=? WHERE job_id=?", (digest, job))
+            db.execute("INSERT INTO artifacts(artifact_id,job_id,kind,relative_ref,sha256,metadata_json) VALUES ('orphan',?,'feature_output','orphan.json',?,'{}')", (job, digest))
+            before = db.fetchone("SELECT status FROM jobs WHERE job_id=?", (job,))[0]
+            assert service.stale_markers(run_id)
+            assert db.fetchone("SELECT status FROM jobs WHERE job_id=?", (job,))[0] == before
+            assert service.recover(run_id, job)["recovered"]["status"] == "pending"
+            db.execute("UPDATE jobs SET status='running',worker_id='dead',heartbeat_at='2000-01-01T00:00:00Z' WHERE job_id=?", (job,))
+            assert service.recover(run_id, job)["recovered"]["status"] == "pending"
+            assert db.fetchone("SELECT COUNT(*) FROM features")[0] == 0
+    finally:
+        service.close()
 
 
 def test_stage_lease_blocks_second_worker_and_pause_after_item(tmp_path: Path, export_fixture: Path) -> None:
     from conftest import PassingToolchainProbe
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
+    run_id = import_export(service, export_fixture)["run_id"]
     service.tick(run_id)
     with service.worker.open_database(run_id) as database:
         with database.transaction() as connection:
@@ -533,10 +446,7 @@ def test_running_feature_job_blocks_new_pending_job(tmp_path: Path, export_fixtu
     from conftest import PassingToolchainProbe
 
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
-    for _ in range(5):
-        service.tick(run_id)
+    run_id = import_export(service, export_fixture)["run_id"]
     with service.worker.open_database(run_id) as database:
         service.worker._ensure_feature_jobs(database, run_id)
         old_job = database.fetchone("SELECT job_id FROM jobs WHERE run_id=? AND stage='EXTRACT_FEATURES' LIMIT 1", (run_id,))
@@ -563,10 +473,7 @@ def test_pause_waits_for_inflight_feature_item(tmp_path: Path, export_fixture: P
     import blockpedia.worker as worker_module
 
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
-    for _ in range(5):
-        service.tick(run_id)
+    run_id = import_export(service, export_fixture)["run_id"]
     entered = threading.Event()
     release = threading.Event()
     original = worker_module.extract_features
@@ -597,10 +504,7 @@ def test_cancel_discards_inflight_feature_result(tmp_path: Path, export_fixture:
     import blockpedia.worker as worker_module
 
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
-    for _ in range(5):
-        service.tick(run_id)
+    run_id = import_export(service, export_fixture)["run_id"]
     entered = threading.Event()
     release = threading.Event()
     original = worker_module.extract_features
@@ -630,8 +534,7 @@ def test_cancel_discards_inflight_feature_result(tmp_path: Path, export_fixture:
 def test_stage_only_stale_marker_is_read_only_until_recovery(tmp_path: Path, export_fixture: Path) -> None:
     from conftest import PassingToolchainProbe
     service = StudioService(DataRoot(tmp_path), repo_root=Path(__file__).resolve().parents[2], toolchain_probe=PassingToolchainProbe())
-    check = service.check_import(export_fixture, "26.2")
-    run_id = service.import_checked(check.check_id)["run_id"]
+    run_id = import_export(service, export_fixture)["run_id"]
     with service.worker.open_database(run_id) as database:
         with database.transaction() as connection:
             connection.execute("UPDATE runs SET status='running',current_stage='IMPORT_EXPORT' WHERE run_id=?", (run_id,))
@@ -653,3 +556,10 @@ def test_stage_only_stale_marker_is_read_only_until_recovery(tmp_path: Path, exp
 def _audit_events(service: StudioService, run_id: str) -> list[dict[str, object]]:
     with service.worker.open_database(run_id) as database:
         return [dict(row) for row in database.fetchall("SELECT event_type FROM audit_events WHERE run_id=?", (run_id,))]
+
+
+def test_runtime_version_is_checked_once_at_cli_start(monkeypatch):
+    from blockpedia.cli import main
+    monkeypatch.setattr(platform, "python_version", lambda: "3.14.3")
+    with pytest.raises(SystemExit, match="CPython 3.14.7"):
+        main(["web"])

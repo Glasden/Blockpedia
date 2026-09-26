@@ -232,7 +232,7 @@ def _check_web(root: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
                 middleware = {middleware.cls.__name__.lower() for middleware in app.user_middleware}
             finally:
                 service.close()
-        required = {"/api/imports/check", "/api/imports", "/api/runs", "/api/runs/{run_id}", "/api/runs/{run_id}/recover"}
+        required = {"/api/imports/{run_id}", "/api/imports", "/api/runs", "/api/runs/{run_id}", "/api/runs/{run_id}/recover"}
         r3_required = {
             "/api/provider/profile",
             "/api/provider/probe",
@@ -246,7 +246,7 @@ def _check_web(root: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
             "/api/reviews/{review_id}/resolve",
             "/api/runs/{run_id}/reviews/continue",
         }
-        allowed_release_paths = {"/api/releases/check", "/api/releases/build"}
+        allowed_release_paths = {"/api/releases", "/api/releases/build", "/api/releases/publish", "/api/releases/rollback"}
         release_paths = {path for path in paths if path.startswith("/api/releases")}
         forbidden = ("/api/current", "/api/search-tests", "/api/mcp", "/mcp")
         passed = (

@@ -41,12 +41,6 @@ final class ExportPackage {
     private final List<ExportRecords.BlockData> blocks;
     private final List<ExportFailure> failures;
     private final List<JsonObject> variants;
-    private final BannerRepairBase bannerRepairBase;
-    private final List<JsonObject> repairBlocks = new ArrayList<>();
-    private final List<JsonObject> repairStates = new ArrayList<>();
-    private final List<JsonObject> repairVariants = new ArrayList<>();
-    private final List<JsonObject> repairFailures = new ArrayList<>();
-    private final List<ExportRecords.BlockData> repairTargetBlocks = new ArrayList<>();
     private RenderExporter renderer;
     private int registryIndex;
     private int selectIndex;
@@ -57,7 +51,6 @@ final class ExportPackage {
     private boolean selectEnded;
     private boolean renderStarted;
     private boolean renderEnded;
-    private int repairTargetIndex;
 
     private ExportPackage(
         Minecraft minecraft,
@@ -73,8 +66,7 @@ final class ExportPackage {
         List<Identifier> blockIds,
         List<ExportRecords.BlockData> blocks,
         List<ExportFailure> failures,
-        List<JsonObject> variants,
-        BannerRepairBase bannerRepairBase
+        List<JsonObject> variants
     ) {
         this.minecraft = minecraft;
         this.exportId = exportId;
@@ -90,7 +82,6 @@ final class ExportPackage {
         this.blocks = blocks;
         this.failures = failures;
         this.variants = variants;
-        this.bannerRepairBase = bannerRepairBase;
     }
 
     static ExportPackage prepare(Minecraft minecraft) throws IOException {
@@ -157,86 +148,11 @@ final class ExportPackage {
             ids,
             new ArrayList<>(),
             new ArrayList<>(),
-            new ArrayList<>(),
-            null
+            new ArrayList<>()
         );
-    }
-
-    static ExportPackage prepareBannerRepair(Minecraft minecraft, String baseExportId) throws IOException {
-        JsonCanonical.selfCheck();
-        Instant startedAt = Instant.now();
-        Path dataRoot = minecraft.gameDirectory.toPath().resolve("blockpedia-data");
-        Path exportParent = dataRoot.resolve("exports").resolve(ExporterConstants.MINECRAFT_VERSION);
-        ResourceSnapshot snapshot = ResourceSnapshot.verify(minecraft);
-        List<Identifier> ids = ExportRecords.minecraftBlockIds();
-        BannerRepairBase base = BannerRepairBase.verify(exportParent, baseExportId, ids, snapshot.hash());
-        ExportIdentity.Allocation allocation = ExportIdentity.allocate(exportParent, startedAt);
-        String exportId = allocation.exportId;
-        Path finalDirectory = allocation.finalDirectory;
-        Path stagingDirectory = allocation.stagingDirectory;
-        Files.createDirectories(stagingDirectory.resolve("renders"));
-        Files.writeString(
-            stagingDirectory.resolve("exporter.log"),
-            "PREPARE banner-repair start base=" + baseExportId + "\n",
-            StandardCharsets.UTF_8,
-            StandardOpenOption.CREATE,
-            StandardOpenOption.TRUNCATE_EXISTING,
-            StandardOpenOption.WRITE
-        );
-        RenderEnvironment renderEnvironment = RenderEnvironment.capture(minecraft);
-        String registrySignature = JsonCanonical.sha256String(
-            String.join("\n", ids.stream().map(Identifier::toString).toList())
-        );
-        String logicalInputSignature = JsonCanonical.sha256Framed(
-            ExporterConstants.MINECRAFT_VERSION,
-            ExporterConstants.EXPORT_CONTRACT_VERSION,
-            ExporterConstants.STATE_POLICY_VERSION,
-            ExporterConstants.RENDER_POLICY_VERSION,
-            ExporterConstants.FIXTURE_POLICY_VERSION,
-            ExporterConstants.DEDUPE_POLICY_VERSION,
-            ExporterConstants.PRE_RENDER_SKIP_POLICY_TOKEN,
-            ExporterConstants.BANNER_CAMERA_POLICY_TOKEN,
-            snapshot.hash(),
-            registrySignature
-        );
-        String renderInputSignature = renderEnvironment.renderInputSignature(logicalInputSignature);
-        ExportPackage result = new ExportPackage(
-            minecraft,
-            exportId,
-            stagingDirectory,
-            finalDirectory,
-            ExporterConstants.EXPORTER_VERSION,
-            startedAt,
-            snapshot,
-            renderEnvironment,
-            logicalInputSignature,
-            renderInputSignature,
-            ids,
-            new ArrayList<>(),
-            new ArrayList<>(),
-            new ArrayList<>(),
-            base
-        );
-        result.repairBlocks.addAll(base.rebasedBlocks(exportId, startedAt));
-        result.repairStates.addAll(base.rebasedStates(exportId, startedAt));
-        result.repairVariants.addAll(base.rebasedVariants(exportId, startedAt));
-        result.repairFailures.addAll(base.rebasedFailures(exportId, renderInputSignature, startedAt));
-        base.copyNonTargetRenders(stagingDirectory);
-        return result;
     }
 
     boolean exportRegistryStep() throws IOException {
-        if (bannerRepairBase != null) {
-            if (!registryStarted) {
-                registryStarted = true;
-                appendLog("EXPORT_REGISTRY start banner-repair reuse base=" + bannerRepairBase.exportId);
-            }
-            if (!registryEnded) {
-                registryEnded = true;
-                appendLog("EXPORT_REGISTRY end blocks=" + repairBlocks.size());
-            }
-            return true;
-        }
         if (!registryStarted) {
             registryStarted = true;
             appendLog("EXPORT_REGISTRY start");
@@ -271,28 +187,6 @@ final class ExportPackage {
     }
 
     boolean selectVariantStep() {
-        if (bannerRepairBase != null) {
-            if (!selectStarted) {
-                selectStarted = true;
-                appendLog("SELECT_VARIANTS start banner-repair targets=" + ExporterConstants.BANNER_REPAIR_TARGET_IDS.size());
-                for (String targetId : ExporterConstants.BANNER_REPAIR_TARGET_IDS) {
-                    try {
-                        Identifier identifier = Identifier.parse(targetId);
-                        repairTargetBlocks.add(ExportRecords.collectBlock(
-                            minecraft,
-                            exportId,
-                            exporterVersion,
-                            identifier
-                        ));
-                    } catch (RuntimeException exception) {
-                        throw new IllegalStateException("cannot collect banner repair target " + targetId, exception);
-                    }
-                }
-                selectEnded = true;
-                appendLog("SELECT_VARIANTS end targets=" + repairTargetBlocks.size());
-            }
-            return true;
-        }
         if (!selectStarted) {
             selectStarted = true;
             appendLog("SELECT_VARIANTS start");
@@ -342,9 +236,6 @@ final class ExportPackage {
     }
 
     boolean renderVariantStep() {
-        if (bannerRepairBase != null) {
-            return renderBannerRepairStep();
-        }
         if (!renderStarted) {
             renderStarted = true;
             renderer = new RenderExporter(minecraft);
@@ -442,117 +333,14 @@ final class ExportPackage {
         return false;
     }
 
-    private boolean renderBannerRepairStep() {
-        if (!renderStarted) {
-            renderStarted = true;
-            renderer = new RenderExporter(minecraft);
-            appendLog("RENDER_VARIANTS start banner-repair targets=" + repairTargetBlocks.size());
-        }
-        if (repairTargetIndex >= repairTargetBlocks.size()) {
-            if (!renderEnded) {
-                renderEnded = true;
-                appendLog("RENDER_VARIANTS end banner-repair selected=" + selectedVariantCount());
-            }
-            return true;
-        }
-
-        ExportRecords.BlockData block = repairTargetBlocks.get(repairTargetIndex++);
-        String targetId = block.blockId.toString();
-        RenderPaths.Location renderPath = null;
-        try {
-            renderPath = RenderPaths.forBlockId(targetId);
-            Path renderDirectory = renderPath.directory(stagingDirectory);
-            RenderExporter.RenderResult render = renderer.render(
-                targetId,
-                block.block.defaultBlockState(),
-                renderPath,
-                renderDirectory
-            );
-            replaceRecord(
-                repairVariants,
-                "variant_id",
-                targetId,
-                bannerRepairBase.selectedBannerVariant(
-                    targetId,
-                    exportId,
-                    renderInputSignature,
-                    startedAt,
-                    render.renderReference
-                )
-            );
-            for (JsonObject state : repairStates) {
-                if (targetId.equals(property(state, "block_id"))) {
-                    state.add("variant_ids", JsonCanonical.GSON.toJsonTree(List.of(targetId)));
-                    state.addProperty("mapping_status", "mapped");
-                }
-            }
-            appendLog("banner target selected: " + targetId);
-        } catch (Exception exception) {
-            try {
-                if (renderPath != null) {
-                    deletePartialRenderDirectory(renderPath.directory(stagingDirectory));
-                }
-            } catch (IOException cleanupFailure) {
-                exception.addSuppressed(cleanupFailure);
-            }
-            JsonObject skipped = findRecord(bannerRepairBase.rebasedVariants(exportId, startedAt), "variant_id", targetId);
-            skipped.addProperty("skip_reason_code", reasonCode(exception));
-            skipped.addProperty("skip_reason", "banner repair render failed: " + safeMessage(exception));
-            replaceRecord(repairVariants, "variant_id", targetId, skipped);
-            repairFailures.add(ExportFailure.skipVariant(
-                exportId,
-                exporterVersion,
-                targetId,
-                targetId,
-                reasonCode(exception),
-                "banner repair render failed: " + safeMessage(exception),
-                renderInputSignature,
-                startedAt
-            ).toJson());
-            appendLog("banner target skipped: " + targetId + " reason=" + reasonCode(exception));
-        }
-        if (repairTargetIndex >= repairTargetBlocks.size()) {
-            renderEnded = true;
-            appendLog("RENDER_VARIANTS end banner-repair selected=" + selectedVariantCount());
-            return true;
-        }
-        return false;
-    }
-
     private static boolean isUnsupportedDynamicBlockEntity(String blockId) {
         return "minecraft:end_portal".equals(blockId) || "minecraft:end_gateway".equals(blockId);
     }
 
     private long selectedVariantCount() {
-        if (bannerRepairBase != null) {
-            return repairVariants.stream()
-                .filter(item -> "selected".equals(item.get("status").getAsString()))
-                .count();
-        }
         return variants.stream()
             .filter(item -> "selected".equals(item.get("status").getAsString()))
             .count();
-    }
-
-    private static JsonObject findRecord(List<JsonObject> records, String key, String value) {
-        return records.stream()
-            .filter(record -> property(record, key).equals(value))
-            .findFirst()
-            .orElseThrow(() -> new IllegalStateException("missing record " + key + "=" + value));
-    }
-
-    private static String property(JsonObject object, String key) {
-        return object.has(key) && object.get(key).isJsonPrimitive() ? object.get(key).getAsString() : "";
-    }
-
-    private static void replaceRecord(List<JsonObject> records, String key, String value, JsonObject replacement) {
-        for (int index = 0; index < records.size(); index++) {
-            if (value.equals(property(records.get(index), key))) {
-                records.set(index, replacement);
-                return;
-            }
-        }
-        throw new IllegalStateException("missing record " + key + "=" + value);
     }
 
     Path finish() throws IOException {
@@ -561,13 +349,11 @@ final class ExportPackage {
         writeRecords();
         JsonObject finalManifest = manifest(completedAt);
         JsonCanonical.writeJson(stagingDirectory.resolve("manifest.json"), finalManifest);
-        writeChecksums();
         forceStagingFiles();
 
         List<String> gateIssues = CommitValidator.validate(stagingDirectory, finalManifest, blockIds);
         if (!gateIssues.isEmpty()) {
-            String reasonCode = gateIssues.stream().anyMatch(issue -> issue.startsWith("checksum:"))
-                ? "CHECKSUM_MISMATCH" : "SCHEMA_INVALID";
+            String reasonCode = "SCHEMA_INVALID";
             ExportFailure commitFailure = ExportFailure.exportFailure(
                 exportId,
                 exporterVersion,
@@ -576,15 +362,10 @@ final class ExportPackage {
                 logicalInputSignature,
                 completedAt
             );
-            if (bannerRepairBase != null) {
-                repairFailures.add(commitFailure.toJson());
-            } else {
-                failures.add(commitFailure);
-            }
+            failures.add(commitFailure);
             appendLog("commit gate failed: " + summarizeIssues(gateIssues));
             writeRecords();
             JsonCanonical.writeJson(stagingDirectory.resolve("manifest.json"), manifest(completedAt));
-            writeChecksums();
             forceStagingFiles();
             return stagingDirectory;
         }
@@ -614,27 +395,15 @@ final class ExportPackage {
             logicalInputSignature,
             completedAt
         );
-        if (bannerRepairBase != null) {
-            repairFailures.add(exportFailure.toJson());
-        } else {
-            failures.add(exportFailure);
-        }
+        failures.add(exportFailure);
         appendLog("export aborted: " + safeMessage(throwable));
         writeRecords();
         JsonCanonical.writeJson(stagingDirectory.resolve("manifest.json"), manifest(completedAt));
-        writeChecksums();
         forceStagingFiles();
         return stagingDirectory;
     }
 
     private void writeRecords() throws IOException {
-        if (bannerRepairBase != null) {
-            writeJsonl("blocks.jsonl", repairBlocks);
-            writeJsonl("states.jsonl", repairStates);
-            writeJsonl("variants.jsonl", repairVariants);
-            writeJsonl("failures.jsonl", repairFailures);
-            return;
-        }
         try (BufferedWriter writer = Files.newBufferedWriter(
             stagingDirectory.resolve("blocks.jsonl"), StandardCharsets.UTF_8,
             StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE
@@ -671,20 +440,6 @@ final class ExportPackage {
         }
     }
 
-    private void writeJsonl(String fileName, List<JsonObject> records) throws IOException {
-        try (BufferedWriter writer = Files.newBufferedWriter(
-            stagingDirectory.resolve(fileName),
-            StandardCharsets.UTF_8,
-            StandardOpenOption.CREATE,
-            StandardOpenOption.TRUNCATE_EXISTING,
-            StandardOpenOption.WRITE
-        )) {
-            for (JsonObject record : records) {
-                JsonCanonical.appendJsonLine(writer, record);
-            }
-        }
-    }
-
     private JsonObject manifest(Instant completedAt) {
         JsonObject result = new JsonObject();
         result.addProperty("schema_version", "export-manifest.v1");
@@ -700,38 +455,16 @@ final class ExportPackage {
         result.add("platform", platform());
         result.add("render_environment", renderEnvironment());
         result.add("policies", policies());
-        result.add("schema_inventory", schemaInventory());
         JsonObject scope = new JsonObject();
         scope.addProperty("namespace", "minecraft");
         scope.addProperty("registry", "block");
-        scope.addProperty("registry_snapshot_sha256", registrySnapshotHash());
         result.add("scope", scope);
         result.add("counts", counts());
         result.add("files", files());
-        JsonObject integrity = new JsonObject();
-        integrity.addProperty("algorithm", "SHA-256");
-        integrity.addProperty("checksum_file", "checksums.sha256");
-        integrity.addProperty("canonical_json", "JCS-RFC8785");
-        integrity.addProperty("jsonl_record_terminator", "LF");
-        result.add("integrity", integrity);
         return result;
     }
 
     private String status() {
-        if (bannerRepairBase != null) {
-            Set<String> expectedBlockIds = blockIds.stream().map(Identifier::toString).collect(java.util.stream.Collectors.toSet());
-            Set<String> actualBlockIds = repairBlocks.stream()
-                .map(item -> property(item, "block_id"))
-                .collect(java.util.stream.Collectors.toSet());
-            if (repairBlocks.size() != blockIds.size() || !actualBlockIds.equals(expectedBlockIds)
-                || repairVariants.size() != repairBlocks.size()) {
-                return "failed";
-            }
-            if (repairFailures.stream().anyMatch(failure -> "fail_export".equals(property(failure, "action")))) {
-                return "failed";
-            }
-            return repairFailures.isEmpty() ? "succeeded" : "needs_review";
-        }
         Set<String> expectedBlockIds = blockIds.stream().map(Identifier::toString).collect(java.util.stream.Collectors.toSet());
         Set<String> actualBlockIds = new HashSet<>();
         boolean duplicateBlock = false;
@@ -796,53 +529,7 @@ final class ExportPackage {
         return result;
     }
 
-    private JsonArray schemaInventory() {
-        List<String> ids = List.of(
-            "export-block.v1", "export-failure.v1", "export-manifest.v1",
-            "export-state.v1", "export-variant.v1", "render-metadata.v1"
-        );
-        JsonArray result = new JsonArray();
-        for (String id : ids) {
-            String repositoryPath = "schemas/exporter/" + id + ".json";
-            JsonObject item = new JsonObject();
-            item.addProperty("schema_id", id);
-            item.addProperty("schema_sha256", schemaHash(id));
-            item.addProperty("repository_path", repositoryPath);
-            result.add(item);
-        }
-        return result;
-    }
-
-    private String schemaHash(String schemaId) {
-        String resourcePath = "/" + "schemas/exporter/" + schemaId + ".json";
-        try (var stream = ExportPackage.class.getResourceAsStream(resourcePath)) {
-            if (stream == null) {
-                throw new IllegalStateException("schema is not packaged: " + resourcePath);
-            }
-            return JsonCanonical.sha256Bytes(stream.readAllBytes());
-        } catch (IOException exception) {
-            throw new IllegalStateException("cannot read packaged schema: " + resourcePath, exception);
-        }
-    }
-
-    private String registrySnapshotHash() {
-        return JsonCanonical.sha256String(
-            String.join("\n", blockIds.stream().map(Identifier::toString).toList())
-        );
-    }
-
     private JsonObject counts() {
-        if (bannerRepairBase != null) {
-            JsonObject result = new JsonObject();
-            result.addProperty("registry_blocks", blockIds.size());
-            result.addProperty("block_records", repairBlocks.size());
-            result.addProperty("state_records", repairStates.size());
-            result.addProperty("selected_variant_records", repairVariants.stream().filter(item -> "selected".equals(property(item, "status"))).count());
-            result.addProperty("skipped_variant_records", repairVariants.stream().filter(item -> "skipped".equals(property(item, "status"))).count());
-            result.addProperty("failure_records", repairFailures.size());
-            result.addProperty("pending_review_records", repairFailures.stream().filter(item -> "pending".equals(property(item, "review_status"))).count());
-            return result;
-        }
         JsonObject result = new JsonObject();
         result.addProperty("registry_blocks", blockIds.size());
         result.addProperty("block_records", blocks.size());
@@ -860,14 +547,12 @@ final class ExportPackage {
         JsonObject states = descriptor("jsonl", "export-state.v1");
         JsonObject variants = descriptor("jsonl", "export-variant.v1");
         JsonObject failures = descriptor("jsonl", "export-failure.v1");
-        JsonObject checksum = descriptor("checksum", null);
         JsonObject log = descriptor("log", null);
         JsonObject renders = descriptor("render_directory", null);
         result.add("blocks.jsonl", blocks);
         result.add("states.jsonl", states);
         result.add("variants.jsonl", variants);
         result.add("failures.jsonl", failures);
-        result.add("checksums.sha256", checksum);
         result.add("exporter.log", log);
         result.add("renders/", renders);
         return result;
@@ -901,28 +586,6 @@ final class ExportPackage {
         }
         result.add("behavior_by_state", behaviorByState);
         return result;
-    }
-
-    private void writeChecksums() throws IOException {
-        List<Path> files;
-        try (Stream<Path> stream = Files.walk(stagingDirectory)) {
-            files = stream
-                .filter(Files::isRegularFile)
-                .filter(path -> !path.equals(stagingDirectory.resolve("checksums.sha256")))
-                .sorted(Comparator.comparing(path -> stagingDirectory.relativize(path).toString().replace('\\', '/'), JsonCanonical.utf8Comparator()))
-                .toList();
-        }
-        StringBuilder checksum = new StringBuilder();
-        for (Path file : files) {
-            checksum.append(JsonCanonical.sha256Bytes(Files.readAllBytes(file)).substring("sha256:".length()))
-                .append("  ")
-                .append(stagingDirectory.relativize(file).toString().replace('\\', '/'))
-                .append('\n');
-        }
-        Files.writeString(
-            stagingDirectory.resolve("checksums.sha256"), checksum.toString(), StandardCharsets.UTF_8,
-            StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE
-        );
     }
 
     private void forceStagingFiles() throws IOException {
@@ -968,12 +631,6 @@ final class ExportPackage {
             List<String> issues = new ArrayList<>();
             try {
                 JsonCanonical.selfCheck();
-                JsonObject rereadManifest = com.google.gson.JsonParser.parseString(
-                    Files.readString(directory.resolve("manifest.json"), StandardCharsets.UTF_8)
-                ).getAsJsonObject();
-                if (!JsonCanonical.canonical(rereadManifest).equals(JsonCanonical.canonical(manifest))) {
-                    issues.add("manifest:writer bytes changed");
-                }
                 List<JsonObject> blocks = readJsonl(directory.resolve("blocks.jsonl"), issues);
                 List<JsonObject> states = readJsonl(directory.resolve("states.jsonl"), issues);
                 List<JsonObject> variants = readJsonl(directory.resolve("variants.jsonl"), issues);
@@ -1169,7 +826,7 @@ final class ExportPackage {
                 String expectedStatus = failures.stream().anyMatch(failure -> "fail_export".equals(property(failure, "action")))
                     || blocks.size() != registry.size() || states.isEmpty() ? "failed"
                     : pendingFailures > 0 ? "needs_review" : "succeeded";
-                if (!expectedStatus.equals(property(rereadManifest, "status"))) {
+                if (!expectedStatus.equals(property(manifest, "status"))) {
                     issues.add("manifest:status");
                 }
                 if (manifest.getAsJsonObject("counts").get("registry_blocks").getAsInt() != registry.size()) {
@@ -1269,15 +926,6 @@ final class ExportPackage {
             Path maskPath = location.directory(directory).resolve("mask.png");
             validatePng(previewPath, issues);
             validatePng(maskPath, issues);
-            if (!property(render, "image_sha256").equals(JsonCanonical.sha256Bytes(Files.readAllBytes(previewPath)))) {
-                issues.add("render:preview hash " + variantId);
-            }
-            if (!property(render, "mask_sha256").equals(JsonCanonical.sha256Bytes(Files.readAllBytes(maskPath)))) {
-                issues.add("render:mask hash " + variantId);
-            }
-            if (!property(render, "render_metadata_sha256").equals(JsonCanonical.sha256(metadata))) {
-                issues.add("render:metadata hash " + variantId);
-            }
         }
 
         private static void validatePng(Path path, List<String> issues) throws IOException {
@@ -1387,11 +1035,7 @@ final class ExportPackage {
                 logicalInputSignature,
                 Instant.now()
             );
-            if (bannerRepairBase != null) {
-                repairFailures.add(logFailure.toJson());
-            } else {
-                failures.add(logFailure);
-            }
+            failures.add(logFailure);
         }
     }
 

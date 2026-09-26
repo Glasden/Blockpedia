@@ -7000,3 +7000,31 @@ output {
     grid-template-columns: 1fr;
   }
 }
+
+/* Release controls share the Studio form system; native choices stay compact. */
+[data-release-manager] .field-group {
+  min-width: 0;
+}
+[data-release-manager] .field-group--wide {
+  grid-column: 1 / -1;
+}
+[data-release-manager] input[type="radio"],
+[data-release-manager] input[type="checkbox"] {
+  width: auto;
+  min-height: auto;
+  margin-right: 0.5rem;
+}
+[data-release-manager] fieldset {
+  border: 1px solid var(--line);
+  padding: 1rem;
+}
+[data-release-manager] select {
+  min-width: 0;
+  max-width: 100%;
+}
+[data-release-current],
+[data-publish-feedback],
+[data-build-feedback],
+.recent-checks a {
+  overflow-wrap: anywhere;
+}

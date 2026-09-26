@@ -3,9 +3,9 @@
 {% block content %}
 <section class="hero page-shell" aria-labelledby="page-heading">
   <div class="hero__copy reveal reveal--1">
-    <p class="eyebrow"><span>R3</span> LOCAL INDEX PIPELINE</p>
+    <p class="eyebrow">LOCAL INDEX PIPELINE</p>
     <h1 id="page-heading">从机器事实出发，<br><em>完成语义与审核。</em></h1>
-    <p class="hero__lede">Studio 已覆盖导入、确定性特征、显式 OpenAI 协议标注和人工审核。Exporter 仍是代表状态选择与 Minecraft 内渲染的唯一执行者。</p>
+    <p class="hero__lede">Studio 已覆盖导入、确定性特征、显式 OpenAI 协议标注、人工审核，以及构建、发布与回滚。Exporter 仍是代表状态选择与 Minecraft 内渲染的唯一执行者。</p>
   </div>
 
   <aside class="hero-console reveal reveal--2" aria-label="Studio 概览">
@@ -33,7 +33,7 @@
       <span class="readonly-chip">显式版本</span>
     </div>
 
-    <form class="import-form import-form--chooser" action="/api/imports/check" method="post" data-import-check-form autocomplete="off">
+    <form class="import-form import-form--chooser" action="/api/imports" method="post" data-import-form autocomplete="off">
       <div class="field-group field-group--version">
         <label for="minecraft-version">Minecraft 版本</label>
         <input
@@ -62,7 +62,7 @@
             placeholder="尚未选择导出目录"
             data-directory-display
           >
-          <input id="source-directory" name="source_directory" type="hidden" required data-directory-ref>
+          <input id="source-directory" name="source_directory_ref" type="hidden" required data-directory-ref>
           <button class="button button--quiet directory-select__browse" type="button" aria-expanded="false" aria-controls="directory-chooser" data-directory-browse>浏览导出目录</button>
         </div>
         <small id="source-help">先选择精确版本，再从已配置 data-root 中选择一个 exporter 导出。</small>
@@ -77,9 +77,9 @@
           <div class="selected-export-state__identity">
             <span class="export-state-mark" aria-hidden="true" data-selected-marker>○</span>
             <div>
-              <span class="status-badge" data-selected-badge>未检查</span>
+              <span class="status-badge" data-selected-badge>待导入</span>
               <h3 id="selected-export-state-heading" data-selected-title>等待选择导出</h3>
-              <p data-selected-detail>选择后会显示检查与运行状态。</p>
+              <p data-selected-detail>导入会完成验证并创建运行。</p>
             </div>
           </div>
           <div class="compact-check-progress" hidden data-selected-progress>
@@ -118,19 +118,20 @@
       </div>
 
       <div class="form-action">
-        <button class="button button--primary" type="submit" disabled data-import-check-submit data-selected-primary data-selected-action="start">
-          <span data-selected-action-label>开始完整性检查</span><span aria-hidden="true">→</span>
+        <button class="button button--primary" type="submit" disabled data-import-submit data-selected-primary data-selected-action="start">
+          <span data-selected-action-label>开始导入</span><span aria-hidden="true">→</span>
         </button>
-        <span class="activity-label" role="status" data-import-start-status>选择可检查的导出后继续。</span>
+        <span class="activity-label" role="status" data-import-start-status>选择导出后开始导入。</span>
       </div>
+      <button class="text-button" type="button" data-new-import>开始新的导入操作</button>
     </form>
 
-    {% include "partials/recent_checks.html" %}
+    {% include "partials/recent_imports.html" %}
 
     <div id="import-result" class="result-slot" aria-live="polite" data-import-start-feedback>
       <div class="empty-state empty-state--compact">
         <span class="empty-state__symbol" aria-hidden="true">⌁</span>
-        <p>检查启动后会进入独立进度页。通过完整检查后，才会出现导入操作。</p>
+        <p>一次导入完成验证与工作区创建。提交后可在进度页查看结果。</p>
       </div>
     </div>
   </section>
@@ -177,7 +178,7 @@
     <section class="boundary-card" aria-labelledby="boundary-heading">
       <p class="section-index">PHASE BOUNDARY</p>
       <h2 id="boundary-heading">当前进入 R3 审核闭环。</h2>
-      <p>Provider、发送前预览、受控语义标注、人工审核与候选检查/构建入口均在现有运行页。是否已有候选，以每条运行的实际检查结果为准。</p>
+      <p>Provider、发送前预览、受控语义标注、人工审核与候选构建入口均在现有运行页。是否已有候选，以每条运行的实际构建结果为准。</p>
       <a class="button button--quiet" href="/runs">前往运行记录 <span aria-hidden="true">→</span></a>
       <div class="boundary-track" aria-label="阶段边界">
         <span>R2</span><span class="is-current">R3</span><span>R4</span><span>R5</span>

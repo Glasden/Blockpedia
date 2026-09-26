@@ -1,8 +1,8 @@
 """Process-local, path-free references for the export directory chooser.
 
 The chooser is deliberately kept outside the persisted import/check model.  A
-reference is useful only to this process and is backed by a directory identity
-which is checked again every time the reference is consumed.
+reference is useful only to this process. Consumption checks path safety, not
+whether directory contents or filesystem identity have changed.
 """
 
 from __future__ import annotations
@@ -39,12 +39,6 @@ class DirectoryPathUnsafe(DirectoryChooserError):
     code = "DIRECTORY_PATH_UNSAFE"
 
 
-@dataclass(frozen=True, slots=True)
-class DirectoryIdentity:
-    device: int
-    inode: int
-    change_time_ns: int
-    size: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +47,6 @@ class DirectoryRef:
     minecraft_version: str
     root: Path
     path: Path
-    identity: DirectoryIdentity
     expires_at: float
 
 
@@ -186,7 +179,6 @@ class DirectoryChooser:
             minecraft_version=version,
             root=canonical_root,
             path=canonical_path,
-            identity=_identity(canonical_path),
             expires_at=time.monotonic() + self.ttl_seconds,
         )
         with self._lock:
@@ -222,8 +214,6 @@ class DirectoryChooser:
             self._validate_directory(record.path, root, requested_version)
         except DirectoryRefNotFound as exc:
             raise DirectoryRefStale from exc
-        if _identity(record.path) != record.identity:
-            raise DirectoryRefStale
         if require_export and not EXPORT_ID_RE.fullmatch(record.path.name):
             raise DirectoryPathUnsafe
         # Return a fresh canonical path only after all checks have passed.
@@ -291,19 +281,6 @@ def _is_reparse_point(path: Path) -> bool:
         return True
 
 
-def _identity(path: Path) -> DirectoryIdentity:
-    try:
-        value = path.lstat()
-    except OSError as exc:
-        raise DirectoryRefNotFound from exc
-    if not stat.S_ISDIR(value.st_mode) or _is_reparse_stat(value):
-        raise DirectoryPathUnsafe
-    return DirectoryIdentity(
-        device=int(value.st_dev),
-        inode=int(value.st_ino),
-        change_time_ns=int(getattr(value, "st_ctime_ns", 0)),
-        size=int(value.st_size),
-    )
 
 
 def _preflight(path: Path, version: str) -> dict[str, Any]:
@@ -311,7 +288,7 @@ def _preflight(path: Path, version: str) -> dict[str, Any]:
 
     required = {
         "manifest.json": _regular_file(path / "manifest.json"),
-        "checksums.sha256": _regular_file(path / "checksums.sha256"),
+        "blocks.jsonl": _regular_file(path / "blocks.jsonl"),
     }
     return {
         "export_id": path.name if EXPORT_ID_RE.fullmatch(path.name) else None,

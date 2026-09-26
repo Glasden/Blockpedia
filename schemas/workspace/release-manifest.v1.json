@@ -80,12 +80,6 @@
     "release_id",
     "minecraft_version",
     "source_export_id",
-    "source_export_manifest_sha256",
-    "toolchain_lock_sha256",
-    "schemas_inventory_path",
-    "provider_snapshot",
-    "functional_inputs",
-    "functional_artifacts",
     "quality_report_path",
     "quality_report_sha256",
     "fts_mode"

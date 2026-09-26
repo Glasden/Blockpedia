@@ -54,8 +54,7 @@ def test_v2_schema_has_fresh_projection_columns_and_preserves_v1_bytes(tmp_path:
 def test_v2_builder_projects_canonical_records_and_features_consistently(tmp_path: Path) -> None:
     service, run_id = _ready(tmp_path)
     try:
-        checked = service.check_candidate_release(run_id, "26.2")
-        built = service.build_candidate_release(checked["check_id"])
+        built = service.build_candidate_release(run_id, "26.2", "build_" + "a" * 32)
         release = tmp_path / built["relative_path"]
         with service.worker.open_database(run_id) as workspace:
             workspace_blocks = {

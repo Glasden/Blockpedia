@@ -1,171 +1,122 @@
-from __future__ import annotations
-
-import re
 from pathlib import Path
-
 from jinja2 import Environment, FileSystemLoader
 
-
 ROOT = Path(__file__).resolve().parents[2]
-TEMPLATES = ROOT / "src" / "blockpedia" / "templates"
-STATIC = ROOT / "src" / "blockpedia" / "static"
+TEMPLATES = ROOT / 'src/blockpedia/templates'
+STATIC = ROOT / 'src/blockpedia/static'
 
-
-def test_r3_release_ui_templates_compile_and_render_initial_boundary() -> None:
+def test_templates_compile_and_candidate_is_one_action():
     environment = Environment(loader=FileSystemLoader(str(TEMPLATES)))
-    for path in sorted(TEMPLATES.rglob("*.html")):
+    for path in TEMPLATES.rglob('*.html'):
         environment.get_template(path.relative_to(TEMPLATES).as_posix())
+    rendered = environment.get_template('partials/release_candidate.html').render(run={'minecraft_version':'26.2'}, run_identifier='run_fixture')
+    assert 'data-candidate-build' in rendered
+    assert '/releases?minecraft_version=26.2' in rendered
+    assert 'check_id' not in rendered
 
-    rendered = environment.get_template("partials/release_candidate.html").render(
-        run={
-            "run_id": "run_fixture",
-            "minecraft_version": "26.2",
-            "current_stage": "BUILD_RELEASE",
-            "boundary_event": "R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING",
-        },
-        run_identifier="run_fixture",
-    )
-    assert 'data-release-candidate' in rendered
-    assert 'data-state="ready"' in rendered
-    assert 'data-candidate-check-route="/api/releases/check"' in rendered
-    assert 'data-candidate-build-route="/api/releases/build"' in rendered
-    assert 'data-candidate-build disabled' in rendered
-    assert 'data-candidate-build-action hidden' in rendered
-    assert "未激活" in rendered
-    assert "current" in rendered
-    assert all(field in rendered for field in ("check_id", "release_build_id", "snapshot_fingerprint", "quality_report_sha256"))
+def test_release_page_has_explicit_confirmation_and_hidden_concurrency_token():
+    text = (TEMPLATES / 'releases.html').read_text()
+    assert 'name="expected_current_sha256" type="hidden"' in text
+    assert 'name="confirm" required' in text
+    assert 'name="set_as_default" value="true" required' in text
+    assert 'name="set_as_default" value="false" required' in text
+    assert 'name="reviewer" required' in text
+    assert 'name="reason" required' in text
+    assert 'value="rollback"' in text
 
-
-def test_r3_release_ui_has_only_frozen_candidate_actions_and_safe_payload() -> None:
-    partial = (TEMPLATES / "partials" / "release_candidate.html").read_text(encoding="utf-8")
-    run_detail = (TEMPLATES / "run_detail.html").read_text(encoding="utf-8")
-    javascript = (STATIC / "studio.js").read_text(encoding="utf-8")
-    rendered = Environment(loader=FileSystemLoader(str(TEMPLATES))).get_template("partials/release_candidate.html").render(
-        run={
-            "run_id": "run_fixture",
-            "minecraft_version": "26.2",
-            "current_stage": "BUILD_RELEASE",
-            "boundary_event": "R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING",
-        },
-        run_identifier="run_fixture",
-    )
-
-    assert 'include "partials/release_candidate.html"' in run_detail
-    assert 'R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING' in run_detail
-    assert 'postJsonEnvelope(panel.dataset.candidateCheckRoute' in javascript
-    assert 'postJsonEnvelope(panel.dataset.candidateBuildRoute' in javascript
-    assert 'confirm_immutable_release: true' in javascript
-    assert 'run_id: panel.dataset.candidateRunId' in javascript
-    assert 'minecraft_version: panel.dataset.candidateVersion' in javascript
-
-    assert 'data-release-activation' not in rendered
-    assert 'data-activation-check-form' not in rendered
-    assert all(route not in (partial + javascript).lower() for route in (
-        "/api/releases/rollback",
-        "/api/releases/cleanup",
-        "/api/mcp",
-    ))
-    assert all(term not in rendered.lower() for term in ("token", "usage", "cost", "budget"))
-    assert "relative_path" not in rendered
-    assert "type=\"text\"" not in rendered
-    assert "<select" not in rendered
-    assert "<textarea" not in rendered
+def test_retired_actions_absent_and_client_identity_is_persisted():
+    javascript = (STATIC / 'studio.js').read_text()
+    templates = '\n'.join(path.read_text() for path in TEMPLATES.rglob('*.html'))
+    for retired in ['banner-export-refresh', '/api/releases/check', '/api/releases/apply', '/api/releases/activation-check', '/api/imports/check', 'confirm_immutable_release', 'check_id']:
+        assert retired not in javascript + templates
+    assert 'crypto.randomUUID().replaceAll("-", "")' in javascript
+    assert 'sessionStorage.setItem(key, JSON.stringify(saved))' in javascript
+    assert 'data-new-import' in javascript and 'data-new-build' in javascript
+    assert '发布已生效，无需重复切换' in javascript
 
 
-def test_activation_controls_render_only_at_exact_activation_boundary() -> None:
-    environment = Environment(loader=FileSystemLoader(str(TEMPLATES)))
-    template = environment.get_template("partials/release_candidate.html")
-    activation = template.render(
-        run={
-            "run_id": "run_fixture",
-            "minecraft_version": "26.2",
-            "current_stage": "ACTIVATE_RELEASE",
-            "boundary_event": "R3_CANDIDATE_BUILT_ACTIVATION_PENDING",
-        },
-        run_identifier="run_fixture",
-    )
-    wrong_stage = template.render(
-        run={
-            "run_id": "run_fixture",
-            "minecraft_version": "26.2",
-            "current_stage": "BUILD_RELEASE",
-            "boundary_event": "R3_CANDIDATE_BUILT_ACTIVATION_PENDING",
-        },
-        run_identifier="run_fixture",
-    )
-    run_detail = (TEMPLATES / "run_detail.html").read_text(encoding="utf-8")
-
-    assert 'data-release-activation' in activation
-    assert 'data-activation-check-route="/api/releases/activation-check"' in activation
-    assert 'data-activation-apply-route="/api/releases/apply"' in activation
-    assert 'name="target_release_id"' in activation
-    assert 'pattern="rel_[0-9a-f]{32}"' in activation
-    assert 'data-release-activation' not in wrong_stage
-    assert "run_view.get('current_stage') == 'ACTIVATE_RELEASE'" in run_detail
-    assert "/api/releases/rollback" not in activation
-    assert "data-rollback" not in activation
-
-
-def test_activation_ui_requires_passed_check_and_explicit_apply_decisions() -> None:
-    environment = Environment(loader=FileSystemLoader(str(TEMPLATES)))
-    rendered = environment.get_template("partials/release_candidate.html").render(
-        run={
-            "run_id": "run_fixture",
-            "minecraft_version": "26.2",
-            "current_stage": "ACTIVATE_RELEASE",
-            "boundary_event": "R3_CANDIDATE_BUILT_ACTIVATION_PENDING",
-        },
-        run_identifier="run_fixture",
-    )
-    javascript = (STATIC / "studio.js").read_text(encoding="utf-8")
-
-    assert 'name="activation_check_id" value="" data-activation-check-id' in rendered
-    assert re.search(r'<button[^>]*type="submit"[^>]*disabled[^>]*data-activation-apply', rendered)
-    assert 'name="confirm_current_switch" type="checkbox" value="true" required' in rendered
-    assert 'name="set_as_default" type="radio" value="true" checked required' in rendered
-    assert 'name="set_as_default" type="radio" value="false"' in rendered
-    assert 'data.status === "passed" && data.can_apply === true' in javascript
-    assert '!passed || !confirmation?.checked || !selectedDefault' in javascript
-    assert "尚未切换" in rendered
-    assert "current 已切换" in rendered
-    assert '[data-candidate-built-field="release_id"]' in javascript
-
-
-def test_activation_ui_posts_only_frozen_payload_keys() -> None:
-    javascript = (STATIC / "studio.js").read_text(encoding="utf-8")
-    check_match = re.search(
-        r"postJsonEnvelope\(panel\.dataset\.activationCheckRoute, \{(?P<body>.*?)\n\s*\}\);",
-        javascript,
-        re.DOTALL,
-    )
-    apply_match = re.search(
-        r"postJsonEnvelope\(panel\.dataset\.activationApplyRoute, \{(?P<body>.*?)\n\s*\}\);",
-        javascript,
-        re.DOTALL,
-    )
-    assert check_match is not None
-    assert apply_match is not None
-
-    key_pattern = re.compile(r"^\s*([a-z_]+):", re.MULTILINE)
-    assert key_pattern.findall(check_match.group("body")) == [
-        "run_id",
-        "minecraft_version",
-        "target_release_id",
-    ]
-    assert key_pattern.findall(apply_match.group("body")) == [
-        "activation_check_id",
-        "confirm_current_switch",
-        "set_as_default",
-    ]
-
-
-def test_r3_release_build_reads_required_top_level_hashes_in_stable_order() -> None:
-    javascript = (STATIC / "studio.js").read_text(encoding="utf-8")
-
-    manifest = javascript.index('["manifest_sha256", data.manifest_sha256]')
-    quality = javascript.index('["quality_report_sha256", data.quality_report_sha256]')
-    checksums = javascript.index('["checksums_sha256", data.checksums_sha256]')
-    assert manifest < quality < checksums
-    assert "renderCandidateHashes(panel, data);" in javascript
-    assert "data.hashes" not in javascript
-    assert 'throw { code: "RELEASE_BUILD_RESULT_INVALID", message: "候选构建摘要不完整。" }' in javascript
+def test_import_identity_survives_response_loss_reload_and_new_directory_ref():
+    """Run the real submit code against a server model that has accepted the POST."""
+    import subprocess
+    script = r'''
+const assert = require('node:assert/strict');
+const source = require('node:fs').readFileSync(process.argv[2], 'utf8');
+const vm = require('node:vm');
+const storage = new Map();
+const runs = new Map();
+const requests = [];
+let redirect, sequence = 0, failRead = false;
+const context = {
+  sessionStorage: { getItem: k => storage.get(k), setItem: (k,v) => storage.set(k,v) },
+  crypto: { randomUUID: () => (++sequence).toString(16).padStart(32, '0') },
+  setText: (element, value) => { element.textContent = value; },
+  window: { location: { assign: value => { redirect = value; } } },
+  fetchJsonEnvelope: async url => {
+    requests.push(['GET', url]);
+    if (failRead) throw {status:503};
+    const run = runs.get(url.split('/').pop());
+    if (!run) throw {status:404};
+    return {...run};
+  },
+  postJsonEnvelope: async (url, body) => {
+    requests.push(['POST', body]);
+    runs.set(body.run_id, {run_id:body.run_id, minecraft_version:body.minecraft_version, export_id:'export_A', status:'running'});
+    throw new Error('server accepted; response lost');
+  },
+};
+vm.createContext(context);
+vm.runInContext(source.slice(source.indexOf('  const storedOperation'), source.indexOf('  const initializeDirectoryChooser')) +
+  source.slice(source.indexOf('  const performSelectedAction'), source.indexOf('  const submitRunCommand')) +
+  '\nthis.submit = performSelectedAction;', context);
+const form = (ref, version='26.2', exportId='export_A', retryId=null) => {
+  const feedback = {textContent:''};
+  const fields = {'[data-directory-ref]':{value:ref}, '[data-directory-version]':{value:version}};
+  return {dataset:{selectedExportId:exportId, ...(retryId?{retryRunId:retryId}:{})}, feedback,
+    reportValidity:()=>true, setAttribute:()=>{}, removeAttribute:()=>{},
+    querySelector:selector=>fields[selector], querySelectorAll:()=>[],
+    closest:()=>({querySelector:()=>feedback})};
+};
+(async()=>{
+  await context.submit(form('dir_first'));
+  const id = JSON.parse(storage.get('blockpedia.import')).id;
+  assert.equal(runs.size, 1);
+  // A new form models the reload; directory browsing yields a different ref.
+  await context.submit(form('dir_second'));
+  assert.equal(redirect, '/imports/'+id);
+  assert.equal(requests.filter(x=>x[0]==='POST').length, 1);
+  assert.equal(JSON.parse(storage.get('blockpedia.import')).id, id);
+  assert.equal(runs.size, 1);
+  for (const changed of [form('dir_new','26.2','export_B'), form('dir_new','1.21','export_A')]) {
+    redirect = null;
+    await context.submit(changed);
+    assert.match(changed.feedback.textContent, /IMPORT_SOURCE_SELECTION_CHANGED/);
+    assert.equal(redirect, null);
+    assert.equal(runs.size, 1);
+  }
+  // A read failure must never be treated as permission to POST a new run.
+  failRead = true;
+  await context.submit(form('dir_third'));
+  assert.equal(requests.filter(x=>x[0]==='POST').length, 1);
+  failRead = false;
+  // A missing operation retries its saved identity, even with a fresh ref.
+  runs.delete(id);
+  await context.submit(form('dir_fourth'));
+  assert.equal(requests.at(-1)[1].run_id, id);
+  // Explicit retry URLs also preserve the identity of interrupted operations.
+  runs.get(id).status = 'interrupted';
+  await context.submit(form('dir_retry','26.2','export_A',id));
+  assert.equal(requests.at(-1)[1].run_id, id);
+  const explicitId = 'run_'+'d'.repeat(32);
+  await context.submit(form('dir_retry_missing','26.2','export_A',explicitId));
+  assert.equal(requests.at(-1)[1].run_id, explicitId);
+  // Only the new-action control's storage reset permits another ID.
+  storage.delete('blockpedia.import');
+  await context.submit(form('dir_new_action'));
+  assert.notEqual(requests.at(-1)[1].run_id, id);
+  assert.notEqual(requests.at(-1)[1].run_id, explicitId);
+  await context.submit(form('dir_return','26.2','export_A',explicitId));
+  assert.equal(redirect, '/imports/'+explicitId);
+  assert.equal(JSON.parse(storage.get('blockpedia.import')).id, explicitId);
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+    subprocess.run(['node', '-', str(STATIC / 'studio.js')], input=script, text=True, check=True)

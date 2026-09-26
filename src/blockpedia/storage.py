@@ -7,6 +7,7 @@ import importlib.resources
 import json
 import sqlite3
 from contextlib import contextmanager
+from functools import cache
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -16,14 +17,12 @@ class DatabaseSchemaMismatch(RuntimeError):
     """The immutable packaged schema and a workspace database disagree."""
 
 
+@cache
 def packaged_release_index_schema() -> tuple[bytes, str]:
     """Return the checked, standalone immutable v2 release-index schema."""
 
     sql = _resource_bytes("release-index.v2.sql")
-    expected = _resource_bytes("release-index.v2.sha256").decode("ascii").strip()
     actual = "sha256:" + hashlib.sha256(sql).hexdigest()
-    if expected != actual:
-        raise DatabaseSchemaMismatch("packaged release index schema hash mismatch")
     return sql, actual
 
 
@@ -35,12 +34,10 @@ def _resource_bytes(name: str) -> bytes:
     return importlib.resources.files("blockpedia").joinpath("sql", name).read_bytes()
 
 
+@cache
 def packaged_schema() -> tuple[bytes, str]:
     sql = _resource_bytes("workspace.v1.sql")
-    expected = _resource_bytes("workspace.v1.sha256").decode("ascii").strip()
     actual = "sha256:" + hashlib.sha256(sql).hexdigest()
-    if expected != actual:
-        raise DatabaseSchemaMismatch("packaged workspace schema hash mismatch")
     return sql, actual
 
 
@@ -89,8 +86,8 @@ class WorkspaceDatabase:
                 row = connection.execute(
                     "SELECT schema_version, schema_sha256 FROM schema_meta WHERE schema_version = 'workspace.v1'"
                 ).fetchone()
-                if row is None or row["schema_sha256"] != schema_sha256:
-                    raise DatabaseSchemaMismatch("workspace database schema hash mismatch")
+                if row is None:
+                    raise DatabaseSchemaMismatch("unsupported workspace schema version")
                 if not read_only:
                     connection.execute("PRAGMA journal_mode = WAL")
                     connection.execute("PRAGMA synchronous = FULL")

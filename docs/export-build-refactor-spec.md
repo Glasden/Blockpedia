@@ -199,7 +199,7 @@ current 保留多版本语义；第一次发布必须设为默认，后续请求
 - 新导入的来源摘要在 imports.report_json 中随事务写入。旧 workspace 没有该摘要时，从已有 workspace export manifest 读取并核对最小来源信息，在本次操作内复用，不回扫全部 JSONL/图片，也不改写原有 D-045 provenance。不能把当前数据库自己的计数当成原始 registry 证据。缺失必要来源证据时明确报告，不能伪造通过。
 - 旧 running 任务仍需显式 recover。已到构建/旧激活边界的 run 可直接进入新构建；旧阶段行和审计不删除。run 加工结束与是否发布分开显示。
 - 已有 v2 release 可在 workspace 和旧 check cache 不存在时发布/回滚。v1 release 原样保留；其缺失当前查询所需投影时，应从保留的 workspace 构建新的 v2，不增加 v1 查询适配器。
-- 旧 checked snapshot 如尚未导入，可作为明确选中的本地输入重新经过新导入验证；不继续维护旧 check_id 协议。不能因此开放任意路径输入。
+- 旧 checked snapshot 如尚未导入，用户可先把其中完整 export 目录放入所选版本的 exports，再通过普通入口重新验证；不继续维护旧 check_id 协议，也不增加任意路径输入或自动改写旧 cache。
 - 旧构建若已 rename、尚未完成 cursor/cache 收尾，只按已有确定性 build/release 身份恢复，不重建旧验证流水线。
 - D-045 已完成 refresh 的混合来源、32 个目标结果及既有标注保留。继续检查来源身份、target exclusion 等必要关系；不在每次 build 重生成历史图片和 prompt，不改写历史 export ID 或请求签名。
 - 已确认移除 banner-refresh 入口、对应 WebUI 动作、专用 exporter banner-repair 命令及其仅服务补救流程的实现。普通 exporter 的公共渲染修复保留：ExportPackage.renderVariantStep 调用 RenderExporter.render，后者的公共 renderState 对 BannerBlock/WallBannerBlock 应用中心缩放 0.72，普通 prepare 也使用 camera.v2/banner policy。修复不依赖 repair 模式。此次以当前源码调用链确认，未重跑 Minecraft。新的机器来源建立新 workspace，不在本次引入通用跨导出合并能力。存在未完成 refresh journal 时，先通过原恢复路径完成或回退，不能忽略它或删除 backup。
@@ -210,6 +210,8 @@ current 保留多版本语义；第一次发布必须设为默认，后续请求
 ## 8. 实施顺序与验收
 
 ### 8.1 可独立验收的提交阶段
+
+第一项已独立提交。实际接线显示第 2–4 项共享旧 check 身份、artifact 消费与 release 布局，分别提交会使中间版本不可用或需要新增过渡兼容层。因此这三项按下述依赖顺序实现，并作为一条完整新业务链集中验收/提交；各项验收范围保持，不以合并提交缩减目标。
 
 1. **统一 PNG 与局部重复执行。** 共用 decoder、解除 eager import、修复 O(N²) 任务规划和逐项进度落盘；现有业务闭环继续工作。
 2. **合并导入并统一 SQLite 结果权威。** 一次导入/复制、来源摘要、旧 stage 接线与恢复；同时更新现有构建器、AI/审核和 D-045 历史消费者，再停止派生 JSON 写入。不能让生产者先停写、消费者留到下一阶段才修复。

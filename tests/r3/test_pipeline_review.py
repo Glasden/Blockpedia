@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from tests.import_helpers import import_export
 from blockpedia.features import decode_rgba_png
 from blockpedia.paths import DataRoot
 from blockpedia.provider import OpenAIProvider, ProviderProfile, SecretResolver, StageConfig
@@ -211,9 +212,9 @@ def test_d040_plan_hash_fixed_vector_uses_recomputed_payload_signature() -> None
     ) == "sha256:2beeab98edf9abce6be5feceb68f6ed13df570d0db18db34804dbe6f68a22ded"
 
 
-def _service(tmp_path: Path, fake: _FakeProvider, *, adapter: str = "openai_responses") -> tuple[StudioService, str, dict[str, str]]:
+def _service(tmp_path: Path, fake: _FakeProvider, *, adapter: str = "openai_responses", export_path: Path | None = None) -> tuple[StudioService, str, dict[str, str]]:
     fixture = _r2_fixture_module()
-    export = fixture.make_export(tmp_path)
+    export = export_path or fixture.make_export(tmp_path)
     service = StudioService(
         DataRoot(tmp_path),
         repo_root=Path(__file__).parents[2],
@@ -221,8 +222,7 @@ def _service(tmp_path: Path, fake: _FakeProvider, *, adapter: str = "openai_resp
         provider_factory=lambda profile, **_kwargs: fake,
         secret_resolver=SecretResolver(keyring_backend=_Keyring()),
     )
-    check = service.check_import(export, "26.2")
-    imported = service.import_checked(check.check_id)
+    imported = import_export(service, export)
     run_id = imported["run_id"]
     for _ in range(6):
         service.tick(run_id)
@@ -278,9 +278,7 @@ def _tracked_service(
         )
         exports.append(export)
     for export in exports:
-        check = service.check_import(export, "26.2")
-        assert check.can_import, check.issues
-        imported.append(service.import_checked(check.check_id))
+        imported.append(import_export(service, export))
     for run_index, item in enumerate(imported):
         for _ in range(6):
             service.tick(item["run_id"])
@@ -1215,19 +1213,6 @@ def test_human_review_closure_rejects_missing_skip_and_excluded_audit(tmp_path: 
     service.close()
 
 
-def test_human_review_closure_rejects_fts_failure(tmp_path: Path, monkeypatch) -> None:
-    from blockpedia.search import WorkspaceQueryService
-
-    service, run_id, _ = _service(tmp_path, _FakeProvider(confidence=0.90))
-    _set_sample_rate(service, run_id, 0)
-    _approve_first(service, run_id)
-    monkeypatch.setattr(WorkspaceQueryService, "rebuild_index", lambda _self: (_ for _ in ()).throw(RuntimeError("fts")))
-    service.tick(run_id)
-    service.tick(run_id)
-    service.tick(run_id)
-    assert service.get_run(run_id)["status"] == "needs_review"
-    assert any(item["reason_code"] == "FTS_BUILD_FAILED" for item in service.list_reviews(run_id))
-    service.close()
 
 
 def test_cancelled_target_can_retry_as_single_unapproved_batch(tmp_path: Path) -> None:
@@ -1331,7 +1316,7 @@ def test_full_manual_semantics_can_close_without_annotation(tmp_path: Path) -> N
             connection.execute("DELETE FROM review_tasks")
     service.tick(run_id)
     service.tick(run_id)
-    review = next(item for item in service.list_reviews(run_id) if item["reason_code"] == "MISSING_SEMANTIC")
+    review = next(item for item in service.list_reviews(run_id) if item["reason_code"] == "MISSING_VERIFIED_SEMANTIC")
     full_override = {
         "operations": {
             "add_synonyms_zh": ["石头"],
@@ -1359,13 +1344,11 @@ def test_full_manual_semantics_can_close_without_annotation(tmp_path: Path) -> N
     assert result["status"] == "resolved"
     with service.worker.open_database(run_id) as database:
         assert database.fetchone("SELECT 1 FROM annotations") is None
-    service.continue_review(run_id)
-    service.tick(run_id)
     pending_skip = [item for item in service.list_reviews(run_id) if item["reason_code"] in {"MISSING_TEXTURE", "SKIP_REVIEW_MISSING"}]
     if pending_skip:
         service.resolve_review(run_id, pending_skip[0]["review_id"], decision="skip", reviewer="tester", reason_code="MISSING_TEXTURE", note="fixture failure skip", evidence=["fixture:render"])
-        service.continue_review(run_id)
-        service.tick(run_id)
+    service.continue_review(run_id)
+    service.tick(run_id)
     assert service.get_run(run_id)["boundary_event"] == "R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING"
     assert service.query_workspace(run_id, "人工石头")
     service.close()
@@ -1393,27 +1376,6 @@ def test_excluded_acceptance_needs_only_qualification_review(tmp_path: Path) -> 
     service.close()
 
 
-def test_fts_accept_rebuilds_atomically_and_recovers(tmp_path: Path, monkeypatch) -> None:
-    from blockpedia.search import WorkspaceQueryService
-
-    service, run_id, _ = _service(tmp_path, _FakeProvider(confidence=0.90))
-    _set_sample_rate(service, run_id, 0)
-    _approve_first(service, run_id)
-    original = WorkspaceQueryService.rebuild_index
-    monkeypatch.setattr(WorkspaceQueryService, "rebuild_index", lambda _self: (_ for _ in ()).throw(RuntimeError("fts")))
-    for _ in range(3):
-        service.tick(run_id)
-    fts = next(item for item in service.list_reviews(run_id) if item["reason_code"] == "FTS_BUILD_FAILED")
-    monkeypatch.setattr(WorkspaceQueryService, "rebuild_index", original)
-    accepted = service.resolve_review(run_id, fts["review_id"], decision="accept", reviewer="tester", reason_code="OTHER", note="retry FTS check", evidence=["fixture:fts"])
-    assert accepted["status"] == "resolved"
-    pending_skip = next(item for item in service.list_reviews(run_id) if item["reason_code"] == "MISSING_TEXTURE")
-    service.resolve_review(run_id, pending_skip["review_id"], decision="skip", reviewer="tester", reason_code="MISSING_TEXTURE", note="fixture failure skip", evidence=["fixture:render"])
-    continued = service.continue_review(run_id)
-    assert continued["status"] == "pending" and continued["current_stage"] == "HUMAN_REVIEW"
-    with service.worker.open_database(run_id) as database:
-        assert database.fetchone("SELECT 1 FROM review_tasks WHERE reason_code='FTS_BUILD_FAILED' AND status='open'") is None
-    service.close()
 
 
 def test_d040_worker_uses_frozen_profile_after_global_profile_changes(tmp_path: Path) -> None:
@@ -2011,13 +1973,14 @@ def test_d044_process_coordinator_is_shared_across_workers_and_roots(tmp_path: P
     tracker = _ConcurrencyTracker(3)
     service, run_ids, _ = _tracked_service(tmp_path, tracker, concurrency=3, job_count=3)
     fixture = _r2_fixture_module()
-    observer = StudioService(
-        DataRoot(tmp_path),
-        repo_root=Path(__file__).parents[2],
-        toolchain_probe=fixture.PassingToolchainProbe(),
-        provider_factory=lambda _profile, **_kwargs: _FreshBarrierProvider(tracker),
-        secret_resolver=SecretResolver(keyring_backend=_Keyring()),
-    )
+    from types import SimpleNamespace
+    from blockpedia.worker import WorkerService
+    with pytest.raises(RuntimeError, match="STUDIO_ALREADY_RUNNING"):
+        StudioService(DataRoot(tmp_path))
+    worker = WorkerService(DataRoot(tmp_path), toolchain_probe=fixture.PassingToolchainProbe(),
+                           provider_factory=lambda _profile, **_kwargs: _FreshBarrierProvider(tracker),
+                           secret_resolver=SecretResolver(keyring_backend=_Keyring()))
+    observer = SimpleNamespace(worker=worker, close=worker.close)
     run_id = run_ids[0]
     import blockpedia.worker as worker_module
 
@@ -2196,3 +2159,55 @@ def test_d044_serial_background_close_is_retryable_and_truthful(tmp_path: Path) 
         tracker.release.set()
         if not service._closed:
             service.close(timeout=5)
+
+
+def test_optional_workspace_fts_failure_does_not_block_review(tmp_path, monkeypatch):
+    from blockpedia.search import WorkspaceQueryService
+    service, run_id, _ = _service(tmp_path, _FakeProvider())
+    try:
+        _set_sample_rate(service, run_id, 0)
+        _approve_first(service, run_id)
+        monkeypatch.setattr(WorkspaceQueryService, "rebuild_index", lambda self: (_ for _ in ()).throw(RuntimeError("view unavailable")))
+        for _ in range(3):
+            service.tick(run_id)
+        for review in service.list_reviews(run_id):
+            assert review["reason_code"] not in {"FTS_BUILD_FAILED", "FTS_COVERAGE_MISSING"}
+            service.resolve_review(run_id, review["review_id"], decision="skip" if review["target_id"] == "minecraft:glass" else "accept", reviewer="tester", reason_code="MISSING_TEXTURE" if review["target_id"] == "minecraft:glass" else "OTHER", note="fixture review", evidence=["fixture:review"])
+        service.continue_review(run_id)
+        service.tick(run_id)
+        assert service.get_run(run_id)["current_stage"] == "BUILD_RELEASE"
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize('resolution', ['manual', 'excluded'])
+def test_unknown_ai_recovery_reaches_human_review_without_resending(tmp_path, resolution):
+    from blockpedia.search import SEMANTIC_LIST_FIELDS
+    fake = _FakeProvider()
+    service, run_id, _ = _service(tmp_path, fake)
+    try:
+        _approve_first(service, run_id)
+        with service.worker.open_database(run_id) as database:
+            with database.transaction() as c:
+                job_id = c.execute("SELECT job_id FROM jobs WHERE stage='AI_ANNOTATE' LIMIT 1").fetchone()[0]
+                c.execute("UPDATE jobs SET status='running',worker_id='dead',heartbeat_at='2000-01-01T00:00:00Z' WHERE job_id=?", (job_id,))
+                c.execute("UPDATE stage_runs SET status='running',worker_id='dead',heartbeat_at='2000-01-01T00:00:00Z' WHERE run_id=? AND stage='AI_ANNOTATE'", (run_id,))
+                c.execute("UPDATE runs SET status='running',current_stage='AI_ANNOTATE' WHERE run_id=?", (run_id,))
+        assert service.recover(run_id, job_id)['recovered']['status'] == 'needs_review'
+        for _ in range(3): service.tick(run_id)
+        run = service.get_run(run_id)
+        assert run['current_stage'] == 'HUMAN_REVIEW' and run['status'] == 'needs_review'
+        assert fake.calls == 0
+        for review in service.list_reviews(run_id):
+            if review['target_id'] == 'minecraft:glass':
+                service.resolve_review(run_id, review['review_id'], decision='skip', reviewer='tester', reason_code='MISSING_TEXTURE', note='fixture skip', evidence=['fixture:skip'])
+            else:
+                override = {'qualification': 'excluded', 'warnings': []} if resolution == 'excluded' else {'operations': {**{'add_' + field: [] for field in SEMANTIC_LIST_FIELDS}, 'set_summary_zh': '人工方块说明', 'set_summary_en': 'Manually reviewed block.', 'set_confidence': 1.0}}
+                service.resolve_review(run_id, review['review_id'], decision='edit_and_accept', reviewer='tester', reason_code='OTHER', note='manual resolution of unknown result', evidence=['fixture:manual'], override=override)
+        service.continue_review(run_id)
+        service.tick(run_id)
+        assert service.get_run(run_id)['current_stage'] == 'BUILD_RELEASE'
+        assert service.build_candidate_release(run_id, '26.2', 'build_' + 'd' * 32)['status'] == 'built'
+        assert fake.calls == 0
+    finally:
+        service.close()

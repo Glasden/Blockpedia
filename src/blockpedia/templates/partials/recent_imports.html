@@ -1,0 +1,2 @@
+<section class="recent-checks" aria-labelledby="recent-imports-heading"><h3 id="recent-imports-heading">最近导入</h3>
+{% for item in recent_imports %}<p><a href="/imports/{{ item.run_id }}">{{ item.minecraft_version }} · {{ item.run_id }}</a> <span class="status-badge">{{ status_labels.get(item.status, item.status) }}</span></p>{% else %}<p>暂无导入。</p>{% endfor %}</section>

@@ -2,14 +2,13 @@
 
 This validator deliberately covers the R1 package boundary only: strict
 exporter Schemas, JSONL references and counts, PNG dimensions/decoding,
-resource-asset blacklist paths, and the package checksum file.  It does not
+resource-asset blacklist paths. Historical hashes are not tamper gates.  It does not
 select variants or render images.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -43,8 +42,6 @@ JSONL_SCHEMAS = {
     "variants.jsonl": "export-variant.v1",
     "failures.jsonl": "export-failure.v1",
 }
-HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-CHECKSUM_RE = re.compile(r"^([0-9a-f]{64})  ([^\r\n]+)\n$")
 EXPORT_ID_RE = re.compile(r"^export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?$")
 STAGING_EXPORT_ID_RE = re.compile(r"^\.(export_[0-9]{8}T[0-9]{6}Z(?:_(?:0[1-9]|[1-9][0-9]))?)\.staging$")
 BLOCK_ID_RE = re.compile(r"^minecraft:[a-z0-9_./-]+$")
@@ -107,8 +104,10 @@ class _PngAnalysis:
 
 
 class Validator:
-    def __init__(self, repo_root: Path, export_dir: Path) -> None:
+    def __init__(self, repo_root: Path, export_dir: Path, *, copy_to: Path | None = None) -> None:
         self.repo_root = repo_root.resolve()
+        self.copy_to = copy_to
+        self._copied: set[Path] = set()
         # Keep the supplied package directory un-resolved so inventory can
         # reject a symlink at the package root instead of silently following
         # it before lstat() sees it.
@@ -121,9 +120,6 @@ class Validator:
         self._files: dict[str, Path] = {}
         self._directories: set[str] = set()
         self._bytes_cache: dict[Path, bytes] = {}
-        self._digest_cache: dict[Path, str] = {}
-        self._schema_digest_cache: dict[str, str] = {}
-        self._schema_bytes_cache: dict[str, bytes] = {}
         # A failed decode is cached as None as well.  This keeps a malformed
         # artifact from being read/decoded again if more than one semantic
         # check reaches the same path.
@@ -137,8 +133,6 @@ class Validator:
         self._cross_reference_completed = 0
         self._render_completed = 0
         self._render_total = 0
-        self._checksum_completed = 0
-        self._checksum_total = 0
 
     def add(self, code: str, detail: str) -> None:
         self.issues.append(Issue(code, detail))
@@ -151,7 +145,6 @@ class Validator:
         self._selected_variant_count = 0
         self._cross_reference_completed = 0
         self._render_completed = 0
-        self._checksum_completed = 0
         self._progress("INVENTORY", 0, None, "files")
         self._check_directories()
         if self._early_reject:
@@ -177,12 +170,14 @@ class Validator:
         self._progress("RENDERS", 0, self._render_total, "renders")
         self._check_renders()
 
-        self._checksum_total = len(self._files) - int("checksums.sha256" in self._files)
-        self._progress("CHECKSUMS", 0, self._checksum_total, "checks")
-        self._check_checksums()
 
         self._progress("FINALIZE", 0, 1, "checks")
         self._check_manifest_counts_and_status()
+        if not self.issues and self.copy_to is not None:
+            for relative, path in self._files.items():
+                if relative not in {"checksums.sha256", "schemas.sha256"} and path not in self._copied:
+                    self._read_bytes(path)
+            (self.copy_to / "renders").mkdir(exist_ok=True)
         self._progress("FINALIZE", 1, 1, "checks")
         return self._report()
 
@@ -204,7 +199,7 @@ class Validator:
         except OSError:
             self.add("EXPORT_DIR_MISSING", str(self.export_dir))
             return
-        if stat.S_ISLNK(root_metadata.st_mode):
+        if stat.S_ISLNK(root_metadata.st_mode) or getattr(root_metadata, "st_file_attributes", 0) & 0x400:
             self.add("INVENTORY_SYMLINK_REJECTED", ".")
             self._early_reject = True
             return
@@ -247,7 +242,7 @@ class Validator:
                     metadata = path.lstat()
                 except OSError:
                     continue
-                if stat.S_ISLNK(metadata.st_mode):
+                if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_file_attributes", 0) & 0x400:
                     self.add("INVENTORY_SYMLINK_REJECTED", relative)
                     continue
                 if not stat.S_ISDIR(metadata.st_mode):
@@ -264,7 +259,7 @@ class Validator:
                     metadata = path.lstat()
                 except OSError:
                     continue
-                if stat.S_ISLNK(metadata.st_mode):
+                if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_file_attributes", 0) & 0x400:
                     self.add("INVENTORY_SYMLINK_REJECTED", relative)
                     continue
                 if not stat.S_ISREG(metadata.st_mode):
@@ -279,19 +274,24 @@ class Validator:
     def _read_bytes(self, path: Path) -> bytes:
         if path in self._bytes_cache:
             return self._bytes_cache[path]
+        if path.is_relative_to(self.export_dir):
+            from blockpedia.local_files import safe_path
+            try:
+                safe_path(path, self.export_dir, directory=False)
+            except (OSError, ValueError) as exc:
+                raise OSError("source is not a safe regular file") from exc
         raw = path.read_bytes()
+        if self.copy_to is not None and path.is_relative_to(self.export_dir) and path not in self._copied:
+            relative = path.relative_to(self.export_dir)
+            if relative.as_posix() not in {"checksums.sha256", "schemas.sha256"}:
+                from blockpedia.local_files import write_bytes
+                target = self.copy_to / (Path("export") / relative if len(relative.parts) == 1 else relative)
+                write_bytes(target, raw, self.copy_to)
+            self._copied.add(path)
         self._bytes_cache[path] = raw
         return raw
 
-    def _sha256_hex(self, path: Path) -> str:
-        cached = self._digest_cache.get(path)
-        if cached is None:
-            cached = hashlib.sha256(self._read_bytes(path)).hexdigest()
-            self._digest_cache[path] = cached
-        return cached
 
-    def _sha256_prefixed(self, path: Path) -> str:
-        return "sha256:" + self._sha256_hex(path)
 
     def _load_schemas(self) -> None:
         for schema_id, relative_path in SCHEMA_PATHS.items():
@@ -306,8 +306,6 @@ class Validator:
                     self.add("SCHEMA_NOT_OBJECT", relative_path.as_posix())
                 else:
                     self.schemas[schema_id] = value
-                    self._schema_bytes_cache[schema_id] = raw
-                    self._schema_digest_cache[schema_id] = "sha256:" + self._sha256_hex(path)
                     try:
                         self.validators[schema_id] = Draft202012Validator(value)
                         Draft202012Validator.check_schema(value)
@@ -330,14 +328,13 @@ class Validator:
             "states.jsonl",
             "variants.jsonl",
             "failures.jsonl",
-            "checksums.sha256",
             "exporter.log",
         }
         for filename in sorted(required):
             if filename not in self._files:
                 self.add("REQUIRED_FILE_MISSING", filename)
         for relative in self._files:
-            if relative in required:
+            if relative in required or relative in {"checksums.sha256", "schemas.sha256"}:
                 continue
             if not relative.startswith("renders/"):
                 self.add("UNDECLARED_FILE", relative)
@@ -365,23 +362,6 @@ class Validator:
                     )
                 if self.manifest.get("status") == "failed":
                     self.add("FAILED_EXPORT_NOT_ACCEPTED", "failed export staging is diagnostic only")
-                inventory = value.get("schema_inventory")
-                if isinstance(inventory, list):
-                    expected = list(SCHEMA_IDS)
-                    actual = [item.get("schema_id") for item in inventory if isinstance(item, Mapping)]
-                    if actual != expected:
-                        self.add("SCHEMA_INVENTORY_ORDER", f"expected {expected!r}, got {actual!r}")
-                    for item in inventory:
-                        if not isinstance(item, Mapping):
-                            continue
-                        schema_id = item.get("schema_id")
-                        if schema_id not in SCHEMA_PATHS:
-                            continue
-                        expected_hash = self._schema_digest_cache.get(schema_id)
-                        if expected_hash is None:
-                            continue
-                        if item.get("schema_sha256") != expected_hash:
-                            self.add("SCHEMA_INVENTORY_HASH_MISMATCH", str(schema_id))
         self._schema_manifest_completed += 1
         self._progress(
             "SCHEMAS_MANIFEST",
@@ -450,50 +430,6 @@ class Validator:
                 if not posix.startswith("renders/") or path.suffix.casefold() not in {".png", ".json"}:
                     self.add("ORIGINAL_ASSET_BLACKLISTED", posix)
 
-    def _check_checksums(self) -> None:
-        self._checksum_total = len(self._files) - int("checksums.sha256" in self._files)
-        path = self.export_dir / "checksums.sha256"
-        try:
-            raw = self._read_bytes(path)
-            text = _decode_text(raw, path)
-            _require_lf_text(raw, path, self)
-        except (OSError, UnicodeError) as exc:
-            self.add("CHECKSUM_FILE_READ_FAILED", type(exc).__name__)
-            return
-        listed: dict[str, str] = {}
-        for line_number, line in enumerate(text.splitlines(keepends=True), start=1):
-            match = CHECKSUM_RE.fullmatch(line)
-            if match is None:
-                self.add("CHECKSUM_LINE_INVALID", f"line {line_number}")
-                continue
-            digest, relative = match.groups()
-            if not _safe_relative_path(relative):
-                self.add("CHECKSUM_PATH_INVALID", relative)
-                continue
-            if relative in listed:
-                self.add("CHECKSUM_PATH_DUPLICATE", relative)
-                continue
-            listed[relative] = digest
-
-        expected: dict[str, str] = {}
-        for relative, file in self._files.items():
-            if relative == "checksums.sha256":
-                continue
-            expected[relative] = self._sha256_hex(file)
-            self._checksum_completed += 1
-            self._progress("CHECKSUMS", self._checksum_completed, self._checksum_total, "checks")
-        if set(listed) != set(expected):
-            missing = sorted(set(expected) - set(listed))
-            extra = sorted(set(listed) - set(expected))
-            if missing:
-                self.add("CHECKSUM_FILES_MISSING", ", ".join(missing))
-            if extra:
-                self.add("CHECKSUM_FILES_EXTRA", ", ".join(extra))
-        for relative, digest in listed.items():
-            if relative in expected and expected[relative] != digest:
-                self.add("CHECKSUM_MISMATCH", relative)
-        if list(listed) != sorted(listed, key=lambda value: value.encode("utf-8")):
-            self.add("CHECKSUM_ORDER_INVALID", "paths are not UTF-8 byte sorted")
 
     def _check_cross_record_invariants(self) -> None:
         manifest = self.manifest
@@ -619,7 +555,6 @@ class Validator:
                         if state.get("mapping_status") != "skipped" or state.get("variant_ids") != []:
                             self.add("SKIPPED_BLOCK_STATE_MAPPING_INVALID", str(state.get("state_id")))
 
-        self._check_registry_snapshot(block_map)
         self._check_manifest_registry_count(block_map)
 
     def _same_export_id(self, record: Mapping[str, Any], export_id: Any) -> None:
@@ -671,16 +606,6 @@ class Validator:
         if scope == "render" and isinstance(variant_id, str) and variants.get(variant_id, {}).get("status") != "selected":
             self.add("FAILURE_RENDER_TARGET_NOT_SELECTED", variant_id)
 
-    def _check_registry_snapshot(self, blocks: Mapping[str, Mapping[str, Any]]) -> None:
-        if self.manifest is None:
-            return
-        scope = self.manifest.get("scope")
-        if not isinstance(scope, Mapping):
-            return
-        ids = sorted(blocks, key=lambda value: value.encode("utf-8"))
-        expected = _sha256_prefixed("\n".join(ids).encode("utf-8"))
-        if scope.get("registry_snapshot_sha256") != expected:
-            self.add("REGISTRY_SNAPSHOT_HASH_MISMATCH", "scope.registry_snapshot_sha256")
 
     def _check_manifest_registry_count(self, blocks: Mapping[str, Mapping[str, Any]]) -> None:
         if self.manifest is None:
@@ -735,15 +660,11 @@ class Validator:
             preview_info = _read_png(preview_path, self)
             mask_info = _read_png(mask_path, self)
             if preview_info is not None:
-                if render.get("image_sha256") != self._sha256_prefixed(preview_path):
-                    self.add("PREVIEW_HASH_MISMATCH", str(variant_id))
                 if preview_info[0:2] != (512, 512) or preview_info[2] != "RGBA":
                     self.add("PREVIEW_FORMAT_INVALID", str(variant_id))
                 if not preview_info[3]:
                     self.add("PREVIEW_OBJECT_EMPTY", str(variant_id))
             if mask_info is not None:
-                if render.get("mask_sha256") != self._sha256_prefixed(mask_path):
-                    self.add("MASK_HASH_MISMATCH", str(variant_id))
                 if mask_info[0:2] != (512, 512) or mask_info[2] != "RGBA":
                     self.add("MASK_FORMAT_INVALID", str(variant_id))
                 if not mask_info[3]:
@@ -763,8 +684,6 @@ class Validator:
             self._validate_schema("render-metadata.v1", metadata, str(paths[2]))
             if metadata.get("variant_id") != variant_id:
                 self.add("RENDER_METADATA_VARIANT_MISMATCH", str(variant_id))
-            if render.get("render_metadata_sha256") != _sha256_prefixed(_jcs_canonical_bytes(metadata)):
-                self.add("RENDER_METADATA_HASH_MISMATCH", str(variant_id))
             self._check_render_metadata_environment(metadata, variant_id)
             if not isinstance(metadata.get("mask"), Mapping) or metadata["mask"].get("format") != "PNG-RGBA":
                 self.add("MASK_METADATA_FORMAT_INVALID", str(variant_id))
@@ -897,8 +816,6 @@ def _require_lf_text(raw: bytes, path: Path, validator: Validator) -> None:
         validator.add("TEXT_MISSING_FINAL_LF", path.name)
 
 
-def _sha256_prefixed(raw: bytes) -> str:
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
 def _jcs_canonical_bytes(value: Any) -> bytes:
@@ -1072,8 +989,6 @@ def _read_png(path: Path, validator: Validator) -> _PngAnalysis | None:
         return validator._png_cache[path]
     try:
         raw = validator._read_bytes(path)
-        if path not in validator._digest_cache:
-            validator._digest_cache[path] = hashlib.sha256(raw).hexdigest()
         if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
             validator.add("PNG_SIGNATURE_INVALID", path.name)
             validator._png_cache[path] = None

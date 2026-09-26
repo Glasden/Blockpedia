@@ -121,6 +121,8 @@ class WorkspaceQueryService:
                 if isinstance(values, list):
                     semantic.setdefault(key, [])
                     semantic[key].extend(str(value) for value in values)
+            if isinstance(annotation.get("confidence"), (int, float)):
+                semantic["confidence"] = annotation["confidence"]
             for key in SEMANTIC_SCALAR_FIELDS:
                 if isinstance(annotation.get(key), str):
                     semantic[key] = annotation[key]

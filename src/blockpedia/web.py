@@ -25,14 +25,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .banner_refresh import BANNER_TARGET_IDS
 from .directory_chooser import DirectoryChooserError, DirectoryPathUnsafe, DirectoryRefNotFound, DirectoryRefStale
-from .importer import ImportCheckInProgress, ImportCheckNotFound, ImportCheckProgressPersistFailed, ImportNotAllowed
+from .importer import ImportNotFound, ImportNotAllowed, ImportConflict
 from .paths import (
     EXPORT_ID_RE,
     ExportPathError,
     RELEASE_BUILD_ID_RE,
-    RELEASE_CHECK_ID_RE,
     RELEASE_ID_RE,
     UnsafeReference,
     validate_minecraft_version,
@@ -63,13 +61,14 @@ STATUS_LABELS = {
     "failed": "失败",
     "succeeded": "已完成",
     "cancelled": "已取消",
+    "interrupted": "已中断",
     "skipped": "已跳过",
     "open": "待处理",
 }
 
 STAGE_META: dict[str, dict[str, str | bool]] = {
-    "PREPARE": {"label": "准备环境", "detail": "核对锁定工具链与输入边界", "phase": "R2", "future": False},
-    "IMPORT_EXPORT": {"label": "导入快照", "detail": "复制已检查的 exporter 产物", "phase": "R2", "future": False},
+    "PREPARE": {"label": "入口检查", "detail": "导入时完成版本与格式检查", "phase": "R2", "future": False},
+    "IMPORT_EXPORT": {"label": "导入数据", "detail": "导入并验证 exporter 产物", "phase": "R2", "future": False},
     "VALIDATE_REGISTRY": {"label": "核对注册表", "detail": "确认完整方块登记与版本一致", "phase": "R2", "future": False},
     "VALIDATE_VARIANTS": {"label": "核对视觉变体", "detail": "只验证 exporter 已选代表，不重新选择", "phase": "R2", "future": False},
     "VALIDATE_RENDERS": {"label": "核对渲染", "detail": "只验证已有图片与摘要，不重新渲染", "phase": "R2", "future": False},
@@ -118,51 +117,9 @@ class StrictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class ImportCheckRequest(StrictRequest):
-    source_directory: str = Field(min_length=1, max_length=4096)
-    minecraft_version: str = Field(min_length=3, max_length=32)
-
-    @field_validator("minecraft_version")
-    @classmethod
-    def valid_minecraft_version(cls, value: str) -> str:
-        return validate_minecraft_version(value)
-
-
 class ImportRequest(StrictRequest):
-    check_id: str = Field(min_length=1, max_length=160)
-    copy_mode: Literal["copy_to_workspace"]
-
-
-class BannerRefreshRequest(StrictRequest):
-    check_id: str = Field(min_length=1, max_length=160)
-    expected_base_export_id: str = Field(min_length=1, max_length=160)
-    target_ids: list[str] = Field(min_length=32, max_length=32)
-    confirm: bool
-
-    @field_validator("check_id")
-    @classmethod
-    def valid_check_id(cls, value: str) -> str:
-        if re.fullmatch(r"check_[0-9a-f]{32}", value) is None:
-            raise ValueError("invalid check_id")
-        return value
-
-    @field_validator("target_ids")
-    @classmethod
-    def sorted_target_ids(cls, value: list[str]) -> list[str]:
-        if value != sorted(value) or len(set(value)) != len(value) or tuple(value) != BANNER_TARGET_IDS:
-            raise ValueError("target_ids must be unique and sorted")
-        return value
-
-    @field_validator("confirm")
-    @classmethod
-    def require_confirmation(cls, value: bool) -> bool:
-        if value is not True:
-            raise ValueError("confirm must be true")
-        return value
-
-
-class ReleaseCheckRequest(StrictRequest):
-    run_id: str = Field(min_length=1, max_length=160)
+    run_id: str = Field(pattern=r"^run_[0-9a-f]{32}$")
+    source_directory_ref: str = Field(min_length=1, max_length=4096)
     minecraft_version: str = Field(min_length=3, max_length=32)
 
     @field_validator("minecraft_version")
@@ -172,39 +129,33 @@ class ReleaseCheckRequest(StrictRequest):
 
 
 class ReleaseBuildRequest(StrictRequest):
-    check_id: str = Field(min_length=1, max_length=160)
-    confirm_immutable_release: bool
-
-    @field_validator("confirm_immutable_release")
-    @classmethod
-    def require_true_confirmation(cls, value: bool) -> bool:
-        if value is not True:
-            raise ValueError("confirm_immutable_release must be true")
-        return value
+    run_id: str = Field(pattern=r"^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$")
+    minecraft_version: str = Field(pattern=r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
+    release_build_id: str = Field(pattern=r"^build_[0-9a-f]{32}$")
 
 
-class ActivationCheckRequest(StrictRequest):
-    run_id: str = Field(min_length=1, max_length=256, pattern=r"^run_[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$")
-    minecraft_version: str = Field(min_length=3, max_length=32)
-    target_release_id: str = Field(min_length=36, max_length=36, pattern=r"^rel_[0-9a-f]{32}$")
-
-    @field_validator("minecraft_version")
-    @classmethod
-    def valid_minecraft_version(cls, value: str) -> str:
-        return validate_minecraft_version(value)
-
-
-class ActivationApplyRequest(StrictRequest):
-    activation_check_id: str = Field(min_length=43, max_length=43, pattern=r"^activation_[0-9a-f]{32}$")
-    confirm_current_switch: bool
+class PublishRequest(StrictRequest):
+    minecraft_version: str = Field(pattern=r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
+    target_release_id: str = Field(pattern=r"^rel_[0-9a-f]{32}$")
+    expected_current_sha256: str | None = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    confirm: bool
     set_as_default: bool
+    reviewer: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=500)
 
-    @field_validator("confirm_current_switch")
+    @field_validator("confirm")
     @classmethod
-    def require_current_confirmation(cls, value: bool) -> bool:
-        if value is not True:
-            raise ValueError("confirm_current_switch must be true")
+    def require_confirmation(cls, value: bool) -> bool:
+        if not value:
+            raise ValueError("confirm must be true")
         return value
+
+    @field_validator("reviewer", "reason")
+    @classmethod
+    def require_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("nonempty text required")
+        return value.strip()
 
 
 class RecoverRequest(StrictRequest):
@@ -409,7 +360,7 @@ def create_app(
             )
         return _error_response(
             request,
-            400,
+            422 if _refactor_api(request) else 400,
             "INVALID_INPUT",
             "请求字段不合法，请检查后重试。",
             field_errors=_validation_fields(exc.errors()),
@@ -425,26 +376,12 @@ def create_app(
             return _error_response(request, exc.status_code, "HTTP_ERROR", "API 请求未完成。")
         return await default_http_exception_handler(request, exc)
 
-    @app.exception_handler(ImportCheckNotFound)
-    async def import_not_found(request: Request, _exc: ImportCheckNotFound):
-        if request.url.path.startswith("/api/"):
-            return _error_response(request, 404, "IMPORT_NOT_FOUND", "导入检查不存在或已失效，请重新检查。")
-        return HTMLResponse("导入检查不存在或已失效。", status_code=404)
-
+    @app.exception_handler(ImportNotFound)
     @app.exception_handler(ImportNotAllowed)
-    async def import_incomplete(request: Request, _exc: ImportNotAllowed):
-        code = getattr(_exc, "code", None) or "IMPORT_INCOMPLETE"
-        status = 409 if code == "IMPORT_CHECK_IN_PROGRESS" else 422
-        message = "完整性检查仍在进行，请等待完成。" if code == "IMPORT_CHECK_IN_PROGRESS" else "导出包未通过完整性检查，请修复后重新检查。"
-        return _error_response(request, status, code, message)
-
-    @app.exception_handler(ImportCheckInProgress)
-    async def import_check_in_progress(request: Request, _exc: ImportCheckInProgress):
-        return _error_response(request, 409, "IMPORT_CHECK_IN_PROGRESS", "完整性检查仍在进行，请等待完成。")
-
-    @app.exception_handler(ImportCheckProgressPersistFailed)
-    async def import_check_persist_failed(request: Request, _exc: ImportCheckProgressPersistFailed):
-        return _error_response(request, 500, "IMPORT_CHECK_PROGRESS_PERSIST_FAILED", "导入检查状态无法安全保存。")
+    @app.exception_handler(ImportConflict)
+    async def import_error(request: Request, exc: Exception):
+        status, code, message, retryable, fields = _exception_details(exc)
+        return _error_response(request, status, code, message, retryable=retryable, field_errors=fields)
 
     @app.exception_handler(DirectoryRefNotFound)
     async def directory_ref_not_found(request: Request, _exc: DirectoryRefNotFound):
@@ -472,7 +409,7 @@ def create_app(
         status, code, message, retryable, fields = _exception_details(exc)
         return _error_response(
             request,
-            status,
+            422 if status == 400 and _refactor_api(request) else status,
             code,
             message,
             field_errors=fields,
@@ -497,7 +434,7 @@ def create_app(
     @app.exception_handler(UnsafeReference)
     @app.exception_handler(ValueError)
     async def invalid_input(request: Request, _exc: Exception):
-        return _error_response(request, 400, "INVALID_INPUT", "输入不合法，请检查版本和本地目录后重试。")
+        return _error_response(request, 422 if _refactor_api(request) else 400, "INVALID_INPUT", "输入不合法，请检查版本和本地目录后重试。")
 
     @app.exception_handler(Exception)
     async def internal_error(request: Request, exc: Exception):
@@ -521,61 +458,25 @@ def create_app(
     ):
         _allow_query_keys(request, {"minecraft_version", "parent_ref"})
         data = studio.list_directories(minecraft_version, parent_ref)
-        checks = {
-            (item.get("minecraft_version"), item.get("export_id")): item
-            for item in studio.imports.list_checks(minecraft_version, limit=100)
-        }
-        for entry in data.get("entries", []):
-            check = checks.get((minecraft_version, entry.get("export_id")))
-            entry["check_marker"] = (
-                {
-                    "status": check.get("status"),
-                    "check_id": check.get("check_id"),
-                    "check_url": check.get("check_url"),
-                    "updated_at": check.get("updated_at"),
-                }
-                if check is not None
-                else None
-            )
         return _success_response(request, data)
-
-    @app.post("/api/imports/check")
-    def api_check_import(payload: ImportCheckRequest, request: Request):
-        _allow_query_keys(request, set())
-        checked = studio.start_import_check(payload.source_directory, payload.minecraft_version)
-        shaped = _shape_import_check(checked)
-        shaped["reused"] = bool(getattr(checked, "reused", False))
-        shaped["response_status"] = int(getattr(checked, "response_status", 202))
-        return _success_response(request, shaped, status_code=shaped["response_status"])
 
     @app.post("/api/imports")
     def api_import(payload: ImportRequest, request: Request):
         _allow_query_keys(request, set())
-        _require_worker(request)
-        imported = studio.import_checked(payload.check_id, copy_mode=payload.copy_mode)
-        return _success_response(request, _shape_import_result(imported))
+        imported = studio.start_import(payload.run_id, payload.source_directory_ref, payload.minecraft_version)
+        return _success_response(request, imported, status_code=200 if imported["status"] == "succeeded" else 202)
 
-    @app.get("/api/imports/checks/{check_id}")
-    def api_import_check(check_id: str, request: Request):
-        _allow_query_keys(request, set())
-        return _success_response(request, _shape_import_check(studio.get_import_check(check_id)))
-
-    @app.get("/api/imports/checks")
-    def api_import_checks(
-        request: Request,
-        minecraft_version: str | None = Query(default=None, min_length=3, max_length=32),
-        limit: int = Query(default=20, ge=1, le=100),
-    ):
+    @app.get("/api/imports")
+    def api_imports(request: Request, minecraft_version: str | None = Query(default=None, min_length=3, max_length=32), limit: int = Query(default=20, ge=1, le=100)):
         _allow_query_keys(request, {"minecraft_version", "limit"})
         if minecraft_version is not None:
             validate_minecraft_version(minecraft_version)
-        return _success_response(
-            request,
-            {
-                "minecraft_version": minecraft_version,
-                "checks": studio.imports.list_checks(minecraft_version, limit=limit),
-            },
-        )
+        return _success_response(request, {"minecraft_version": minecraft_version, "imports": studio.list_imports(minecraft_version, limit=limit)})
+
+    @app.get("/api/imports/{run_id}")
+    def api_get_import(run_id: str, request: Request):
+        _allow_query_keys(request, set())
+        return _success_response(request, studio.get_import(run_id))
 
     @app.get("/api/runs")
     def api_runs(
@@ -602,53 +503,24 @@ def create_app(
         )
         return _success_response(request, configured, status_code=202)
 
-    @app.post("/api/runs/{run_id}/banner-export-refresh")
-    def api_banner_export_refresh(run_id: str, payload: BannerRefreshRequest, request: Request):
-        _allow_query_keys(request, set())
-        refreshed = studio.refresh_banner_export(
-            run_id,
-            check_id=payload.check_id,
-            expected_base_export_id=payload.expected_base_export_id,
-            target_ids=payload.target_ids,
-            confirm=payload.confirm,
-        )
-        return _success_response(request, refreshed, status_code=202)
-
-    @app.post("/api/releases/check")
-    def api_check_release(payload: ReleaseCheckRequest, request: Request):
-        _allow_query_keys(request, set())
-        checked = getattr(studio, "check_candidate_release")(payload.run_id, payload.minecraft_version)
-        return _success_response(request, _shape_release_check(checked), data_sanitizer=_release_data_passthrough)
-
     @app.post("/api/releases/build")
     def api_build_release(payload: ReleaseBuildRequest, request: Request):
         _allow_query_keys(request, set())
-        built = getattr(studio, "build_candidate_release")(
-            payload.check_id,
-            confirm_immutable_release=payload.confirm_immutable_release,
-        )
-        return _success_response(
-            request,
-            _shape_release_build(built),
-            data_sanitizer=_release_data_passthrough,
-            status_code=201,
-        )
+        built = studio.build_candidate_release(payload.run_id, payload.minecraft_version, payload.release_build_id)
+        return _success_response(request, _shape_release_build(built), data_sanitizer=_release_data_passthrough, status_code=200 if built.get("reused") else 201)
 
-    @app.post("/api/releases/activation-check")
-    def api_activation_check(payload: ActivationCheckRequest, request: Request):
-        _allow_query_keys(request, set())
-        checked = studio.check_activation(payload.run_id, payload.minecraft_version, payload.target_release_id)
-        return _success_response(request, _shape_activation_state(checked), data_sanitizer=_release_data_passthrough)
+    @app.get("/api/releases")
+    def api_releases(request: Request, minecraft_version: str = Query(min_length=3, max_length=32)):
+        _allow_query_keys(request, {"minecraft_version"})
+        validate_minecraft_version(minecraft_version)
+        return _success_response(request, studio.list_releases(minecraft_version), data_sanitizer=_release_data_passthrough)
 
-    @app.post("/api/releases/apply")
-    def api_activation_apply(payload: ActivationApplyRequest, request: Request):
+    @app.post("/api/releases/publish")
+    @app.post("/api/releases/rollback")
+    def api_publish(payload: PublishRequest, request: Request):
         _allow_query_keys(request, set())
-        applied = studio.apply_activation(
-            payload.activation_check_id,
-            confirm_current_switch=payload.confirm_current_switch,
-            set_as_default=payload.set_as_default,
-        )
-        return _success_response(request, _shape_activation_state(applied), data_sanitizer=_release_data_passthrough)
+        result = studio.publish_release(**payload.model_dump(), rollback=request.url.path.endswith("/rollback"))
+        return _success_response(request, result, data_sanitizer=_release_data_passthrough)
 
     @app.get("/api/provider/profile")
     def api_provider_profile(request: Request, profile_id: str | None = Query(default=None, min_length=1, max_length=64)):
@@ -875,12 +747,12 @@ def create_app(
             headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
         )
 
-    @app.get("/api/imports/checks/{check_id}/events")
-    async def api_import_check_events(check_id: str, request: Request):
+    @app.get("/api/imports/{run_id}/events")
+    async def api_import_events(run_id: str, request: Request):
         _allow_query_keys(request, set())
-        checked = _shape_import_check(studio.get_import_check(check_id))
+        checked = studio.get_import(run_id)
         return StreamingResponse(
-            _import_event_stream(studio, check_id, request, templates, checked),
+            _import_event_stream(studio, run_id, request, templates, checked),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
         )
@@ -900,16 +772,18 @@ def create_app(
             },
         )
 
-    @app.post("/api/runs/{run_id}/{action}")
+    @app.post("/api/runs/{run_id}/pause")
+    @app.post("/api/runs/{run_id}/resume")
+    @app.post("/api/runs/{run_id}/cancel")
+    @app.post("/api/runs/{run_id}/retry-failed")
     def api_run_action(
         run_id: str,
-        action: Literal["pause", "resume", "cancel", "retry-failed"],
         request: Request,
         _payload: EmptyRequest | None = None,
     ):
         _allow_query_keys(request, set())
         _require_worker(request)
-        updated = _run_action(studio, run_id, action)
+        updated = _run_action(studio, run_id, request.url.path.rsplit("/", 1)[-1])
         return _success_response(request, _shape_run(updated))
 
     # Full HTML pages ----------------------------------------------------
@@ -931,7 +805,7 @@ def create_app(
                 current_page="home",
                 runs=runs[:5],
                 counts=counts,
-                recent_checks=studio.imports.list_checks(limit=5),
+                recent_imports=studio.list_imports(limit=5),
             ),
         )
 
@@ -957,23 +831,15 @@ def create_app(
             ),
         )
 
-    @app.get("/imports/checks/{check_id}", response_class=HTMLResponse)
-    def import_check_page(check_id: str, request: Request):
-        checked = _shape_import_check(studio.get_import_check(check_id))
-        context = _page_context(
-            request,
-            app,
-            page_title=f"导入检查 {checked['check_id']}",
-            current_page="home",
-            check=checked,
-        )
-        return _template_or_fallback(
-            templates,
-            request,
-            "import_check_detail.html",
-            context,
-            _fallback_import_page(checked),
-        )
+    @app.get("/imports/{run_id}", response_class=HTMLResponse)
+    def import_page(run_id: str, request: Request):
+        imported = studio.get_import(run_id)
+        return templates.TemplateResponse(request=request, name="import_detail.html", context=_page_context(request, app, page_title="导入进度", current_page="home", imported=imported))
+
+    @app.get("/releases", response_class=HTMLResponse)
+    def releases_page(request: Request, minecraft_version: str = "26.2"):
+        validate_minecraft_version(minecraft_version)
+        return templates.TemplateResponse(request=request, name="releases.html", context=_page_context(request, app, page_title="发布与回滚", current_page="releases", minecraft_version=minecraft_version))
 
     @app.get("/runs/{run_id}", response_class=HTMLResponse)
     def run_page(run_id: str, request: Request):
@@ -1045,41 +911,6 @@ def create_app(
     # HTMX partials.  Every write route calls the same StudioService used by
     # the JSON adapter; templates contain no business state transitions.
 
-    @app.post("/ui/imports/check", response_class=HTMLResponse)
-    async def ui_check_import(request: Request):
-        try:
-            form = await _form_payload(request, {"source_directory", "minecraft_version"})
-            payload = ImportCheckRequest.model_validate(form)
-            checked = studio.start_import_check(payload.source_directory, payload.minecraft_version)
-            # Enqueue immediately; the canonical page owns the persistent
-            # progress view and does not hold the HTMX request open.
-            return HTMLResponse(
-                content="",
-                status_code=202,
-                headers={"HX-Redirect": f"/imports/checks/{checked.check_id}"},
-            )
-        except Exception as exc:
-            return _partial_exception(templates, request, exc, "重新检查目录与版本后再试。")
-
-    @app.post("/ui/imports", response_class=HTMLResponse)
-    async def ui_import(request: Request):
-        try:
-            _require_worker(request)
-            form = await _form_payload(request, {"check_id", "copy_mode"})
-            payload = ImportRequest.model_validate(form)
-            imported = await run_in_threadpool(
-                studio.import_checked,
-                payload.check_id,
-                copy_mode=payload.copy_mode,
-            )
-            return templates.TemplateResponse(
-                request=request,
-                name="partials/import_complete.html",
-                context={"request": request, "result": _shape_import_result(imported)},
-            )
-        except Exception as exc:
-            return _partial_exception(templates, request, exc, "重新执行完整性检查后再导入。")
-
     @app.post("/ui/runs/{run_id}/recover", response_class=HTMLResponse)
     async def ui_recover(run_id: str, request: Request):
         try:
@@ -1114,51 +945,12 @@ def create_app(
         except Exception as exc:
             return _partial_exception(templates, request, exc, "刷新状态，确认项目仍为 stale 后再恢复。")
 
-    @app.post("/ui/runs/{run_id}/banner-export-refresh", response_class=HTMLResponse)
-    async def ui_banner_export_refresh(run_id: str, request: Request):
-        try:
-            form = await _form_payload(request, {"check_id", "confirm"})
-            if form.get("confirm") != "true":
-                raise ValueError("explicit banner refresh confirmation is required")
-            expected_base_export_id = await run_in_threadpool(_banner_refresh_base_export_id, studio, run_id)
-            if expected_base_export_id is None:
-                raise R3Error("BANNER_REFRESH_BASE_MISMATCH")
-            payload = BannerRefreshRequest.model_validate(
-                {
-                    "check_id": form.get("check_id"),
-                    "expected_base_export_id": expected_base_export_id,
-                    "target_ids": list(BANNER_TARGET_IDS),
-                    "confirm": True,
-                }
-            )
-            result = await run_in_threadpool(
-                studio.refresh_banner_export,
-                run_id,
-                check_id=payload.check_id,
-                expected_base_export_id=payload.expected_base_export_id,
-                target_ids=list(BANNER_TARGET_IDS),
-                confirm=True,
-            )
-            shaped_run = _shape_run_for_ui(studio, run_id)
-            shaped_run["banner_refresh_success"] = _shape_banner_refresh_success(result)
-            return templates.TemplateResponse(
-                request=request,
-                name="partials/run_panel.html",
-                context={"request": request, "run": shaped_run},
-            )
-        except Exception as exc:
-            response = _partial_exception(
-                templates,
-                request,
-                exc,
-                "确认 Import Check 已通过，且 check_id 来自新的 banner-repair 完整导出后再试。",
-            )
-            response.headers["HX-Retarget"] = "#banner-refresh-feedback"
-            response.headers["HX-Reswap"] = "innerHTML"
-            return response
-
-    @app.post("/ui/runs/{run_id}/{action}", response_class=HTMLResponse)
-    async def ui_run_action(run_id: str, action: str, request: Request):
+    @app.post("/ui/runs/{run_id}/pause", response_class=HTMLResponse)
+    @app.post("/ui/runs/{run_id}/resume", response_class=HTMLResponse)
+    @app.post("/ui/runs/{run_id}/cancel", response_class=HTMLResponse)
+    @app.post("/ui/runs/{run_id}/retry-failed", response_class=HTMLResponse)
+    async def ui_run_action(run_id: str, request: Request):
+        action = request.url.path.rsplit("/", 1)[-1]
         try:
             _require_worker(request)
             if action not in {"pause", "resume", "cancel", "retry-failed"}:
@@ -1465,7 +1257,7 @@ async def _run_event_stream(
 
 async def _import_event_stream(
     studio: StudioService,
-    check_id: str,
+    run_id: str,
     request: Request,
     templates: Jinja2Templates,
     initial: Mapping[str, Any],
@@ -1477,18 +1269,18 @@ async def _import_event_stream(
         if last is not None and await request.is_disconnected():
             return
         try:
-            snapshot = dict(initial) if last is None else _shape_import_check(studio.get_import_check(check_id))
+            snapshot = dict(initial) if last is None else studio.get_import(run_id)
             encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             if encoded != last:
                 last = encoded
-                yield sse_snapshot_event(snapshot, _render_fragment(templates, "partials/import_check_progress.html", {"request": request, "check": snapshot}, "import", snapshot))
-            if snapshot.get("status") in {"passed", "failed"}:
+                yield sse_snapshot_event(snapshot, _render_fragment(templates, "partials/import_progress.html", {"request": request, "imported": snapshot}, "import", snapshot))
+            if snapshot.get("status") in {"succeeded", "failed", "interrupted"}:
                 return
-        except ImportCheckNotFound:
-            yield _sse_snapshot_error("IMPORT_NOT_FOUND", "导入检查暂时不可用。")
+        except ImportNotFound:
+            yield _sse_snapshot_error("IMPORT_NOT_FOUND", "导入状态暂时不可用。")
             return
         except Exception:
-            yield _sse_snapshot_error("IMPORT_CHECK_SNAPSHOT_UNAVAILABLE", "导入检查暂时不可用。")
+            yield _sse_snapshot_error("IMPORT_SNAPSHOT_UNAVAILABLE", "导入状态暂时不可用。")
         now = asyncio.get_running_loop().time()
         if now - last_heartbeat >= 15.0:
             yield sse_heartbeat_comment()
@@ -1521,9 +1313,9 @@ def _render_fragment(
                 )
             )
         return (
-            '<section class="import-check-progress" data-check-id="%s"><span>%s</span><strong>%s</strong></section>'
+            '<section data-import-fragment data-run-id="%s"><span>%s</span><strong>%s</strong></section>'
             % (
-                html.escape(str(snapshot.get("check_id", "")), quote=True),
+                html.escape(str(snapshot.get("run_id", "")), quote=True),
                 html.escape(str(snapshot.get("status", "pending"))),
                 html.escape(str(snapshot.get("phase", "QUEUED"))),
             )
@@ -2142,18 +1934,6 @@ def _review_form_payload(form: Mapping[str, str]) -> dict[str, Any]:
     return payload.model_dump()
 
 
-def _fallback_import_page(check: Mapping[str, Any]) -> str:
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'><title>导入检查</title></head>"
-        "<body><main id='import-check'><h1>导入检查</h1><p data-status='%s'>%s</p><p>%s</p></main></body></html>"
-        % (
-            html.escape(str(check.get("status", "pending")), quote=True),
-            html.escape(str(check.get("phase", "QUEUED"))),
-            html.escape(str(check.get("export_id", ""))),
-        )
-    )
-
-
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "web_" + uuid.uuid4().hex)
 
@@ -2200,56 +1980,6 @@ def _error_response(
             "retryable": retryable,
         },
     )
-
-
-def _shape_import_check(value: Any) -> dict[str, Any]:
-    raw = value.to_dict() if hasattr(value, "to_dict") else dict(value)
-    expected_files = raw.get("expected_files", [])
-    source_ref = _safe_opaque_ref(raw.get("source_directory_ref"), optional=True)
-    progress_raw = raw.get("progress")
-    progress: Mapping[str, Any] = progress_raw if isinstance(progress_raw, Mapping) else {}
-    completed = max(0, _safe_int(progress.get("completed"), 0))
-    total = max(0, _safe_int(progress.get("total"), 0))
-    if total:
-        completed = min(completed, total)
-    public_progress: dict[str, Any] = {
-        "completed": completed,
-        "total": total,
-        "unit": _safe_unit(progress.get("unit")),
-    }
-    if "bytes" in progress:
-        public_progress["bytes"] = max(0, _safe_int(progress.get("bytes"), 0))
-    return {
-        "check_id": _safe_identifier(raw.get("check_id")),
-        "minecraft_version": _safe_minecraft_version(raw.get("minecraft_version")),
-        "export_id": _safe_identifier(raw.get("export_id")),
-        "source_directory_ref": source_ref,
-        "manifest_sha256": _safe_hash(raw.get("manifest_sha256"), optional=True),
-        "checksum_sha256": _safe_hash(raw.get("checksum_sha256"), optional=True),
-        "status": _safe_status(raw.get("status"), fallback="failed"),
-        "phase": str(raw.get("phase")) if str(raw.get("phase")) in {"QUEUED", "SNAPSHOT_EXPORT", "VALIDATE_EXPORT", "FINALIZE"} else "FINALIZE",
-        "progress": public_progress,
-        "progress_subphase": _safe_subphase(raw.get("progress_subphase") or progress.get("subphase")),
-        "created_at": _safe_optional_text(raw.get("created_at")),
-        "updated_at": _safe_optional_text(raw.get("updated_at")),
-        "workspace": _shape_import_workspace(raw.get("workspace")),
-        "check_url": f"/imports/checks/{_safe_identifier(raw.get('check_id'))}",
-        "error_code": _safe_code(raw.get("error_code"), optional=True),
-        "issues": _shape_import_issues(raw.get("issues", [])),
-        "checked_file_count": len(expected_files) + (1 if expected_files else 0),
-        "can_import": bool(raw.get("can_import")),
-        "reused": bool(getattr(value, "reused", False)),
-    }
-
-
-def _shape_import_result(value: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "import_id": _safe_identifier(value.get("import_id")),
-        "run_id": _safe_identifier(value.get("run_id")),
-        "minecraft_version": _safe_minecraft_version(value.get("minecraft_version")),
-        "status": _safe_status(value.get("status")),
-        "source_directory_ref": _safe_opaque_ref(value.get("source_directory_ref"), optional=True),
-    }
 
 
 def _shape_run_summary(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -2429,39 +2159,7 @@ def _shape_run(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _shape_run_for_ui(studio: StudioService, run_id: str) -> dict[str, Any]:
-    """Add the one read-only D-045 operation context to a run fragment."""
-
-    run = _shape_run(studio.get_run(run_id))
-    if run.get("current_stage") == "HUMAN_REVIEW" and run.get("status") == "needs_review":
-        base_export_id = _banner_refresh_base_export_id(studio, run_id)
-        if base_export_id is not None:
-            run["banner_refresh"] = {"base_export_id": base_export_id}
-    return run
-
-
-def _banner_refresh_base_export_id(studio: StudioService, run_id: str) -> str | None:
-    """Read the run's current source export identity without changing state."""
-
-    try:
-        with studio.worker.open_database(run_id) as database:
-            row = database.fetchone(
-                "SELECT imports.export_id FROM imports JOIN runs ON runs.import_id=imports.import_id WHERE runs.run_id=?",
-                (run_id,),
-            )
-    except Exception:
-        return None
-    export_id = row["export_id"] if row is not None else None
-    return export_id if isinstance(export_id, str) and EXPORT_ID_RE.fullmatch(export_id) else None
-
-
-def _shape_banner_refresh_success(value: Any) -> dict[str, Any]:
-    raw = value if isinstance(value, Mapping) else {}
-    return {
-        "new_export_id": _safe_identifier(raw.get("new_export_id"), optional=True),
-        "variant_count": 32,
-        "feature_count": 32,
-        "ai_batch_count": 3,
-    }
+    return _shape_run(studio.get_run(run_id))
 
 
 def _safe_config(value: Any) -> dict[str, Any]:
@@ -2537,23 +2235,8 @@ _RELEASE_TIMESTAMP_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{
 _RELEASE_RELATIVE_PATH_RE = re.compile(
     r"^releases/[0-9]+\.[0-9]+(?:\.[0-9]+)?/rel_[0-9a-f]{32}$"
 )
-_RELEASE_CHECK_FIELDS = frozenset(
-    {
-        "check_id",
-        "release_build_id",
-        "run_id",
-        "minecraft_version",
-        "status",
-        "can_build",
-        "snapshot_fingerprint",
-        "quality_report_sha256",
-        "created_at",
-        "updated_at",
-    }
-)
 _RELEASE_BUILD_FIELDS = frozenset(
     {
-        "check_id",
         "release_build_id",
         "release_id",
         "run_id",
@@ -2562,28 +2245,9 @@ _RELEASE_BUILD_FIELDS = frozenset(
         "status",
         "manifest_sha256",
         "quality_report_sha256",
-        "checksums_sha256",
         "built_at",
     }
 )
-_ACTIVATION_STATE_FIELDS = frozenset(
-    {
-        "format_version",
-        "activation_check_id",
-        "run_id",
-        "minecraft_version",
-        "target_release_id",
-        "candidate_releases",
-        "expected_current_sha256",
-        "status",
-        "can_apply",
-        "created_at",
-        "updated_at",
-        "error_code",
-    }
-)
-
-
 def _release_raw_payload(value: Any, required: frozenset[str], error_code: str) -> Mapping[str, Any]:
     try:
         raw = value.to_dict() if hasattr(value, "to_dict") else value
@@ -2622,27 +2286,6 @@ def _release_bool(raw: Mapping[str, Any], field: str, error_code: str) -> bool:
     return value
 
 
-def _shape_release_check(value: Any) -> dict[str, Any]:
-    """Return only the frozen check response fields, failing closed."""
-
-    error_code = "RELEASE_CHECK_FAILED"
-    raw = _release_raw_payload(value, _RELEASE_CHECK_FIELDS, error_code)
-    version = _release_string(raw, "minecraft_version", _RELEASE_VERSION_RE, error_code)
-    result = {
-        "check_id": _release_string(raw, "check_id", RELEASE_CHECK_ID_RE, error_code),
-        "release_build_id": _release_string(raw, "release_build_id", RELEASE_BUILD_ID_RE, error_code),
-        "run_id": _release_string(raw, "run_id", _RELEASE_RUN_ID_RE, error_code),
-        "minecraft_version": version,
-        "status": _release_status(raw, "passed", error_code),
-        "can_build": _release_bool(raw, "can_build", error_code),
-        "snapshot_fingerprint": _release_string(raw, "snapshot_fingerprint", _RELEASE_HASH_RE, error_code),
-        "quality_report_sha256": _release_string(raw, "quality_report_sha256", _RELEASE_HASH_RE, error_code),
-        "created_at": _release_string(raw, "created_at", _RELEASE_TIMESTAMP_RE, error_code),
-        "updated_at": _release_string(raw, "updated_at", _RELEASE_TIMESTAMP_RE, error_code),
-    }
-    return result
-
-
 def _shape_release_build(value: Any) -> dict[str, Any]:
     """Return only the frozen build response fields, failing closed."""
 
@@ -2654,7 +2297,6 @@ def _shape_release_build(value: Any) -> dict[str, Any]:
     if relative_path != f"releases/{version}/{release_id}":
         raise R3Error(error_code)
     return {
-        "check_id": _release_string(raw, "check_id", RELEASE_CHECK_ID_RE, error_code),
         "release_build_id": _release_string(raw, "release_build_id", RELEASE_BUILD_ID_RE, error_code),
         "release_id": release_id,
         "run_id": _release_string(raw, "run_id", _RELEASE_RUN_ID_RE, error_code),
@@ -2663,46 +2305,13 @@ def _shape_release_build(value: Any) -> dict[str, Any]:
         "status": _release_status(raw, "built", error_code),
         "manifest_sha256": _release_string(raw, "manifest_sha256", _RELEASE_HASH_RE, error_code),
         "quality_report_sha256": _release_string(raw, "quality_report_sha256", _RELEASE_HASH_RE, error_code),
-        "checksums_sha256": _release_string(raw, "checksums_sha256", _RELEASE_HASH_RE, error_code),
         "built_at": _release_string(raw, "built_at", _RELEASE_TIMESTAMP_RE, error_code),
-    }
-
-
-def _shape_activation_state(value: Any) -> dict[str, Any]:
-    error_code = "ACTIVATION_STATE_INVALID"
-    raw = value.to_dict() if hasattr(value, "to_dict") else value
-    if not isinstance(raw, Mapping) or set(raw) != _ACTIVATION_STATE_FIELDS or raw.get("format_version") != 1:
-        raise R3Error(error_code)
-    if not isinstance(raw.get("activation_check_id"), str) or re.fullmatch(r"activation_[0-9a-f]{32}", raw["activation_check_id"]) is None or not isinstance(raw.get("run_id"), str) or _RELEASE_RUN_ID_RE.fullmatch(raw["run_id"]) is None or not isinstance(raw.get("minecraft_version"), str) or _RELEASE_VERSION_RE.fullmatch(raw["minecraft_version"]) is None or not isinstance(raw.get("target_release_id"), str) or RELEASE_ID_RE.fullmatch(raw["target_release_id"]) is None:
-        raise R3Error(error_code)
-    candidates = raw.get("candidate_releases")
-    if not isinstance(candidates, list) or any(not isinstance(item, Mapping) or set(item) != {"release_id", "checksums_sha256"} or not isinstance(item.get("release_id"), str) or RELEASE_ID_RE.fullmatch(item["release_id"]) is None or not isinstance(item.get("checksums_sha256"), str) or _RELEASE_HASH_RE.fullmatch(item["checksums_sha256"]) is None for item in candidates):
-        raise R3Error(error_code)
-    if candidates != sorted(candidates, key=lambda item: item["release_id"].encode("utf-8")) or len({item["release_id"] for item in candidates}) != len(candidates):
-        raise R3Error(error_code)
-    expected = raw.get("expected_current_sha256")
-    if expected is not None and (not isinstance(expected, str) or _RELEASE_HASH_RE.fullmatch(expected) is None):
-        raise R3Error(error_code)
-    if raw.get("status") not in {"passed", "failed", "stale", "applied"} or not isinstance(raw.get("can_apply"), bool) or (raw["status"] == "passed") != raw["can_apply"] or not isinstance(raw.get("created_at"), str) or _RELEASE_TIMESTAMP_RE.fullmatch(raw["created_at"]) is None or not isinstance(raw.get("updated_at"), str) or _RELEASE_TIMESTAMP_RE.fullmatch(raw["updated_at"]) is None or (raw.get("error_code") is not None and (not isinstance(raw["error_code"], str) or _SAFE_CODE.fullmatch(raw["error_code"]) is None)):
-        raise R3Error(error_code)
-    return {
-        "format_version": 1,
-        "activation_check_id": raw["activation_check_id"],
-        "run_id": raw["run_id"],
-        "minecraft_version": raw["minecraft_version"],
-        "target_release_id": raw["target_release_id"],
-        "candidate_releases": [dict(item) for item in candidates],
-        "expected_current_sha256": expected,
-        "status": raw["status"],
-        "can_apply": raw["can_apply"],
-        "created_at": raw["created_at"],
-        "updated_at": raw["updated_at"],
-        "error_code": raw["error_code"],
+        "reused": bool(raw.get("reused", False)),
     }
 
 
 def _release_data_passthrough(value: Any) -> Any:
-    """The explicit release shapers already returned validated safe data."""
+    """Preserve service-owned identities and validated current version keys."""
 
     return value
 
@@ -2807,28 +2416,6 @@ def _safe_opaque_ref(value: Any, *, optional: bool = False) -> str | None:
     return text
 
 
-def _safe_unit(value: Any) -> str:
-    text = str(value) if value is not None else "items"
-    return text if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,31}", text) else "items"
-
-
-def _safe_subphase(value: Any) -> str | None:
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", value):
-        return None
-    return value
-
-
-def _shape_import_workspace(value: Any) -> dict[str, Any]:
-    raw = value if isinstance(value, Mapping) else {}
-    status = raw.get("status") if raw.get("status") in {"absent", "creating", "created", "failed"} else "absent"
-    return {
-        "status": status,
-        "import_id": _safe_identifier(raw.get("import_id"), optional=True),
-        "run_id": _safe_identifier(raw.get("run_id"), optional=True),
-        "error_code": _safe_code(raw.get("error_code"), optional=True),
-    }
-
-
 def _safe_counts_by_stage(value: Any) -> dict[str, dict[str, int]]:
     if not isinstance(value, Mapping):
         return {}
@@ -2892,21 +2479,6 @@ def _safe_int(value: Any, fallback: int) -> int:
         return int(value)
     except (TypeError, ValueError, OverflowError):
         return fallback
-
-
-def _shape_import_issues(value: Any) -> list[dict[str, str]]:
-    if not isinstance(value, (list, tuple)):
-        return []
-    issues: list[dict[str, str]] = []
-    for item in value:
-        raw = item if isinstance(item, Mapping) else {}
-        issues.append(
-            {
-                "code": str(_safe_code(raw.get("code"))),
-                "message": "该项未通过完整性检查。",
-            }
-        )
-    return issues
 
 
 def _shape_search_hits(value: Any) -> list[dict[str, Any]]:
@@ -3035,14 +2607,8 @@ def _validation_fields(errors: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     public_fields = {
         "action",
         "adapter",
-        "activation_check_id",
         "base_url",
-        "check_id",
         "confirm",
-        "confirm_current_switch",
-        "confirm_immutable_release",
-        "copy_mode",
-        "expected_base_export_id",
         "job_id",
         "limit",
         "model_id",
@@ -3054,7 +2620,11 @@ def _validation_fields(errors: Sequence[Mapping[str, Any]]) -> dict[str, str]:
         "set_as_default",
         "stage",
         "target_release_id",
-        "target_ids",
+        "release_build_id",
+        "source_directory_ref",
+        "expected_current_sha256",
+        "reviewer",
+        "reason",
         "wave_hash",
     }
     for error in errors:
@@ -3072,63 +2642,42 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
     if isinstance(exc, R3Error):
         code = str(getattr(exc, "code", "R3_OPERATION_INVALID"))
         not_found = {
+            "RELEASE_NOT_FOUND",
             "PROVIDER_PROFILE_NOT_FOUND",
             "AI_BATCH_NOT_FOUND",
             "REVIEW_NOT_FOUND",
             "IMPORT_NOT_FOUND",
-            "RELEASE_CHECK_NOT_FOUND",
-            "ACTIVATION_CHECK_NOT_FOUND",
             "RUN_NOT_FOUND",
         }
         conflict = {
+            "RELEASE_IDENTITY_CONFLICT",
+            "RELEASE_FORMAT_UNSUPPORTED",
+            "RELEASE_MISSING",
+            "RELEASE_NOT_READY",
+            "LEGACY_REFRESH_RECOVERY_REQUIRED",
+            "PUBLISH_RECOVERY_REQUIRED",
+            "PUBLISH_AUDIT_UNREADABLE",
+            "RELEASE_BUILD_CONFLICT",
+            "RELEASE_BUSY",
+            "RELEASE_BUILD_ID_CONFLICT",
+            "CURRENT_POINTER_CONFLICT",
+            "CURRENT_CONFLICT",
+            "CURRENT_SHA256_MISMATCH",
+            "RELEASE_BUILD_IN_PROGRESS",
             "RUN_STATE_CONFLICT",
             "AI_BATCH_INPUT_CHANGED",
             "R2_PREREQUISITE_NOT_MET",
             "REVIEW_TASKS_OPEN",
             "RELEASE_ALREADY_BUILT",
-            "RELEASE_CHECK_NOT_READY",
-            "RELEASE_CHECK_STALE",
             "RELEASE_VERSION_MISMATCH",
             "AI_BATCH_PLAN_CONFLICT",
             "AI_RETRY_WAVE_CONFLICT",
-            "BANNER_REFRESH_BASE_MISMATCH",
-            "BANNER_REFRESH_RUN_STATE_INVALID",
-            "BANNER_REFRESH_LIVE_WORK",
-            "BANNER_REFRESH_ALREADY_APPLIED",
-            "BANNER_REFRESH_RECOVERY_REQUIRED",
-            "ACTIVATION_CHECK_NOT_READY",
-            "ACTIVATION_CHECK_STALE",
-            "ACTIVATION_CURRENT_STALE",
-            "ACTIVATION_CANDIDATES_STALE",
-            "ACTIVATION_RUN_STATE_INVALID",
             "CURRENT_SWITCH_BUSY",
         }
         invalid = {
             "INVALID_INPUT",
             "R3_THRESHOLD_FIXED",
             "AI_BATCH_INPUT_INVALID",
-            "BANNER_REFRESH_TARGET_SET_INVALID",
-            "BANNER_REFRESH_BASE_INVALID",
-            "BANNER_REFRESH_CHECK_CHANGED",
-            "BANNER_REFRESH_TARGET_DIFF",
-            "BANNER_REFRESH_RENDER_DIFF",
-            "BANNER_REFRESH_MANIFEST_DIFF",
-            "BANNER_REFRESH_MACHINE_DIFF",
-            "BANNER_REFRESH_TARGET_REVIEWS_INVALID",
-            "BANNER_REFRESH_TARGET_ALREADY_PROJECTED",
-            "BANNER_REFRESH_TARGET_STATE_INVALID",
-            "BANNER_REFRESH_LINEAGE_INVALID",
-            "BANNER_REFRESH_EXPORT_INVALID",
-            "BANNER_REFRESH_REPLACEMENT_INVALID",
-            "BANNER_REFRESH_VERSION_INVALID",
-            "BANNER_REFRESH_BATCH_CONFIG_INVALID",
-            "BANNER_REFRESH_INSTALL_VERIFY_FAILED",
-            "BANNER_REFRESH_PATH_UNSAFE",
-            "BANNER_REFRESH_FAILED",
-            "BANNER_REFRESH_SOURCE_ARTIFACT_INVALID",
-            "ACTIVATION_CONFIRMATION_REQUIRED",
-            "ACTIVATION_DEFAULT_REQUIRED",
-            "ACTIVATION_DEFAULT_INVALID",
         }
         unprocessable = {
             "PROVIDER_CONFIG_INVALID",
@@ -3143,20 +2692,10 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
             "PROVIDER_SCHEMA_INVALID",
             "DATABASE_SCHEMA_MISMATCH",
             "RELEASE_BUILD_INTEGRITY_FAILED",
-            "RELEASE_CHECK_FAILED",
-            "ACTIVATION_CANDIDATES_INSUFFICIENT",
-            "ACTIVATION_TARGET_INVALID",
-            "ACTIVATION_CANDIDATE_LINEAGE_INVALID",
-            "ACTIVATION_MCP_SMOKE_FAILED",
-            "ACTIVATION_RELEASE_INTEGRITY_FAILED",
-            "ACTIVATION_STATE_INVALID",
             "CURRENT_POINTER_INVALID",
-            "ACTIVATION_AUDIT_INTEGRITY_FAILED",
-            "ACTIVATION_INPUT_STALE",
-            "ACTIVATION_STATE_WRITE_FAILED",
             "PROVIDER_RETRY_NOT_ELIGIBLE",
         }
-        if code in {"RELEASE_BUILD_FAILED", "BANNER_REFRESH_FAILED", "CURRENT_SWITCH_FAILED", "ACTIVATION_APPLY_FAILED"}:
+        if code in {"RELEASE_BUILD_FAILED", "CURRENT_SWITCH_FAILED", "ACTIVATION_APPLY_FAILED"}:
             status = 500
         elif code == "WORKER_UNAVAILABLE":
             status = 503
@@ -3171,6 +2710,11 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
         else:
             status = 422
         messages = {
+            "RELEASE_FINALIZE_PENDING": "候选目录已生成，收尾尚未完成；请重试同一次构建。",
+            "RELEASE_FORMAT_UNSUPPORTED": "此候选不具备当前查询所需的 v2 索引，请从原工作区构建新候选。",
+            "RELEASE_MISSING": "该次构建已完成，但候选目录现在不可用；不会用同一 ID 重新生成内容。",
+            "LEGACY_REFRESH_RECOVERY_REQUIRED": "工作区仍有旧 Banner 修复待收尾，请先用旧恢复路径处理。",
+            "PUBLISH_RECOVERY_REQUIRED": "当前指针与未完成的发布意图不一致，请先核对发布记录。",
             "PROVIDER_PROFILE_NOT_FOUND": "找不到指定 provider profile。",
             "AI_BATCH_NOT_FOUND": "找不到指定 AI 批次。",
             "REVIEW_NOT_FOUND": "找不到指定审核任务。",
@@ -3181,25 +2725,11 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
             "PROVIDER_NOT_CONFIGURED": "provider 秘密尚未配置。",
             "PROVIDER_CONFIG_INVALID": "provider profile 配置不合法。",
             "DATABASE_SCHEMA_MISMATCH": "工作库 Schema 与当前契约不匹配。",
-            "RELEASE_CHECK_NOT_READY": "运行尚未满足候选构建前置，或检查结果不可构建。",
+            "CURRENT_POINTER_CONFLICT": "当前发布已变化，请重新读取发布列表并确认。",
+            "RELEASE_BUSY": "该运行仍有活动任务，请稍后重试本次构建。",
             "RELEASE_VERSION_MISMATCH": "请求版本与候选构建输入版本不一致。",
-            "RELEASE_CHECK_NOT_FOUND": "候选发布检查不存在或已失效。",
-            "RELEASE_CHECK_FAILED": "候选发布检查执行失败。",
-            "RELEASE_CHECK_STALE": "候选发布检查已过期，请重新执行检查。",
-            "RELEASE_ALREADY_BUILT": "该候选发布检查已经构建过。",
+            "RELEASE_ALREADY_BUILT": "该操作已构建候选，请查看本次构建结果。",
             "RELEASE_BUILD_INTEGRITY_FAILED": "候选发布完整性校验未通过。",
-            "ACTIVATION_CHECK_NOT_FOUND": "激活检查不存在或已失效。",
-            "ACTIVATION_CHECK_NOT_READY": "激活检查尚未通过或已经使用。",
-            "ACTIVATION_CHECK_STALE": "激活检查已过期，请重新执行检查。",
-            "ACTIVATION_CURRENT_STALE": "当前指针已变化，请重新执行激活检查。",
-            "ACTIVATION_CANDIDATES_STALE": "候选集合已变化，请重新执行激活检查。",
-            "ACTIVATION_CANDIDATES_INSUFFICIENT": "尚无两个独立且完整的 v2 candidate。",
-            "ACTIVATION_TARGET_INVALID": "目标 candidate 不满足激活门。",
-            "ACTIVATION_MCP_SMOKE_FAILED": "临时 release 的 MCP 四工具冒烟未通过。",
-            "ACTIVATION_RELEASE_INTEGRITY_FAILED": "candidate release 完整性校验未通过。",
-            "ACTIVATION_DEFAULT_REQUIRED": "首次激活必须将目标版本设为默认版本。",
-            "ACTIVATION_CONFIRMATION_REQUIRED": "必须明确确认 current 切换。",
-            "ACTIVATION_RUN_STATE_INVALID": "运行尚未处于可激活边界。",
             "CURRENT_POINTER_INVALID": "当前指针不符合严格契约。",
             "CURRENT_SWITCH_FAILED": "current 指针原子切换未完成。",
             "RELEASE_BUILD_FAILED": "候选发布构建未完成。",
@@ -3212,39 +2742,15 @@ def _exception_details(exc: Exception) -> tuple[int, str, str, bool, dict[str, s
             "RUN_STATE_CONFLICT": "当前运行状态不允许此操作，请刷新后重试。",
             "AI_BATCH_PLAN_CONFLICT": "AI 批次计划已变化，请重新预览。",
             "AI_RETRY_WAVE_CONFLICT": "Provider 重试波次已变化，请重新预览。",
-            "BANNER_REFRESH_BASE_MISMATCH": "当前运行的基础导出已变化，不能执行此刷新。",
-            "BANNER_REFRESH_RUN_STATE_INVALID": "只有停在人工审核阶段的运行才能刷新 banner。",
-            "BANNER_REFRESH_LIVE_WORK": "当前运行仍有活动任务，不能刷新 banner。",
-            "BANNER_REFRESH_ALREADY_APPLIED": "该运行已经应用了不同的 banner 刷新。",
-            "BANNER_REFRESH_RECOVERY_REQUIRED": "上一次 banner 刷新需要先恢复。",
-            "BANNER_REFRESH_TARGET_SET_INVALID": "banner 刷新目标集合不合法。",
-            "BANNER_REFRESH_TARGET_DIFF": "替换导出中的 banner 目标差异不合法。",
-            "BANNER_REFRESH_RENDER_DIFF": "替换导出的渲染文件差异不合法。",
-            "BANNER_REFRESH_MANIFEST_DIFF": "替换导出的 manifest 差异不合法。",
-            "BANNER_REFRESH_MACHINE_DIFF": "替换导出的机器事实发生了非目标变化。",
-            "BANNER_REFRESH_TARGET_REVIEWS_INVALID": "当前 banner 机器审核集合不符合要求。",
-            "BANNER_REFRESH_TARGET_ALREADY_PROJECTED": "banner 目标已经存在工作区投影。",
-            "BANNER_REFRESH_TARGET_STATE_INVALID": "当前 banner 状态映射不符合要求。",
-            "BANNER_REFRESH_LINEAGE_INVALID": "替换导出 lineage 不符合要求。",
-            "BANNER_REFRESH_EXPORT_INVALID": "替换导出记录不完整。",
-            "BANNER_REFRESH_REPLACEMENT_INVALID": "替换导出不符合要求。",
-            "BANNER_REFRESH_CHECK_CHANGED": "已检查的替换导出发生变化。",
-            "BANNER_REFRESH_PATH_UNSAFE": "工作区文件路径不安全。",
-            "BANNER_REFRESH_INSTALL_VERIFY_FAILED": "banner 刷新安装后校验失败。",
-            "BANNER_REFRESH_FAILED": "banner 刷新未完成，工作区已恢复。",
-            "BANNER_REFRESH_SOURCE_ARTIFACT_INVALID": "工作区 source export 证据不唯一或缺失。",
             "PROVIDER_RETRY_NOT_ELIGIBLE": "该 Provider 批次当前不可重试。",
         }
         return status, code, messages.get(code, "R3 操作未完成，请检查当前状态。"), code == "WORKER_UNAVAILABLE", {}
-    if isinstance(exc, ImportCheckNotFound):
-        return 404, "IMPORT_NOT_FOUND", "导入检查不存在或已失效，请重新检查。", False, {}
-    if isinstance(exc, ImportCheckInProgress):
-        return 409, "IMPORT_CHECK_IN_PROGRESS", "完整性检查仍在进行，请等待完成。", False, {}
-    if isinstance(exc, ImportCheckProgressPersistFailed):
-        return 500, "IMPORT_CHECK_PROGRESS_PERSIST_FAILED", "导入检查状态无法安全保存。", False, {}
+    if isinstance(exc, ImportNotFound):
+        return 404, exc.code, "找不到指定导入。", False, {}
+    if isinstance(exc, ImportConflict):
+        return 409, exc.code, "导入标识与已有操作冲突。请查看导入状态。", False, {}
     if isinstance(exc, ImportNotAllowed):
-        code = getattr(exc, "code", None) or "IMPORT_INCOMPLETE"
-        return 422, code, "导出包未通过完整性检查，请修复后重新检查。", False, {}
+        return 422, exc.code, "导入未完成，请检查导出与输入。", False, {}
     if isinstance(exc, DirectoryRefNotFound):
         return 404, "DIRECTORY_REF_NOT_FOUND", "目录引用已失效，请重新选择目录。", False, {}
     if isinstance(exc, DirectoryRefStale):
@@ -3324,3 +2830,7 @@ def _run_counts(runs: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         "active": sum(run.get("status") in {"pending", "running"} for run in runs),
         "attention": sum(run.get("status") in {"failed", "needs_review"} for run in runs),
     }
+
+
+def _refactor_api(request: Request) -> bool:
+    return request.url.path.startswith(("/api/imports", "/api/releases"))

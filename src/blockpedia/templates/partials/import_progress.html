@@ -1,0 +1,11 @@
+<section data-import-fragment data-check-status="{{ imported.status }}" data-check-phase="{{ imported.phase }}" data-terminal="{{ 'true' if imported.status in ['succeeded', 'failed', 'interrupted'] else 'false' }}">
+<h2>{{ status_labels.get(imported.status, imported.status) }}</h2><p>{{ {'IMPORT_EXPORT': '导入导出数据', 'VALIDATE_EXPORT': '验证导出', 'FINALIZE': '创建工作区'}.get(imported.phase, imported.phase) }}</p>
+{% if imported.export_id %}<p>导出：<code>{{ imported.export_id }}</code> · Minecraft {{ imported.minecraft_version }}</p>{% endif %}
+{% set progress = imported.progress or {} %}
+<progress aria-label="导入进度" {% if progress.get('total') %}max="{{ progress.total }}" value="{{ progress.completed }}"{% endif %}></progress>
+<p>{{ progress.get('completed', 0) }}{% if progress.get('total') %} / {{ progress.total }}{% endif %} {{ progress.get('unit', '') }}</p>
+{% if imported.error_code %}<p role="alert"><code>{{ imported.error_code }}</code> · 请处理错误后重新选择来源，重试同一次导入。</p>{% endif %}
+{% if imported.status in ['failed', 'interrupted'] %}<a class="button button--primary" href="/?retry_run_id={{ imported.run_id }}">重新选择来源并重试 →</a>{% endif %}
+{% if imported.status == 'succeeded' %}<a class="button button--primary" href="/runs/{{ imported.run_id }}">进入运行 →</a>{% endif %}
+<p data-stream-status><span>导入状态</span></p>
+</section>

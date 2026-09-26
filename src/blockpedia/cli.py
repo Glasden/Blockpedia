@@ -50,6 +50,9 @@ def _run_mcp(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    import platform
+    if platform.python_implementation() != "CPython" or platform.python_version() != "3.14.7":
+        raise SystemExit("Blockpedia requires CPython 3.14.7")
     return int(args.handler(args))
 
 

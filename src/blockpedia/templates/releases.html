@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-shell run-hero"><div><p class="eyebrow">RELEASES / CURRENT</p><h1>发布与回滚</h1><p>选择已有候选并确认发布。源工作区归档后，仍可在这里操作。</p></div></section>
+<section class="page-shell"><div class="work-card" data-release-manager>
+  <form data-release-list-form class="import-form">
+    <div class="field-group"><label for="release-version">Minecraft 版本</label><input id="release-version" name="minecraft_version" value="{{ minecraft_version }}" required pattern="[0-9]+\.[0-9]+(\.[0-9]+)?" inputmode="decimal"></div>
+    <button class="button button--quiet" type="submit">读取发布列表</button>
+  </form>
+  <p role="status" data-release-current>正在读取当前发布…</p>
+  <form data-publish-form class="import-form" hidden>
+    <input name="expected_current_sha256" type="hidden">
+    <div class="field-group field-group--wide"><label for="release-target">目标候选</label><select id="release-target" name="target_release_id" required></select></div>
+    <div class="field-group"><label for="release-reviewer">发布者</label><input id="release-reviewer" name="reviewer" required maxlength="128" autocomplete="name"></div>
+    <div class="field-group"><label for="release-reason">原因</label><input id="release-reason" name="reason" required maxlength="500"></div>
+    <fieldset class="field-group field-group--wide"><legend>设为默认 Minecraft 版本</legend><label><input type="radio" name="set_as_default" value="true" required> 是</label><label><input type="radio" name="set_as_default" value="false" required> 否</label><small data-default-help>请选择是否更新默认版本。</small></fieldset>
+    <label class="field-group--wide"><input type="checkbox" name="confirm" required> 我确认将此版本的当前发布切换到选中的候选。</label>
+    <div class="form-action"><button class="button button--primary" type="submit" value="publish">确认发布</button><button class="button button--quiet" type="submit" value="rollback">确认回滚</button></div>
+  </form>
+  <p role="status" aria-live="polite" data-publish-feedback></p>
+</div></section>
+{% endblock %}

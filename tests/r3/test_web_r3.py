@@ -178,105 +178,16 @@ def test_d044_run_and_plan_views_show_frozen_concurrency_without_provider_call(t
         service.close()
 
 
-def test_d045_banner_refresh_ui_is_bounded_and_calls_the_single_service(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_banner_refresh_ui_and_routes_are_retired(tmp_path):
     from fastapi.testclient import TestClient
-
-    from blockpedia.banner_refresh import BANNER_TARGET_IDS
-
-    fake_provider = _FakeProvider()
-    service, run_id, _ = _service(tmp_path, fake_provider)
-    captured: dict[str, object] = {}
-
-    def refresh_banner_export(called_run_id: str, **kwargs: object) -> dict[str, object]:
-        captured.update({"run_id": called_run_id, **kwargs})
-        return {
-            "run_id": called_run_id,
-            "new_import_id": "import_banner_refresh",
-            "new_export_id": "export_20260817T120000Z",
-            "target_count": 32,
-            "new_variant_count": 32,
-            "new_feature_count": 32,
-            "new_ai_job_count": 3,
-            "current_stage": "AI_ANNOTATE",
-            "idempotent": False,
-        }
-
-    monkeypatch.setattr(service, "refresh_banner_export", refresh_banner_export)
-    app_module = __import__("blockpedia.web", fromlist=["create_app"])
-    app = app_module.create_app(
-        data_root=DataRoot(tmp_path),
-        repo_root=Path(__file__).parents[2],
-        service=service,
-        start_worker=False,
-    )
+    from blockpedia.web import create_app
+    service, run_id, _ = _service(tmp_path, _FakeProvider())
     try:
-        with TestClient(app) as client:
-            hidden = client.get(f"/runs/{run_id}")
-            assert hidden.status_code == 200
-            assert "data-banner-refresh" not in hidden.text
-
-            with service.worker.open_database(run_id) as database:
-                base = database.fetchone(
-                    "SELECT imports.export_id FROM imports JOIN runs ON runs.import_id=imports.import_id WHERE runs.run_id=?",
-                    (run_id,),
-                )
-                assert base is not None
-                base_export_id = str(base["export_id"])
-                with database.transaction() as connection:
-                    connection.execute(
-                        "UPDATE runs SET status='needs_review',current_stage='HUMAN_REVIEW',boundary_event=NULL WHERE run_id=?",
-                        (run_id,),
-                    )
-                    connection.execute(
-                        "UPDATE stage_runs SET status='needs_review' WHERE run_id=? AND stage='HUMAN_REVIEW'",
-                        (run_id,),
-                    )
-
-            visible = client.get(f"/runs/{run_id}")
-            assert visible.status_code == 200
-            assert "data-banner-refresh" in visible.text
-            assert base_export_id in visible.text
-            assert "Banner 定向修复" in visible.text
-            assert "Import Check" in visible.text and "banner-repair" in visible.text
-            assert "32 个 Banner 变体与特征" in visible.text
-            assert "三个未批准的 AI 批次" in visible.text
-            assert 'name="check_id" type="text" required' in visible.text
-            assert 'name="confirm" type="checkbox" value="true" required' in visible.text
-            assert "data-explicit-confirmation-submit" in visible.text
-            assert 'name="target_ids"' not in visible.text
-            assert 'name="expected_base_export_id"' not in visible.text
-
-            missing_confirmation = client.post(
-                f"/ui/runs/{run_id}/banner-export-refresh",
-                data={"check_id": "check_" + "a" * 32},
-                headers={"HX-Request": "true"},
-            )
-            assert missing_confirmation.status_code == 400
-            assert missing_confirmation.headers["HX-Retarget"] == "#banner-refresh-feedback"
-            assert captured == {}
-
-            applied = client.post(
-                f"/ui/runs/{run_id}/banner-export-refresh",
-                data={"check_id": "check_" + "a" * 32, "confirm": "true"},
-                headers={"HX-Request": "true"},
-            )
-            assert applied.status_code == 200
-            assert "Banner 定向修复已应用" in applied.text
-            assert "32 个 Banner 变体与离线特征已加入" in applied.text
-            assert "三个新的 AI 批次" in applied.text
-            assert "预览并批准这三个批次" in applied.text
-            assert "没有自动批准，也没有调用 provider" in applied.text
-            assert captured == {
-                "run_id": run_id,
-                "check_id": "check_" + "a" * 32,
-                "expected_base_export_id": base_export_id,
-                "target_ids": list(BANNER_TARGET_IDS),
-                "confirm": True,
-            }
-            assert fake_provider.calls == 0
+        with TestClient(create_app(service=service, start_worker=False)) as client:
+            html = client.get(f"/runs/{run_id}").text
+            assert "data-banner-refresh" not in html
+            assert client.post(f"/api/runs/{run_id}/banner-export-refresh", json={}).status_code == 404
+            assert client.post(f"/ui/runs/{run_id}/banner-export-refresh", data={}).status_code == 404
     finally:
         service.close()
 

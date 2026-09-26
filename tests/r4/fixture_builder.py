@@ -15,7 +15,6 @@ from typing import Any
 
 from blockpedia.r3 import encode_rgba_png
 from blockpedia.features import FEATURE_EXTRACTOR_VERSION, _normalized_hash, _oklab_and_lab
-from blockpedia.releases import CHECK_CODES
 from blockpedia.search import SEMANTIC_LIST_FIELDS, SEMANTIC_SCALAR_FIELDS, normalize_text
 
 
@@ -256,7 +255,7 @@ def build_fixture(root: Path, *, index_version: int = 2, force_like: bool = Fals
                 "error_code": None,
                 "evidence": evidence_by_code[code],
             }
-            for code in CHECK_CODES
+            for code in evidence_by_code
         ],
         "built_at": "2026-08-18T12:00:00Z",
     }

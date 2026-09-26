@@ -117,7 +117,7 @@
     const workspaceStatus = snapshot?.workspace?.status || fragment?.dataset.workspaceStatus || "absent";
     if (["pending", "running", "creating"].includes(workspaceStatus)) return false;
     return Boolean(snapshot?.can_import) || fragment?.dataset.terminal === "true" || [
-      "passed", "succeeded", "failed", "cancelled", "invalid", "complete", "completed",
+      "succeeded", "failed", "interrupted",
     ].includes(status);
   };
 
@@ -145,7 +145,7 @@
         return Boolean(this.currentBoundary) || ["paused", "needs_review", "failed", "succeeded", "cancelled"].includes(this.currentStatus);
       }
       if (["pending", "running", "creating"].includes(this.initialWorkspaceStatus)) return false;
-      return this.initialTerminal || ["passed", "succeeded", "failed", "cancelled", "invalid", "complete", "completed"].includes(this.currentStatus);
+      return this.initialTerminal || ["succeeded", "failed", "interrupted"].includes(this.currentStatus);
     }
 
     open() {
@@ -250,10 +250,10 @@
 
         if (
           this.kind === "run"
-          && this.currentBoundary === "R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING"
+          && ["R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING", "RELEASE_BUILT"].includes(this.currentBoundary)
           && !document.querySelector("[data-release-candidate]")
         ) {
-          announce("运行已到候选构建边界，正在打开候选检查面板。 ");
+          announce("运行已到候选构建边界，正在打开候选构建面板。 ");
           window.setTimeout(() => window.location.reload(), 180);
           return;
         }
@@ -315,545 +315,167 @@
     display?.setAttribute("aria-invalid", invalid ? "true" : "false");
   };
 
-  const preflightState = (entry) => {
-    const value = String(entry.preflight_status || "").toLowerCase();
-    if (["ready", "valid", "passed", "selectable"].includes(value)) return "ready";
-    if (["version_mismatch", "mismatch"].includes(value)) return "mismatch";
-    if (["invalid", "failed", "error", "staging"].includes(value)) return "invalid";
-    if (["checking", "pending", "scanning"].includes(value)) return "checking";
-    return entry.selectable ? "ready" : "invalid";
+  const storedOperation = (key) => {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(key) || "null");
+      return typeof saved?.id === "string" ? saved : null;
+    } catch (_) { return null; }
   };
 
-  const checkSubphaseLabels = {
-    QUEUED: "等待检查",
-    SNAPSHOT_EXPORT: "建立安全快照",
-    VALIDATE_EXPORT: "验证导出包",
-    SNAPSHOT_INVENTORY: "枚举快照文件",
-    SNAPSHOT_COPY_HASH: "复制并计算哈希",
-    SNAPSHOT_METADATA: "写入快照元数据",
-    INVENTORY: "清点导出内容",
-    SCHEMAS_MANIFEST: "加载 Schema 与 manifest",
-    JSONL_RECORDS: "读取业务记录",
-    CROSS_REFERENCES: "核对跨记录引用",
-    RENDERS: "检查预览与蒙版",
-    CHECKSUMS: "复算 checksums",
-    FINALIZE: "汇总检查结果",
-  };
-
-  const workflowForEntry = (entry) => {
-    const marker = entry?.check_marker && typeof entry.check_marker === "object" ? entry.check_marker : {};
-    const markerState = String(marker.state || "unchecked");
-    const workspace = marker.workspace && typeof marker.workspace === "object" ? marker.workspace : {};
-    const runId = marker.run_id || workspace.run_id || null;
-    const runUrl = marker.run_url || workspace.run_url || null;
-    const workspaceStatus = String(workspace.status || (runId && !runUrl ? "creating" : "absent"));
-    let state = markerState;
-    if (["pending", "running"].includes(marker.status) || markerState === "checking") state = "checking";
-    else if (markerState === "changed_since_check") state = "changed_since_check";
-    else if (markerState === "failed") state = "failed";
-    else if (["pending", "running", "creating"].includes(workspaceStatus)) state = "creating";
-    else if (runId && runUrl) state = "imported";
-    else if (markerState === "checked") state = "checked";
-    else state = "unchecked";
-    return {
-      state,
-      marker,
-      workspace,
-      checkId: marker.check_id || null,
-      checkUrl: marker.check_url || (marker.check_id ? `/imports/checks/${encodeURIComponent(marker.check_id)}` : null),
-      runId,
-      runUrl,
-      progress: marker.progress && typeof marker.progress === "object" ? marker.progress : {},
-    };
-  };
-
-  const workflowCopy = (workflow, entry) => {
-    const exportId = entry.export_id || entry.label || entry.name || "当前导出";
-    const subphase = checkSubphaseLabels[workflow.marker.subphase] || workflow.marker.subphase || workflow.marker.phase || "等待检查";
-    if (workflow.state === "checking") return { badge: "检查中", badgeClass: "status-badge--running", mark: "●", markClass: "checking", title: exportId, detail: `${subphase}；已有检查正在执行。`, action: "view", actionLabel: "查看进度" };
-    if (workflow.state === "creating") return { badge: "正在创建运行", badgeClass: "status-badge--running", mark: "✓", markClass: "checked", title: exportId, detail: "已检查快照正在创建工作区；不会重复导入。", action: "view", actionLabel: "正在创建运行" };
-    if (workflow.state === "imported") return { badge: "已有运行", badgeClass: "status-badge--running", mark: "✓", markClass: "imported", title: exportId, detail: `已检查并关联运行 ${workflow.runId || ""}。`, action: "run", actionLabel: "进入现有运行" };
-    if (workflow.state === "checked") return { badge: "✓ 已检查", badgeClass: "status-badge--succeeded", mark: "✓", markClass: "checked", title: exportId, detail: "安全快照已通过完整性检查，等待创建运行。", action: "import", actionLabel: "导入并进入运行" };
-    if (workflow.state === "changed_since_check") return { badge: "来源已变化", badgeClass: "status-badge--paused", mark: "!", markClass: "changed", title: exportId, detail: "旧检查快照仍保留；当前来源必须使用新引用重新检查。", action: "start", actionLabel: "重新检查" };
-    if (workflow.state === "failed") return { badge: workflow.marker.error_code === "IMPORT_CHECK_INTERRUPTED" ? "检查中断" : "检查失败", badgeClass: "status-badge--failed", mark: "!", markClass: "failed", title: exportId, detail: `${workflow.marker.error_code || "IMPORT_CHECK_FAILED"}；可使用当前新引用重新检查。`, action: "start", actionLabel: "重新检查" };
-    return { badge: "未检查", badgeClass: "", mark: "○", markClass: "unchecked", title: exportId, detail: "入口文件预检通过；尚未建立安全检查快照。", action: "start", actionLabel: "开始检查" };
+  // Build inputs are stable. Import directory references are not; import retries
+  // resolve their stored identity against the server before any new POST.
+  const operationId = (key, prefix, inputs) => {
+    const signature = JSON.stringify(inputs);
+    let saved = storedOperation(key);
+    if (!saved || saved.signature !== signature) {
+      saved = { signature, id: prefix + crypto.randomUUID().replaceAll("-", "") };
+      sessionStorage.setItem(key, JSON.stringify(saved));
+    }
+    return saved.id;
   };
 
   const initializeDirectoryChooser = (form) => {
+    const retry = new URLSearchParams(window.location.search).get("retry_run_id");
+    if (retry && /^run_[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(retry)) form.dataset.retryRunId = retry;
     const version = form.querySelector("[data-directory-version]");
-    const browse = form.querySelector("[data-directory-browse]");
-    const chooser = form.querySelector("[data-directory-chooser]");
-    const close = form.querySelector("[data-directory-close]");
-    const parent = form.querySelector("[data-directory-parent]");
-    const entries = form.querySelector("[data-directory-entries]");
-    const location = form.querySelector("[data-directory-location]");
-    const browserStatus = form.querySelector("[data-directory-browser-status]");
     const reference = form.querySelector("[data-directory-ref]");
     const display = form.querySelector("[data-directory-display]");
-    const submit = form.querySelector("[data-import-check-submit]");
-    const manual = form.querySelector("[data-manual-directory-ref]");
-    const useManual = form.querySelector("[data-use-manual-ref]");
-    const selectedWorkflow = form.querySelector("[data-selected-workflow]");
-    const selectedMarker = form.querySelector("[data-selected-marker]");
-    const selectedBadge = form.querySelector("[data-selected-badge]");
-    const selectedTitle = form.querySelector("[data-selected-title]");
-    const selectedDetail = form.querySelector("[data-selected-detail]");
-    const selectedProgress = form.querySelector("[data-selected-progress]");
-    const selectedProgressBar = form.querySelector("[data-selected-progress-bar]");
-    const selectedProgressCopy = form.querySelector("[data-selected-progress-copy]");
-    const actionLabel = form.querySelector("[data-selected-action-label]");
-    let parentReference = null;
-    let pendingFocusExportId = null;
-
-    const clearSelection = () => {
-      reference.value = "";
-      display.value = "";
-      submit.disabled = true;
-      submit.dataset.selectedAction = "start";
-      delete form.dataset.selectedCheckId;
-      delete form.dataset.selectedCheckUrl;
-      delete form.dataset.selectedRunUrl;
-      selectedWorkflow.hidden = true;
-      directoryFeedback(form, "neutral", "尚未选择导出目录。");
-      setText(form.querySelector("[data-import-start-status]"), "选择可检查的导出后继续。");
+    const submit = form.querySelector("[data-import-submit]");
+    const chooser = form.querySelector("[data-directory-chooser]");
+    const browse = form.querySelector("[data-directory-browse]");
+    const entries = form.querySelector("[data-directory-entries]");
+    const parent = form.querySelector("[data-directory-parent]");
+    const status = form.querySelector("[data-directory-browser-status]");
+    let parentRef = "";
+    let generation = 0;
+    const close = () => { chooser.hidden = true; browse.setAttribute("aria-expanded", "false"); browse.focus(); };
+    const select = (entry) => {
+      reference.value = entry.directory_ref;
+      form.dataset.selectedExportId = entry.export_id || "";
+      display.value = `${version.value} / ${entry.export_id || entry.label || "已选择导出"}`;
+      submit.disabled = false;
+      directoryFeedback(form, "ready", "已选择导出，导入时将验证并创建工作区。");
+      close();
     };
-
-    const renderSelectedWorkflow = (entry) => {
-      const workflow = workflowForEntry(entry);
-      const copy = workflowCopy(workflow, entry);
-      const ready = preflightState(entry) === "ready";
-      selectedWorkflow.hidden = false;
-      selectedWorkflow.dataset.state = workflow.state;
-      selectedMarker.textContent = copy.mark;
-      selectedMarker.className = `export-state-mark export-state-mark--${copy.markClass}`;
-      selectedBadge.textContent = copy.badge;
-      selectedBadge.className = `status-badge ${copy.badgeClass}`;
-      selectedTitle.textContent = copy.title;
-      selectedDetail.textContent = copy.detail;
-      submit.dataset.selectedAction = copy.action;
-      setText(actionLabel, copy.actionLabel);
-      form.dataset.selectedCheckId = workflow.checkId || "";
-      form.dataset.selectedCheckUrl = workflow.checkUrl || "";
-      form.dataset.selectedRunUrl = workflow.runUrl || "";
-      submit.disabled = (copy.action === "start" && (!ready || !entry.directory_ref)) || (copy.action === "view" && !workflow.checkUrl) || (copy.action === "import" && !workflow.checkId) || (copy.action === "run" && !workflow.runUrl);
-      const progress = workflow.progress;
-      if (workflow.state === "checking") {
-        const completed = Number(progress.completed || 0);
-        const total = Number(progress.total || 0);
-        selectedProgress.hidden = false;
-        if (total > 0) {
-          selectedProgressBar.value = Math.min(completed, total);
-          selectedProgressBar.max = total;
-          selectedProgressBar.classList.remove("indeterminate-progress");
-        } else {
-          selectedProgressBar.removeAttribute("value");
-          selectedProgressBar.removeAttribute("max");
-          selectedProgressBar.classList.add("indeterminate-progress");
-        }
-        const subphase = checkSubphaseLabels[workflow.marker.subphase] || workflow.marker.subphase || "检查中";
-        selectedProgressBar.setAttribute("aria-label", total > 0 ? `${subphase}，已完成 ${completed}，共 ${total}` : `${subphase}正在执行，已处理 ${completed}`);
-        setText(selectedProgressCopy, `${subphase} · ${total > 0 ? `${completed}/${total}` : `已处理 ${completed}`} ${progress.unit || "items"}`);
-      } else {
-        selectedProgress.hidden = true;
-      }
-      return { workflow, copy };
-    };
-
-    const selectEntry = (entry) => {
-      const state = preflightState(entry);
-      const label = entry.export_id || entry.label || entry.name || "已选择本地导出";
-      const selectedVersion = entry.minecraft_version || version.value;
-      reference.value = entry.directory_ref || "";
-      display.value = `${selectedVersion} / ${label}`;
-      const selected = renderSelectedWorkflow(entry);
-      if (state === "ready") {
-        const feedbackCopy = selected.workflow.state === "checking" ? "该导出已有检查正在执行；不会创建重复检查。" : selected.workflow.state === "checked" ? "该导出已有通过的检查快照。" : selected.workflow.state === "imported" ? "该导出已关联现有运行。" : "目录结构可识别；仍需运行完整性检查。";
-        directoryFeedback(form, "ready", feedbackCopy);
-        setText(form.querySelector("[data-import-start-status]"), selected.copy.action === "start" ? "已准备好开始完整性检查。" : "使用当前状态操作继续。");
-      } else if (state === "mismatch") {
-        directoryFeedback(form, "mismatch", "导出版本与当前显式版本不一致。", entry.error_code || "RELEASE_VERSION_MISMATCH");
-      } else if (state === "checking") {
-        directoryFeedback(form, "checking", "目录仍在预检，请稍后重新选择。");
-      } else {
-        directoryFeedback(form, "invalid", "该目录当前不能进入完整性检查。", entry.error_code || "IMPORT_INCOMPLETE");
-      }
-      chooser.hidden = true;
-      browse.setAttribute("aria-expanded", "false");
-      browse.focus({ preventScroll: true });
-    };
-
-    const makeActionButton = (label, onClick, quiet = true) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `button ${quiet ? "button--quiet" : "button--primary"}`;
-      button.textContent = label;
-      button.addEventListener("click", onClick);
-      return button;
-    };
-
-    const renderEntries = (directory) => {
-      entries.replaceChildren();
-      const list = Array.isArray(directory.entries) ? directory.entries : [];
-      if (!list.length) {
-        const empty = document.createElement("p");
-        empty.className = "directory-entry-empty";
-        empty.textContent = "所选位置没有可用导出。";
-        entries.append(empty);
-        return;
-      }
-      list.forEach((entry) => {
-        const row = document.createElement("article");
-        row.className = "directory-entry";
-        row.dataset.exportId = entry.export_id || "";
-        const identity = document.createElement("div");
-        identity.className = "directory-entry__identity";
-        const workflow = workflowForEntry(entry);
-        const workflowText = workflowCopy(workflow, entry);
-        const badges = document.createElement("div");
-        badges.className = "directory-entry__badges";
-        const badge = document.createElement("span");
-        badge.className = `status-badge ${workflowText.badgeClass}`;
-        badge.textContent = workflowText.badge;
-        badges.append(badge);
-        if (["checked", "creating", "imported", "changed_since_check"].includes(workflow.state)) {
-          const checked = document.createElement("span");
-          checked.className = "checked-chip";
-          checked.textContent = "✓ 已检查快照";
-          badges.append(checked);
-        }
-        identity.append(badges);
-        const name = document.createElement("b");
-        name.textContent = entry.label || entry.name || entry.export_id || "未命名目录";
-        identity.append(name);
-        if (entry.export_id) {
-          const code = document.createElement("code");
-          code.textContent = entry.export_id;
-          identity.append(code);
-        }
-        const detail = document.createElement("small");
-        const state = preflightState(entry);
-        detail.textContent = entry.error_code
-          ? `${entry.error_code} · ${entry.preflight_status || "不可选择"}`
-          : `${entry.minecraft_version || version.value} · ${workflow.state === "checking" ? (checkSubphaseLabels[workflow.marker.subphase] || workflow.marker.subphase || "检查中") : (entry.preflight_status || (entry.selectable ? "ready" : "目录"))}`;
-        identity.append(detail);
-
-        if (workflow.state === "checking") {
-          const compact = document.createElement("div");
-          compact.className = "compact-check-progress";
-          const bar = document.createElement("progress");
-          const completed = Number(workflow.progress.completed || 0);
-          const total = Number(workflow.progress.total || 0);
-          if (total > 0) {
-            bar.value = Math.min(completed, total);
-            bar.max = total;
-          } else {
-            bar.className = "indeterminate-progress";
-          }
-          const subphase = checkSubphaseLabels[workflow.marker.subphase] || workflow.marker.subphase || "检查中";
-          bar.setAttribute("aria-label", total > 0 ? `${subphase}，已完成 ${completed}，共 ${total}` : `${subphase}正在执行，已处理 ${completed}`);
-          const progressCopy = document.createElement("span");
-          progressCopy.textContent = total > 0 ? `${completed}/${total} ${workflow.progress.unit || "items"}` : `已处理 ${completed} ${workflow.progress.unit || "items"}`;
-          compact.append(bar, progressCopy);
-          identity.append(compact);
-        }
-
-        const actions = document.createElement("div");
-        actions.className = "directory-entry__actions";
-        if (entry.can_enter && entry.directory_ref && !entry.selectable) {
-          actions.append(makeActionButton("打开", () => loadDirectory(entry.directory_ref)));
-        }
-        if (entry.directory_ref) {
-          actions.append(makeActionButton("选择", () => selectEntry(entry)));
-        }
-        const actionUsesFreshRef = workflowText.action === "start";
-        if ((entry.selectable && entry.directory_ref) || (!actionUsesFreshRef && ["view", "run", "import"].includes(workflowText.action))) {
-          const primary = makeActionButton(workflowText.actionLabel, () => {
-            selectEntry(entry);
-            window.setTimeout(() => performSelectedAction(form, primary), 0);
-          }, workflowText.action !== "start" && workflowText.action !== "import");
-          if ((workflowText.action === "view" && !workflow.checkUrl) || (workflowText.action === "run" && !workflow.runUrl) || (workflowText.action === "import" && !workflow.checkId)) primary.disabled = true;
-          actions.append(primary);
-        } else if (entry.error_code) {
-          actions.append(makeActionButton("查看状态", () => selectEntry(entry)));
-        }
-        row.append(identity, actions);
-        entries.append(row);
-      });
-    };
-
-    const loadDirectory = async (parentRef = "") => {
-      if (!version.checkValidity()) {
-        version.reportValidity();
-        return;
-      }
+    const load = async (ref = "") => {
+      if (!version.reportValidity()) return;
+      const request = ++generation;
       chooser.hidden = false;
       browse.setAttribute("aria-expanded", "true");
-      directoryFeedback(form, "checking", "正在读取已配置 data-root 中的导出目录…");
-      setText(browserStatus, "正在读取目录…");
       entries.replaceChildren();
-      const url = new URL("/api/directories", window.location.origin);
-      url.searchParams.set("minecraft_version", version.value);
-      if (parentRef) url.searchParams.set("parent_ref", parentRef);
+      setText(status, "正在读取导出目录…");
       try {
-        const response = await fetch(url, { headers: { Accept: "application/json" } });
-        const envelope = await response.json();
-        if (!response.ok || envelope.ok === false) {
-          throw new Error(envelope.error_code || "DIRECTORY_BROWSER_UNAVAILABLE");
-        }
-        const directory = envelope.data || {};
-        parentReference = directory.parent_ref || "";
-        parent.hidden = !parentReference;
-        setText(location, directory.label || `Minecraft ${version.value} 导出`);
-        setText(browserStatus, `${Array.isArray(directory.entries) ? directory.entries.length : 0} 个目录项`);
-        renderEntries(directory);
-        directoryFeedback(form, "neutral", "请选择一个可检查的 exporter 导出。 ");
-        const focusRow = pendingFocusExportId
-          ? Array.from(entries.querySelectorAll("[data-export-id]")).find((row) => row.dataset.exportId === pendingFocusExportId)
-          : null;
-        pendingFocusExportId = null;
-        (focusRow?.querySelector("button") || entries.querySelector("button"))?.focus({ preventScroll: true });
+        const data = await fetchJsonEnvelope(`/api/directories?minecraft_version=${encodeURIComponent(version.value)}${ref ? `&parent_ref=${encodeURIComponent(ref)}` : ""}`);
+        if (request !== generation) return;
+        parentRef = data.parent_ref || "";
+        parent.hidden = !parentRef;
+        setText(form.querySelector("[data-directory-location]"), data.label || `Minecraft ${version.value} 导出`);
+        const list = data.entries || [];
+        setText(status, list.length ? `${list.length} 个目录项` : "所选位置没有可用导出。");
+        list.forEach((entry) => {
+          const row = document.createElement("article");
+          row.className = "directory-entry";
+          const identity = document.createElement("div");
+          identity.className = "directory-entry__identity";
+          const name = document.createElement("b");
+          name.textContent = entry.export_id || entry.label || entry.name || "目录";
+          const detail = document.createElement("small");
+          detail.textContent = `${entry.minecraft_version || version.value} · ${entry.error_code || entry.preflight_status || "导出"}`;
+          identity.append(name, detail);
+          row.append(identity);
+          if (entry.directory_ref && (entry.selectable || entry.can_enter)) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "button button--quiet";
+            button.textContent = entry.selectable ? "选择导出" : "打开目录";
+            button.addEventListener("click", () => entry.selectable ? select(entry) : load(entry.directory_ref));
+            row.append(button);
+          }
+          entries.append(row);
+        });
+        entries.querySelector("button")?.focus();
       } catch (error) {
-        const code = error instanceof Error ? error.message : "DIRECTORY_BROWSER_UNAVAILABLE";
-        setText(browserStatus, "目录浏览暂不可用。");
-        directoryFeedback(form, "invalid", "无法读取本地导出列表，请稍后重试。", code);
+        if (request !== generation) return;
+        setText(status, `${error.code || "DIRECTORY_BROWSER_UNAVAILABLE"} · 无法读取目录，请重试。`);
       }
     };
-
-    browse.addEventListener("click", () => {
-      if (!chooser.hidden) {
-        chooser.hidden = true;
-        browse.setAttribute("aria-expanded", "false");
-        return;
-      }
-      loadDirectory();
+    browse.addEventListener("click", () => load());
+    parent.addEventListener("click", () => load(parentRef));
+    form.querySelector("[data-directory-close]").addEventListener("click", close);
+    chooser.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+    version.addEventListener("input", () => { ++generation; reference.value = ""; display.value = ""; delete form.dataset.selectedExportId; submit.disabled = true; });
+    form.querySelector("[data-use-manual-ref]").addEventListener("click", () => {
+      const ref = form.querySelector("[data-manual-directory-ref]").value.trim();
+      if (ref) select({ directory_ref: ref, label: "手动目录引用" });
     });
-    close.addEventListener("click", () => {
-      chooser.hidden = true;
-      browse.setAttribute("aria-expanded", "false");
-      browse.focus({ preventScroll: true });
-    });
-    parent.addEventListener("click", () => loadDirectory(parentReference));
-    version.addEventListener("change", clearSelection);
-    useManual.addEventListener("click", () => {
-      const value = manual.value.trim();
-      const looksAbsolute = /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("/") || value.startsWith("\\\\");
-      if (!value || looksAbsolute) {
-        manual.setAttribute("aria-invalid", "true");
-        directoryFeedback(form, "invalid", "请输入 Studio 提供的不透明引用；绝对路径不会被接受。", "INVALID_INPUT");
-        submit.disabled = true;
-        return;
-      }
-      manual.setAttribute("aria-invalid", "false");
-      const entry = { directory_ref: value, export_id: "手动目录引用", minecraft_version: version.value, selectable: true, preflight_status: "ready", check_marker: { state: "unchecked" } };
-      reference.value = value;
-      display.value = "已选择手动目录引用";
-      renderSelectedWorkflow(entry);
-      directoryFeedback(form, "ready", "已接收不透明引用；服务将在完整检查前验证它。 ");
-      setText(form.querySelector("[data-import-start-status]"), "已准备好开始完整性检查。");
-    });
-
-    const openForExport = (exportId, minecraftVersion) => {
-      if (minecraftVersion) version.value = minecraftVersion;
-      clearSelection();
-      pendingFocusExportId = exportId || null;
-      chooser.hidden = false;
-      browse.setAttribute("aria-expanded", "true");
-      chooser.scrollIntoView({ behavior: reducedMotion.matches ? "auto" : "smooth", block: "nearest" });
-      loadDirectory();
-    };
-
-    form.addEventListener("directory:reselect", (event) => {
-      openForExport(event.detail?.exportId, event.detail?.minecraftVersion);
+    if (form.dataset.retryRunId || storedOperation("blockpedia.import")) {
+      setText(form.querySelector("[data-import-start-status]"), "已有导入操作。继续时会先读取状态；更换导出或版本，请先开始新的导入操作。");
+      setText(form.querySelector("[data-selected-action-label]"), "继续本次导入");
+    }
+    form.querySelector("[data-new-import]").addEventListener("click", () => {
+      sessionStorage.removeItem("blockpedia.import");
+      delete form.dataset.retryRunId;
+      window.history.replaceState(null, "", window.location.pathname);
+      setText(form.querySelector("[data-import-start-status]"), "已开始新操作，下次提交将创建新的导入。");
+      setText(form.querySelector("[data-selected-action-label]"), "开始导入");
     });
   };
 
-  const showImportStartError = (form, code, message) => {
-    const target = form.closest(".work-card")?.querySelector("[data-import-start-feedback]");
-    if (!target) return;
-    const panel = document.createElement("section");
-    panel.className = "inline-error";
-    panel.setAttribute("role", "alert");
-    const errorCode = document.createElement("span");
-    errorCode.className = "error-code";
-    errorCode.textContent = code || "IMPORT_CHECK_START_FAILED";
-    const heading = document.createElement("h3");
-    heading.textContent = message || "完整性检查未启动。";
-    const repair = document.createElement("p");
-    repair.textContent = "请确认版本和目录引用后重试。";
-    panel.append(errorCode, heading, repair);
-    target.replaceChildren(panel);
-  };
-
-  const showImportStarting = (form) => {
-    const target = form.closest(".work-card")?.querySelector("[data-import-start-feedback]");
-    if (!target) return;
-    const panel = document.createElement("section");
-    panel.className = "check-starting";
-    panel.setAttribute("role", "status");
-    const mark = document.createElement("span");
-    mark.className = "check-starting__mark";
-    mark.setAttribute("aria-hidden", "true");
-    mark.textContent = "↻";
-    const copy = document.createElement("div");
-    const heading = document.createElement("h3");
-    heading.textContent = "正在查找完整性检查";
-    const text = document.createElement("p");
-    text.textContent = "若该导出已有活动或通过的检查，将直接进入权威进度页，不会重复启动。";
-    copy.append(heading, text);
-    panel.append(mark, copy);
-    target.replaceChildren(panel);
-  };
-
-  const startImportCheck = async (form, triggerButton = null) => {
-    const reference = form.querySelector("[data-directory-ref]")?.value.trim();
-    const version = form.querySelector("[data-directory-version]")?.value.trim();
-    const submit = form.querySelector("[data-import-check-submit]");
-    const trigger = triggerButton || submit;
-    if (!reference || !version || !form.reportValidity()) return;
-    submit.disabled = true;
-    trigger.disabled = true;
-    submit.setAttribute("aria-busy", "true");
-    trigger.setAttribute("aria-busy", "true");
-    setText(form.querySelector("[data-import-start-status]"), "正在查找已有检查或准备安全快照…");
-    showImportStarting(form);
+  const performSelectedAction = async (form) => {
+    if (form.dataset.busy === "true" || !form.reportValidity()) return;
+    const source_directory_ref = form.querySelector("[data-directory-ref]").value;
+    const minecraft_version = form.querySelector("[data-directory-version]").value;
+    if (!source_directory_ref) return;
+    const feedback = form.closest(".work-card").querySelector("[data-import-start-feedback]");
+    form.dataset.busy = "true";
+    form.setAttribute("aria-busy", "true");
+    const controls = Array.from(form.querySelectorAll("button, input"));
+    const disabled = controls.map((control) => control.disabled);
+    controls.forEach((control) => { control.disabled = true; });
+    setText(feedback, "正在提交导入…");
     try {
-      const response = await fetch(form.action, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json, text/html" },
-        body: JSON.stringify({ source_directory: reference, minecraft_version: version }),
-      });
-      if (response.redirected) {
-        const redirected = safeSameOriginLocation(response.url);
-        if (redirected?.pathname.startsWith("/imports/checks/")) {
-          window.location.assign(redirected.href);
+      const inputs = { minecraft_version, export_id: form.dataset.selectedExportId || null, source_directory_ref };
+      const saved = storedOperation("blockpedia.import");
+      const retryId = form.dataset.retryRunId;
+      const previous = retryId && retryId !== saved?.id ? { id: retryId } : saved;
+      const run_id = previous?.id || "run_" + crypto.randomUUID().replaceAll("-", "");
+      if (previous) {
+        setText(feedback, "正在读取本次导入状态…");
+        let existing = null;
+        try {
+          existing = await fetchJsonEnvelope(`/api/imports/${encodeURIComponent(run_id)}`);
+          if (existing.run_id !== run_id) throw { code: "IMPORT_RESULT_INVALID" };
+        } catch (error) {
+          if (error.status !== 404) throw error;
+        }
+        let original = {};
+        try { original = JSON.parse(previous.signature || "{}"); } catch (_) { /* Legacy identity: use the server snapshot. */ }
+        const originalVersion = existing?.minecraft_version || original.minecraft_version;
+        const originalExport = existing?.export_id || original.export_id;
+        const sameSource = inputs.export_id && originalExport
+          ? inputs.export_id === originalExport
+          : source_directory_ref === original.source_directory_ref;
+        if ((originalVersion && originalVersion !== minecraft_version)
+          || ((originalExport || original.source_directory_ref) && !sameSource)) {
+          throw { code: "IMPORT_SOURCE_SELECTION_CHANGED", message: "已有导入操作与所选导出或版本不一致（手动引用无法确认来源）。请选回原导出，或点击“开始新的导入操作”。" };
+        }
+        if (existing && ["pending", "running", "succeeded"].includes(existing.status)) {
+          sessionStorage.setItem("blockpedia.import", JSON.stringify({ signature: JSON.stringify(inputs), id: run_id }));
+          window.location.assign(`/imports/${encodeURIComponent(run_id)}`);
           return;
         }
       }
-      const contentType = response.headers.get("content-type") || "";
-      const envelope = contentType.includes("application/json") ? await response.json() : null;
-      if (!response.ok || envelope?.ok === false) {
-        throw { code: envelope?.error_code || "IMPORT_CHECK_START_FAILED", message: envelope?.message || "完整性检查未启动。" };
-      }
-      const data = envelope?.data || {};
-      const checkId = data.check_id || data.snapshot?.check_id;
-      const location = safeSameOriginLocation(data.canonical_url || data.location || data.url);
-      if (location?.pathname.startsWith("/imports/checks/")) {
-        window.location.assign(location.href);
-        return;
-      }
-      if (checkId) {
-        window.location.assign(`/imports/checks/${encodeURIComponent(checkId)}`);
-        return;
-      }
-      throw { code: "IMPORT_CHECK_START_FAILED", message: "服务没有返回检查标识。" };
+      sessionStorage.setItem("blockpedia.import", JSON.stringify({ signature: JSON.stringify(inputs), id: run_id }));
+      const data = await postJsonEnvelope("/api/imports", { run_id, source_directory_ref, minecraft_version });
+      if (data.run_id !== run_id) throw { code: "IMPORT_RESULT_INVALID" };
+      window.location.assign(`/imports/${encodeURIComponent(run_id)}`);
     } catch (error) {
-      const code = error?.code || "IMPORT_CHECK_START_FAILED";
-      const message = error?.message || "完整性检查未启动。";
-      showImportStartError(form, code, message);
-      submit.disabled = false;
-      trigger.disabled = false;
-      submit.removeAttribute("aria-busy");
-      trigger.removeAttribute("aria-busy");
-      setText(form.querySelector("[data-import-start-status]"), "检查未启动，可以修正后重试。");
-      announce("完整性检查未启动，请查看错误信息。");
+      setText(feedback, `${error.code || "IMPORT_RESPONSE_UNAVAILABLE"} · ${error.message || "未收到导入结果，请重试同一操作或查看最近导入。"}`);
+    } finally {
+      controls.forEach((control, index) => { control.disabled = disabled[index]; });
+      form.dataset.busy = "false";
+      form.removeAttribute("aria-busy");
     }
-  };
-
-  const showActionError = (owner, code, message) => {
-    owner.querySelector("[data-action-error]")?.remove();
-    const error = document.createElement("p");
-    error.className = "action-error";
-    error.dataset.actionError = "true";
-    error.setAttribute("role", "alert");
-    const stableCode = document.createElement("code");
-    stableCode.textContent = code || "IMPORT_FAILED";
-    error.append(stableCode, document.createTextNode(` · ${message || "运行未创建，请按错误码处理。"}`));
-    owner.append(error);
-  };
-
-  const submitImportRequest = async ({ checkId, checkUrl, button, owner }) => {
-    if (!checkId || !button) return;
-    const originalLabel = button.textContent;
-    button.disabled = true;
-    button.setAttribute("aria-busy", "true");
-    button.textContent = "正在创建运行…";
-    owner.querySelector("[data-action-error]")?.remove();
-    try {
-      const response = await fetch("/api/imports", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ check_id: checkId, copy_mode: "copy_to_workspace" }),
-      });
-      const envelope = await response.json().catch(() => null);
-      if (!response.ok || envelope?.ok === false) {
-        throw { code: envelope?.error_code || "IMPORT_FAILED", message: envelope?.message || "运行未创建。" };
-      }
-      const data = envelope?.data || {};
-      const workspace = data.workspace && typeof data.workspace === "object" ? data.workspace : {};
-      const runId = data.run_id || workspace.run_id;
-      const runUrl = safeSameOriginLocation(data.run_url || workspace.run_url || (runId ? `/runs/${encodeURIComponent(runId)}` : null));
-      if ([200, 201].includes(response.status) && runId && runUrl) {
-        window.location.assign(runUrl.href);
-        return;
-      }
-      if (response.status === 202) {
-        const canonical = safeSameOriginLocation(data.canonical_url || checkUrl || `/imports/checks/${encodeURIComponent(checkId)}`);
-        const canonicalPanel = document.getElementById("import-check-panel");
-        if (canonicalPanel) {
-          const feedback = document.getElementById("import-action-feedback");
-          setText(feedback, "运行已保留，正在创建工作区；等待权威状态快照。");
-          streamManagers.get("import-check-panel")?.restartAfterCommand();
-          button.textContent = "正在创建运行";
-        } else if (canonical) {
-          window.location.assign(canonical.href);
-        }
-        return;
-      }
-      throw { code: "IMPORT_RESULT_INVALID", message: "服务没有返回可进入的运行。" };
-    } catch (error) {
-      button.disabled = false;
-      button.removeAttribute("aria-busy");
-      button.textContent = originalLabel;
-      showActionError(owner, error?.code || "IMPORT_FAILED", error?.message || "运行未创建。 ");
-      announce("运行未创建，请查看稳定错误码。");
-    }
-  };
-
-  const submitImportAction = (form) => {
-    const button = form.querySelector('button[type="submit"]');
-    const owner = form.closest(".recent-check-row, .import-progress") || form.parentElement;
-    return submitImportRequest({
-      checkId: form.querySelector('[name="check_id"]')?.value,
-      checkUrl: form.dataset.checkUrl,
-      button,
-      owner,
-    });
-  };
-
-  const performSelectedAction = (form, triggerButton = null) => {
-    const submit = form.querySelector("[data-selected-primary]");
-    const button = triggerButton || submit;
-    const action = submit.dataset.selectedAction || "start";
-    if (action === "view") {
-      const target = safeSameOriginLocation(form.dataset.selectedCheckUrl);
-      if (target) window.location.assign(target.href);
-      return;
-    }
-    if (action === "run") {
-      const target = safeSameOriginLocation(form.dataset.selectedRunUrl);
-      if (target) window.location.assign(target.href);
-      return;
-    }
-    if (action === "import") {
-      submitImportRequest({
-        checkId: form.dataset.selectedCheckId,
-        checkUrl: form.dataset.selectedCheckUrl,
-        button,
-        owner: form.closest(".work-card") || form,
-      });
-      return;
-    }
-    startImportCheck(form, button);
   };
 
   const submitRunCommand = async (form) => {
@@ -1908,482 +1530,130 @@
     }
   };
 
-  const candidateSafeId = (value) => {
-    const text = String(value || "");
-    return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(text) ? text : "不可显示";
-  };
-
-  const candidateSafeHash = (value) => {
-    const text = String(value || "");
-    return /^sha256:[0-9a-f]{64}$/.test(text) ? text : "未报告";
-  };
-
-  const candidateSafeTime = (value) => {
-    const text = String(value || "");
-    return /^\d{4}-\d{2}-\d{2}T[0-9:.+-]+Z?$/.test(text) && text.length <= 64 ? text : "未报告";
-  };
-
-  const candidateSafeMessage = (value, fallback) => {
-    const text = String(value || "");
-    if (!text || text.length > 300 || text.includes("/") || text.includes("\\")) return fallback;
-    return text;
-  };
-
-  const setCandidateField = (panel, name, value) => {
-    const field = panel.querySelector(`[data-candidate-field="${name}"]`);
-    setText(field, value);
-    if (field?.tagName === "TIME") {
-      if (value === "未报告") field.removeAttribute("datetime");
-      else field.setAttribute("datetime", value);
-    }
-  };
-
-  const setCandidateBusy = (button, busy, pendingLabel) => {
-    if (!button.dataset.idleLabel) button.dataset.idleLabel = button.textContent.trim();
-    button.disabled = busy;
-    button.toggleAttribute("aria-busy", busy);
-    button.textContent = busy ? pendingLabel : button.dataset.idleLabel;
-  };
-
-  const showCandidateError = (panel, error) => {
-    const box = panel.querySelector("[data-candidate-error]");
-    const activation = panel.matches("[data-release-activation]");
-    const code = /^[A-Z][A-Z0-9_]{1,127}$/.test(String(error?.code || ""))
-      ? String(error.code)
-      : (activation ? "ACTIVATION_CHECK_FAILED" : "RELEASE_CHECK_FAILED");
-    box.hidden = false;
-    setText(box.querySelector("[data-candidate-error-code]"), code);
-    setText(
-      box.querySelector("[data-candidate-error-message]"),
-      candidateSafeMessage(error?.message, activation ? "激活操作未完成，请按错误码处理。" : "候选操作未完成，请按错误码处理。"),
-    );
-    panel.dataset.state = "error";
-    const badge = panel.querySelector("[data-candidate-badge]");
-    badge.className = "status-badge status-badge--failed";
-    badge.textContent = "操作未完成";
-    setText(panel.querySelector("[data-candidate-message]"), `${code} · 请处理后重试。`);
-    announce(`${activation ? "激活" : "候选"}操作未完成：${code}。`);
-  };
-
-  const renderCandidateCheck = (panel, data) => {
-    const runId = panel.dataset.candidateRunId;
-    const version = panel.dataset.candidateVersion;
-    if (data.run_id !== runId || data.minecraft_version !== version) {
-      throw { code: "RELEASE_VERSION_MISMATCH", message: "候选检查结果与当前运行不一致。" };
-    }
-    const checkId = candidateSafeId(data.check_id);
-    if (checkId === "不可显示") throw { code: "RELEASE_CHECK_RESULT_INVALID", message: "候选检查标识不合法。" };
-    panel.dataset.candidateCheckId = checkId;
-    panel.querySelector("[data-candidate-error]").hidden = true;
-    panel.querySelector("[data-candidate-check-result]").hidden = false;
-    setCandidateField(panel, "check_id", checkId);
-    setCandidateField(panel, "release_build_id", candidateSafeId(data.release_build_id));
-    setCandidateField(panel, "snapshot_fingerprint", candidateSafeHash(data.snapshot_fingerprint));
-    setCandidateField(panel, "quality_report_sha256", candidateSafeHash(data.quality_report_sha256));
-    setCandidateField(panel, "created_at", candidateSafeTime(data.created_at));
-    setCandidateField(panel, "updated_at", candidateSafeTime(data.updated_at));
-    const canBuild = data.can_build === true;
-    panel.dataset.state = canBuild ? "buildable" : "blocked";
-    const badge = panel.querySelector("[data-candidate-badge]");
-    const resultBadge = panel.querySelector("[data-candidate-result-badge]");
-    badge.className = `status-badge status-badge--${canBuild ? "succeeded" : "failed"}`;
-    resultBadge.className = `status-badge status-badge--${canBuild ? "succeeded" : "failed"}`;
-    badge.textContent = canBuild ? "可以构建" : "存在阻断";
-    resultBadge.textContent = canBuild ? "buildable" : "blocked";
-    setText(panel.querySelector("[data-candidate-message]"), canBuild ? "当前检查快照允许构建不可变候选。" : "当前检查快照存在阻断项。 ");
-    panel.querySelector("[data-candidate-blocked]").hidden = canBuild;
-    const buildAction = panel.querySelector("[data-candidate-build-action]");
-    const buildButton = panel.querySelector("[data-candidate-build]");
-    buildAction.hidden = !canBuild;
-    buildButton.disabled = !canBuild;
-    panel.querySelector('[data-candidate-step="check"]').className = canBuild ? "is-complete" : "is-blocked";
-    panel.querySelector('[data-candidate-step="build"]').className = canBuild ? "is-current" : "";
-    announce(canBuild ? "候选检查通过，可以构建。" : "候选检查存在阻断项。 ");
-  };
-
-  const renderCandidateHashes = (panel, data) => {
-    const orderedHashes = [
-      ["manifest_sha256", data.manifest_sha256],
-      ["quality_report_sha256", data.quality_report_sha256],
-      ["checksums_sha256", data.checksums_sha256],
-    ].map(([name, value]) => {
-      const hash = candidateSafeHash(value);
-      if (hash === "未报告") {
-        throw { code: "RELEASE_BUILD_RESULT_INVALID", message: "候选构建摘要不完整。" };
-      }
-      return [name, hash];
-    });
-    const owner = panel.querySelector("[data-candidate-hashes]");
-    owner.replaceChildren();
-    orderedHashes.forEach(([name, hash]) => {
-      const row = document.createElement("span");
-      const label = document.createElement("b");
-      const code = document.createElement("code");
-      label.textContent = name;
-      code.textContent = hash;
-      row.append(label, code);
-      owner.append(row);
-    });
-  };
-
-  const renderCandidateBuilt = (panel, data) => {
-    if (data.status !== "built") throw { code: "RELEASE_BUILD_RESULT_INVALID", message: "候选构建结果状态不合法。" };
-    const releaseId = candidateSafeId(data.release_id);
-    if (releaseId === "不可显示") throw { code: "RELEASE_BUILD_RESULT_INVALID", message: "候选标识不合法。" };
-    renderCandidateHashes(panel, data);
-    panel.dataset.state = "built";
-    panel.querySelector("[data-candidate-error]").hidden = true;
-    panel.querySelector("[data-candidate-build-action]").hidden = true;
-    panel.querySelector("[data-candidate-built]").hidden = false;
-    setText(panel.querySelector('[data-candidate-built-field="release_id"]'), releaseId);
-    const builtAt = candidateSafeTime(data.built_at);
-    const builtAtField = panel.querySelector('[data-candidate-built-field="built_at"]');
-    setText(builtAtField, builtAt);
-    if (builtAt === "未报告") builtAtField.removeAttribute("datetime");
-    else builtAtField.setAttribute("datetime", builtAt);
-    const badge = panel.querySelector("[data-candidate-badge]");
-    badge.className = "status-badge status-badge--succeeded";
-    badge.textContent = "候选已构建";
-    setText(panel.querySelector("[data-candidate-message]"), "不可变候选已构建，保持未激活。 ");
-    panel.querySelector('[data-candidate-step="build"]').className = "is-complete";
-    panel.querySelector("[data-candidate-check]").disabled = true;
-    announce("不可变候选已构建，仍未激活。 ");
-  };
-
-  const runCandidateCheck = async (panel) => {
-    const button = panel.querySelector("[data-candidate-check]");
-    setCandidateBusy(button, true, "正在检查…");
-    panel.querySelector("[data-candidate-error]").hidden = true;
-    panel.dataset.state = "checking";
-    const badge = panel.querySelector("[data-candidate-badge]");
-    badge.className = "status-badge status-badge--running";
-    badge.textContent = "检查中";
-    setText(panel.querySelector("[data-candidate-message]"), "正在检查当前运行快照。 ");
-    try {
-      const data = await postJsonEnvelope(panel.dataset.candidateCheckRoute, {
-        run_id: panel.dataset.candidateRunId,
-        minecraft_version: panel.dataset.candidateVersion,
-      });
-      renderCandidateCheck(panel, data);
-    } catch (error) {
-      showCandidateError(panel, error);
-    } finally {
-      setCandidateBusy(button, false, "正在检查…");
-    }
-  };
-
-  const buildCandidate = async (panel) => {
-    const button = panel.querySelector("[data-candidate-build]");
-    const checkId = panel.dataset.candidateCheckId;
-    if (!checkId) return;
-    setCandidateBusy(button, true, "正在构建…");
-    panel.querySelector("[data-candidate-error]").hidden = true;
-    panel.dataset.state = "building";
-    const badge = panel.querySelector("[data-candidate-badge]");
-    badge.className = "status-badge status-badge--running";
-    badge.textContent = "构建中";
-    setText(panel.querySelector("[data-candidate-message]"), "正在构建不可变候选。 ");
-    try {
-      const data = await postJsonEnvelope(panel.dataset.candidateBuildRoute, {
-        check_id: checkId,
-        confirm_immutable_release: true,
-      });
-      renderCandidateBuilt(panel, data);
-    } catch (error) {
-      showCandidateError(panel, error);
-      button.disabled = false;
-    } finally {
-      button.removeAttribute("aria-busy");
-      if (panel.dataset.state !== "built") button.textContent = button.dataset.idleLabel;
-    }
-  };
-
-  const activationReleaseId = (value) => {
-    const text = String(value || "").trim();
-    return /^rel_[0-9a-f]{32}$/.test(text) ? text : null;
-  };
-
-  const activationCheckId = (value) => {
-    const text = String(value || "").trim();
-    return /^activation_[0-9a-f]{32}$/.test(text) ? text : null;
-  };
-
-  const setActivationField = (panel, name, value) => {
-    const field = panel.querySelector(`[data-activation-field="${name}"]`);
-    setText(field, value);
-    if (field?.tagName === "TIME") {
-      if (value === "未报告") field.removeAttribute("datetime");
-      else field.setAttribute("datetime", value);
-    }
-  };
-
-  const syncActivationControls = (panel) => {
-    const busy = panel.dataset.activationBusy === "true";
-    const passed = panel.dataset.activationPassed === "true";
-    const applied = panel.dataset.activationApplied === "true";
-    const target = panel.querySelector("[data-activation-target]");
-    const check = panel.querySelector("[data-activation-check]");
-    const confirmation = panel.querySelector("[data-activation-confirm]");
-    const defaultChoices = Array.from(panel.querySelectorAll("[data-activation-default]"));
-    const apply = panel.querySelector("[data-activation-apply]");
-    const selectedDefault = defaultChoices.some((input) => input.checked);
-
-    if (target) target.disabled = busy || applied;
-    if (check) check.disabled = busy || applied;
-    if (confirmation) confirmation.disabled = busy || applied || !passed;
-    defaultChoices.forEach((input) => { input.disabled = busy || applied || !passed; });
-    if (apply) apply.disabled = busy || applied || !passed || !confirmation?.checked || !selectedDefault;
-
-    const status = panel.querySelector("[data-activation-apply-status]");
-    if (!status || applied) return;
-    if (!passed) setText(status, "激活检查通过后才能应用。");
-    else if (!confirmation?.checked) setText(status, "勾选切换确认后才能应用。");
-    else setText(status, "两项决定已明确，可以应用。");
-  };
-
-  const setActivationBusy = (panel, busy, activeButton, pendingLabel) => {
-    panel.dataset.activationBusy = busy ? "true" : "false";
-    panel.toggleAttribute("aria-busy", busy);
-    if (activeButton) {
-      if (!activeButton.dataset.idleLabel) activeButton.dataset.idleLabel = activeButton.textContent.trim();
-      activeButton.toggleAttribute("aria-busy", busy);
-      activeButton.textContent = busy ? pendingLabel : activeButton.dataset.idleLabel;
-    }
-    syncActivationControls(panel);
-  };
-
-  const invalidateActivationCheck = (panel) => {
-    const checkId = panel.querySelector("[data-activation-check-id]");
-    if (!checkId?.value) return;
-    checkId.value = "";
-    delete panel.dataset.activationCheckId;
-    panel.dataset.activationPassed = "false";
-    panel.dataset.state = "activation-ready";
-    panel.querySelector("[data-activation-check-result]").hidden = true;
-    panel.querySelector("[data-activation-apply-action]").hidden = true;
-    panel.querySelector("[data-activation-blocked]").hidden = true;
-    panel.querySelector("[data-candidate-error]").hidden = true;
-    const confirmation = panel.querySelector("[data-activation-confirm]");
-    if (confirmation) confirmation.checked = false;
-    panel.querySelector('[data-activation-step="check"]').className = "is-current";
-    panel.querySelector('[data-activation-step="apply"]').className = "";
-    const badge = panel.querySelector("[data-candidate-badge]");
-    badge.className = "status-badge status-badge--paused";
-    badge.textContent = "需要重新检查";
-    setText(panel.querySelector("[data-candidate-message]"), "目标 release 已修改；current 尚未切换。请重新运行激活检查。");
-    syncActivationControls(panel);
-  };
-
-  const renderActivationCheck = (panel, data, requestedTarget) => {
-    if (data.run_id !== panel.dataset.candidateRunId || data.minecraft_version !== panel.dataset.candidateVersion) {
-      throw { code: "RELEASE_VERSION_MISMATCH", message: "激活检查结果与当前运行不一致。" };
-    }
-    const targetReleaseId = activationReleaseId(data.target_release_id);
-    if (!targetReleaseId || targetReleaseId !== requestedTarget) {
-      throw { code: "ACTIVATION_CHECK_RESULT_INVALID", message: "激活检查返回了不一致的目标 release。" };
-    }
-    const checkId = activationCheckId(data.activation_check_id);
-    if (!checkId) throw { code: "ACTIVATION_CHECK_RESULT_INVALID", message: "激活检查标识不合法。" };
-
-    const passed = data.status === "passed" && data.can_apply === true;
-    const candidates = Array.isArray(data.candidate_releases) ? data.candidate_releases : [];
-    const expectedCurrent = data.expected_current_sha256 == null
-      ? "尚无 current"
-      : candidateSafeHash(data.expected_current_sha256);
-    const errorCode = /^[A-Z][A-Z0-9_]{1,127}$/.test(String(data.error_code || ""))
-      ? String(data.error_code)
-      : "ACTIVATION_CHECK_FAILED";
-
-    panel.dataset.activationCheckId = checkId;
-    panel.dataset.activationPassed = passed ? "true" : "false";
-    panel.dataset.state = passed ? "activation-passed" : "activation-blocked";
-    panel.querySelector("[data-activation-check-id]").value = checkId;
-    panel.querySelector("[data-candidate-error]").hidden = true;
-    panel.querySelector("[data-activation-check-result]").hidden = false;
-    setActivationField(panel, "activation_check_id", checkId);
-    setActivationField(panel, "target_release_id", targetReleaseId);
-    setActivationField(panel, "candidate_count", String(candidates.length));
-    setActivationField(panel, "expected_current_sha256", expectedCurrent);
-    setActivationField(panel, "updated_at", candidateSafeTime(data.updated_at));
-
-    const badge = panel.querySelector("[data-candidate-badge]");
-    const resultBadge = panel.querySelector("[data-activation-result-badge]");
-    badge.className = `status-badge status-badge--${passed ? "succeeded" : "failed"}`;
-    resultBadge.className = `status-badge status-badge--${passed ? "succeeded" : "failed"}`;
-    badge.textContent = passed ? "检查通过" : "检查未通过";
-    resultBadge.textContent = passed ? "passed" : "failed";
-    setText(
-      panel.querySelector("[data-candidate-message]"),
-      passed ? "激活检查已通过；current 尚未切换。请完成下方确认。" : `${errorCode} · 激活检查未通过，current 未切换。`,
-    );
-    setText(
-      panel.querySelector("[data-activation-check-note]"),
-      passed ? "检查已通过，但 current 尚未切换。" : "检查未通过，current 未切换。",
-    );
-
-    const blocked = panel.querySelector("[data-activation-blocked]");
-    blocked.hidden = passed;
-    setText(blocked.querySelector("[data-activation-blocked-heading]"), errorCode);
-    setText(blocked.querySelector("[data-activation-blocked-message]"), "请按稳定错误码处理后重新检查；current 未切换。");
-    panel.querySelector("[data-activation-apply-action]").hidden = !passed;
-    const confirmation = panel.querySelector("[data-activation-confirm]");
-    if (confirmation) confirmation.checked = false;
-    const defaultTrue = panel.querySelector('[data-activation-default][value="true"]');
-    if (defaultTrue) defaultTrue.checked = true;
-    panel.querySelector('[data-activation-step="check"]').className = passed ? "is-complete" : "is-blocked";
-    panel.querySelector('[data-activation-step="apply"]').className = passed ? "is-current" : "";
-    syncActivationControls(panel);
-    announce(passed ? "激活检查通过；current 尚未切换。" : `激活检查未通过：${errorCode}。`);
-  };
-
-  const runActivationCheck = async (panel) => {
-    if (panel.dataset.activationBusy === "true") return;
-    const form = panel.querySelector("[data-activation-check-form]");
-    const targetInput = panel.querySelector("[data-activation-target]");
-    if (!form.reportValidity()) return;
-    const targetReleaseId = activationReleaseId(targetInput.value);
-    if (!targetReleaseId) {
-      targetInput.setCustomValidity("请输入 rel_ 加 32 位小写十六进制字符。");
-      targetInput.reportValidity();
-      targetInput.setCustomValidity("");
-      return;
-    }
-
-    invalidateActivationCheck(panel);
-    const button = panel.querySelector("[data-activation-check]");
-    setActivationBusy(panel, true, button, "正在检查…");
-    panel.querySelector("[data-candidate-error]").hidden = true;
-    panel.dataset.state = "activation-checking";
-    const badge = panel.querySelector("[data-candidate-badge]");
-    badge.className = "status-badge status-badge--running";
-    badge.textContent = "检查中";
-    setText(panel.querySelector("[data-candidate-message]"), "正在执行激活检查；current 不会在此步骤切换。");
-    try {
-      const data = await postJsonEnvelope(panel.dataset.activationCheckRoute, {
-        run_id: panel.dataset.candidateRunId,
-        minecraft_version: panel.dataset.candidateVersion,
-        target_release_id: targetReleaseId,
-      });
-      renderActivationCheck(panel, data, targetReleaseId);
-    } catch (error) {
-      showCandidateError(panel, error);
-    } finally {
-      setActivationBusy(panel, false, button, "正在检查…");
-    }
-  };
-
-  const renderActivationApplied = (panel, data, setAsDefault) => {
-    const releaseId = activationReleaseId(data.target_release_id);
-    const checkId = activationCheckId(data.activation_check_id);
-    const expectedTarget = activationReleaseId(panel.querySelector('[data-activation-field="target_release_id"]')?.textContent);
-    if (
-      data.status !== "applied"
-      || !releaseId
-      || releaseId !== expectedTarget
-      || !checkId
-      || checkId !== panel.dataset.activationCheckId
-      || data.run_id !== panel.dataset.candidateRunId
-      || data.minecraft_version !== panel.dataset.candidateVersion
-    ) {
-      throw { code: "ACTIVATION_APPLY_RESULT_INVALID", message: "激活结果摘要不完整。" };
-    }
-    panel.dataset.activationApplied = "true";
-    panel.dataset.activationPassed = "false";
-    panel.dataset.state = "activation-applied";
-    panel.querySelector("[data-candidate-error]").hidden = true;
-    panel.querySelector("[data-activation-blocked]").hidden = true;
-    panel.querySelector("[data-activation-apply-action]").hidden = true;
-    panel.querySelector("[data-activation-applied]").hidden = false;
-    setText(panel.querySelector('[data-activation-applied-field="target_release_id"]'), releaseId);
-    setText(panel.querySelector('[data-activation-applied-field="minecraft_version"]'), data.minecraft_version);
-    const updatedAt = candidateSafeTime(data.updated_at);
-    const updatedField = panel.querySelector('[data-activation-applied-field="updated_at"]');
-    setText(updatedField, updatedAt);
-    if (updatedAt === "未报告") updatedField.removeAttribute("datetime");
-    else updatedField.setAttribute("datetime", updatedAt);
-    setText(
-      panel.querySelector("[data-activation-success-message]"),
-      setAsDefault
-        ? `Minecraft ${data.minecraft_version} 的 current 已切换到 ${releaseId}，并设为默认版本。`
-        : `Minecraft ${data.minecraft_version} 的 current 已切换到 ${releaseId}；默认版本保持不变。`,
-    );
-    const badge = panel.querySelector("[data-candidate-badge]");
-    badge.className = "status-badge status-badge--succeeded";
-    badge.textContent = "current 已切换";
-    setText(panel.querySelector("[data-candidate-message]"), `current 已切换到 ${releaseId}。`);
-    panel.querySelector('[data-activation-step="check"]').className = "is-complete";
-    panel.querySelector('[data-activation-step="apply"]').className = "is-complete";
-    syncActivationControls(panel);
-    announce(`current 已切换到 ${releaseId}。`);
-  };
-
-  const applyActivation = async (panel) => {
-    if (panel.dataset.activationBusy === "true" || panel.dataset.activationPassed !== "true") return;
-    const form = panel.querySelector("[data-activation-apply-form]");
-    if (!form.reportValidity()) return;
-    const checkId = activationCheckId(panel.querySelector("[data-activation-check-id]")?.value);
-    const confirmation = panel.querySelector("[data-activation-confirm]")?.checked === true;
-    const selectedDefault = panel.querySelector('[data-activation-default]:checked');
-    if (!checkId || !confirmation || !selectedDefault) return;
-    const setAsDefault = selectedDefault.value === "true";
-    const button = panel.querySelector("[data-activation-apply]");
-    setActivationBusy(panel, true, button, "正在切换…");
-    panel.querySelector("[data-candidate-error]").hidden = true;
-    panel.dataset.state = "activation-applying";
-    const badge = panel.querySelector("[data-candidate-badge]");
-    badge.className = "status-badge status-badge--running";
-    badge.textContent = "应用中";
-    setText(panel.querySelector("[data-candidate-message]"), "正在应用已通过的激活检查并切换 current。");
-    try {
-      const data = await postJsonEnvelope(panel.dataset.activationApplyRoute, {
-        activation_check_id: checkId,
-        confirm_current_switch: confirmation,
-        set_as_default: setAsDefault,
-      });
-      renderActivationApplied(panel, data, setAsDefault);
-    } catch (error) {
-      showCandidateError(panel, error);
-    } finally {
-      setActivationBusy(panel, false, button, "正在切换…");
-    }
-  };
-
-  const initializeReleaseActivation = (panel) => {
-    if (panel.dataset.activationReady === "true") return;
-    panel.dataset.activationReady = "true";
-    panel.dataset.activationBusy = "false";
-    panel.dataset.activationPassed = "false";
-    panel.dataset.activationApplied = "false";
-    const target = panel.querySelector("[data-activation-target]");
-    if (target && !target.value.trim()) {
-      const existingRelease = activationReleaseId(document.querySelector('[data-candidate-built-field="release_id"]')?.textContent);
-      if (existingRelease) target.value = existingRelease;
-    }
-    target?.addEventListener("input", () => invalidateActivationCheck(panel));
-    panel.querySelector("[data-activation-confirm]")?.addEventListener("change", () => syncActivationControls(panel));
-    panel.querySelectorAll("[data-activation-default]").forEach((input) => {
-      input.addEventListener("change", () => syncActivationControls(panel));
-    });
-    panel.querySelector("[data-activation-check-form]")?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      runActivationCheck(panel);
-    });
-    panel.querySelector("[data-activation-apply-form]")?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      applyActivation(panel);
-    });
-    syncActivationControls(panel);
-  };
-
   const initializeReleaseCandidate = (panel) => {
-    if (panel.dataset.candidateReady === "true") return;
+    if (panel.dataset.candidateReady) return;
     panel.dataset.candidateReady = "true";
-    if (panel.matches("[data-release-activation]")) {
-      initializeReleaseActivation(panel);
-      return;
+    const button = panel.querySelector("[data-candidate-build]");
+    const fresh = panel.querySelector("[data-new-build]");
+    const feedback = panel.querySelector("[data-build-feedback]");
+    const key = `blockpedia.build.${panel.dataset.runId}`;
+    const inputs = { run_id: panel.dataset.runId, minecraft_version: panel.dataset.minecraftVersion };
+    const saved = storedOperation(key);
+    if (saved?.signature === JSON.stringify(inputs)) {
+      button.disabled = false;
+      button.textContent = "重试本次构建并读取结果";
+      setText(feedback, saved.release_id
+        ? `候选已构建：${saved.release_id}。可读取本次结果，或前往发布与回滚。`
+        : "已恢复本次构建标识，重试将读取或继续同一次构建。");
     }
-    panel.querySelector("[data-candidate-check]")?.addEventListener("click", () => runCandidateCheck(panel));
-    panel.querySelector("[data-candidate-build]")?.addEventListener("click", () => buildCandidate(panel));
+    fresh.addEventListener("click", () => {
+      sessionStorage.removeItem(key);
+      button.disabled = false;
+      button.textContent = "构建候选";
+      setText(feedback, "已开始新的构建操作。");
+    });
+    button.addEventListener("click", async () => {
+      if (button.disabled) return;
+      button.disabled = fresh.disabled = true;
+      panel.setAttribute("aria-busy", "true");
+      setText(feedback, "正在构建候选…");
+      try {
+        const release_build_id = operationId(key, "build_", inputs);
+        const data = await postJsonEnvelope("/api/releases/build", { ...inputs, release_build_id });
+        if (data.release_build_id !== release_build_id || data.status !== "built") throw { code: "RELEASE_BUILD_RESULT_INVALID" };
+        sessionStorage.setItem(key, JSON.stringify({ signature: JSON.stringify(inputs), id: release_build_id, release_id: data.release_id }));
+        setText(feedback, `候选已构建：${data.release_id}。请前往发布与回滚确认发布。`);
+        button.textContent = "查看本次构建结果";
+      } catch (error) {
+        setText(feedback, `${error.code || "RELEASE_BUILD_RESPONSE_UNAVAILABLE"} · ${error.message || "未收到构建结果，重试将复用本次构建标识。"}`);
+      } finally {
+        button.disabled = fresh.disabled = false;
+        panel.removeAttribute("aria-busy");
+      }
+    });
+  };
+
+  const initializeReleaseManager = (panel) => {
+    const listForm = panel.querySelector("[data-release-list-form]");
+    const form = panel.querySelector("[data-publish-form]");
+    const feedback = panel.querySelector("[data-publish-feedback]");
+    const current = panel.querySelector("[data-release-current]");
+    let loadedVersion;
+    let busy = false;
+    const load = async () => {
+      if (busy || !listForm.reportValidity()) return;
+      busy = true;
+      form.hidden = true;
+      const version = listForm.elements.minecraft_version.value;
+      listForm.querySelector("button").disabled = true;
+      setText(current, "正在读取发布列表…");
+      try {
+        const data = await fetchJsonEnvelope(`/api/releases?minecraft_version=${encodeURIComponent(version)}`);
+        if (version !== listForm.elements.minecraft_version.value) return;
+        loadedVersion = version;
+        form.elements.expected_current_sha256.value = data.current_sha256 || "";
+        form.elements.target_release_id.replaceChildren();
+        (data.releases || []).forEach((release) => {
+          const option = document.createElement("option");
+          option.value = release.release_id;
+          option.textContent = `${release.release_id} · ${release.built_at || ""}`;
+          form.elements.target_release_id.append(option);
+        });
+        const currentRelease = data.current?.versions?.[version]?.release_id || data.current?.release_id;
+        setText(current, currentRelease ? `当前发布：${currentRelease}` : data.current ? "此版本尚未发布。" : "此版本尚未发布。首次发布必须设为默认版本。");
+        form.querySelector('[name="set_as_default"][value="false"]').disabled = !data.current;
+        form.querySelectorAll('[name="set_as_default"]').forEach((input) => { input.checked = false; });
+        form.elements.confirm.checked = false;
+        form.querySelector('[value="rollback"]').disabled = !currentRelease;
+        form.hidden = !(data.releases || []).length;
+        if (data.audit_pending) setText(feedback, "有发布收尾待处理；下一次确认操作会先恢复审计，读取列表不会切换指针。");
+        if (form.hidden) setText(current, "此版本暂无候选，请先完成构建。");
+      } catch (error) {
+        setText(current, `${error.code || "RELEASE_LIST_UNAVAILABLE"} · 读取失败，请重试。`);
+      } finally { busy = false; listForm.querySelector("button").disabled = false; }
+    };
+    listForm.addEventListener("submit", (event) => { event.preventDefault(); setText(feedback, ""); load(); });
+    listForm.elements.minecraft_version.addEventListener("input", () => { form.hidden = true; });
+    form.elements.target_release_id.addEventListener("change", () => { form.elements.confirm.checked = false; });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (busy || !form.reportValidity() || loadedVersion !== listForm.elements.minecraft_version.value) return;
+      const action = event.submitter?.value === "rollback" ? "rollback" : "publish";
+      const payload = {
+        minecraft_version: loadedVersion,
+        target_release_id: form.elements.target_release_id.value,
+        expected_current_sha256: form.elements.expected_current_sha256.value || null,
+        confirm: form.elements.confirm.checked,
+        set_as_default: form.elements.set_as_default.value === "true",
+        reviewer: form.elements.reviewer.value.trim(),
+        reason: form.elements.reason.value.trim(),
+      };
+      if (!payload.reviewer || !payload.reason) { setText(feedback, "请填写发布者与原因。"); return; }
+      busy = true;
+      const controls = Array.from(panel.querySelectorAll("input, select, button"));
+      const disabled = controls.map((control) => control.disabled);
+      controls.forEach((control) => { control.disabled = true; });
+      panel.setAttribute("aria-busy", "true");
+      setText(feedback, action === "rollback" ? "正在回滚…" : "正在发布…");
+      try {
+        const data = await postJsonEnvelope(`/api/releases/${action}`, payload);
+        if (!data.applied) throw { code: "RELEASE_NOT_APPLIED" };
+        form.hidden = true;
+        setText(current, `当前发布：${data.target_release_id}`);
+        const warning = data.warnings?.includes("PUBLISH_FINALIZE_PENDING")
+          ? "指针已切换，但持久化确认未完成，请在重启后核对当前发布。"
+          : data.warnings?.length ? "审计记录待完成；发布已生效，无需重复切换。" : "";
+        setText(feedback, `${data.status === "rolled_back" ? "已回滚" : "已发布"}：${data.target_release_id}。${warning}`);
+      } catch (error) {
+        form.hidden = true;
+        setText(feedback, `${error.code || "RELEASE_RESPONSE_UNAVAILABLE"} · ${error.message || "未收到发布结果。"} 请重新读取列表核对当前发布，再决定是否操作。`);
+      } finally {
+        controls.forEach((control, index) => { control.disabled = disabled[index]; });
+        panel.removeAttribute("aria-busy");
+        busy = false;
+      }
+    });
+    load();
   };
 
   body.addEventListener("error", (event) => {
@@ -2448,16 +1718,7 @@
     }
     const locate = event.target.closest("[data-locate-current]");
     if (locate) locateCurrentStage(locate.closest("#run-panel"));
-    const reselect = event.target.closest("[data-reselect-export]");
-    if (reselect) {
-      const chooserForm = document.querySelector("[data-import-check-form]");
-      chooserForm?.dispatchEvent(new CustomEvent("directory:reselect", {
-        detail: {
-          exportId: reselect.dataset.exportId,
-          minecraftVersion: reselect.dataset.minecraftVersion,
-        },
-      }));
-    }
+
   });
 
   body.addEventListener("keydown", (event) => {
@@ -2505,16 +1766,10 @@
   }, true);
 
   body.addEventListener("submit", (event) => {
-    const importForm = event.target.closest("[data-import-check-form]");
+    const importForm = event.target.closest("[data-import-form]");
     if (importForm) {
       event.preventDefault();
       performSelectedAction(importForm);
-      return;
-    }
-    const importAction = event.target.closest("[data-import-action]");
-    if (importAction) {
-      event.preventDefault();
-      submitImportAction(importAction);
       return;
     }
     const commandForm = event.target.closest("[data-run-command]");
@@ -2597,12 +1852,13 @@
     announce("页面内容已更新。");
   });
 
-  document.querySelectorAll("[data-import-check-form]").forEach(initializeDirectoryChooser);
+  document.querySelectorAll("[data-import-form]").forEach(initializeDirectoryChooser);
   document.querySelectorAll("[data-provider-form]").forEach(initializeProviderForm);
   document.querySelectorAll("[data-review-form]").forEach(initializeReviewForm);
   document.querySelectorAll("[data-explicit-confirmation]").forEach(initializeExplicitConfirmation);
   document.querySelectorAll("[data-ai-control]").forEach(initializeAIControl);
   document.querySelectorAll("[data-release-candidate]").forEach(initializeReleaseCandidate);
+  document.querySelectorAll("[data-release-manager]").forEach(initializeReleaseManager);
   updateReviewContinue();
   initializeSnapshotStreams();
   const runPanel = document.getElementById("run-panel");

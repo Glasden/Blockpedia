@@ -1,337 +1,151 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
-
 import pytest
 from fastapi.testclient import TestClient
-
 from blockpedia.services import R3Error
 from blockpedia.web import create_app
 
-
-HASH = "sha256:" + "0" * 64
-CHECK_DATA = {
-    "check_id": "check_" + "a" * 32,
-    "release_build_id": "build_" + "b" * 32,
-    "run_id": "run_01J",
-    "minecraft_version": "26.2",
-    "status": "passed",
-    "can_build": False,
-    "snapshot_fingerprint": HASH,
-    "quality_report_sha256": HASH,
-    "created_at": "2026-08-15T12:00:00Z",
-    "updated_at": "2026-08-15T12:00:00Z",
-}
-BUILD_DATA = {
-    "check_id": CHECK_DATA["check_id"],
-    "release_build_id": CHECK_DATA["release_build_id"],
-    "release_id": "rel_" + "c" * 32,
-    "run_id": "run_01J",
-    "minecraft_version": "26.2",
-    "relative_path": "releases/26.2/rel_" + "c" * 32,
-    "status": "built",
-    "manifest_sha256": HASH,
-    "quality_report_sha256": HASH,
-    "checksums_sha256": HASH,
-    "built_at": "2026-08-15T12:00:00Z",
-}
-
+HASH = 'sha256:' + '0' * 64
+RUN = 'run_' + 'a' * 32
+BUILD = 'build_' + 'b' * 32
+RELEASE = 'rel_' + 'c' * 32
+BUILD_DATA = dict(release_build_id=BUILD, release_id=RELEASE, run_id=RUN,
+                  minecraft_version='26.2', relative_path='releases/26.2/' + RELEASE,
+                  status='built', manifest_sha256=HASH, quality_report_sha256=HASH,
+                  built_at='2026-09-26T12:00:00Z')
+BUILD_BODY = dict(run_id=RUN, minecraft_version='26.2', release_build_id=BUILD)
+PUBLISH_BODY = dict(minecraft_version='26.2', target_release_id=RELEASE,
+                    expected_current_sha256=None, confirm=True, set_as_default=True,
+                    reviewer='operator', reason='first release')
 
 class StubReleaseService:
     worker = None
-
-    def __init__(self) -> None:
-        self.check_calls: list[tuple[str, str]] = []
-        self.build_calls: list[tuple[str, bool]] = []
-        self.check_result: dict[str, Any] = dict(CHECK_DATA)
-        self.build_result: dict[str, Any] = dict(BUILD_DATA)
-        self.check_error: str | None = None
-        self.build_error: str | None = None
-
-    def stale_markers(self) -> list[object]:
-        return []
-
-    def check_candidate_release(self, run_id: str, minecraft_version: str) -> dict[str, Any]:
-        self.check_calls.append((run_id, minecraft_version))
-        if self.check_error:
-            raise R3Error(self.check_error, "C:\\private\\traceback.txt secret=hidden")
-        return dict(self.check_result)
-
-    def build_candidate_release(self, check_id: str, *, confirm_immutable_release: bool) -> dict[str, Any]:
-        self.build_calls.append((check_id, confirm_immutable_release))
-        if self.build_error:
-            raise R3Error(self.build_error, "C:\\private\\traceback.txt secret=hidden")
+    def __init__(self):
+        self.calls = []
+        self.build_result = dict(BUILD_DATA)
+        self.error = None
+    def stale_markers(self): return []
+    def build_candidate_release(self, run_id, minecraft_version, release_build_id):
+        self.calls.append((run_id, minecraft_version, release_build_id))
+        if self.error: raise R3Error(self.error, 'C:\\private\\secret.txt')
         return dict(self.build_result)
-
+    def list_releases(self, minecraft_version):
+        self.calls.append(('list', minecraft_version))
+        return dict(minecraft_version=minecraft_version, releases=[BUILD_DATA], current=None, current_sha256=None)
+    def publish_release(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error: raise R3Error(self.error, 'private diagnostic')
+        return dict(applied=True, minecraft_version=kwargs['minecraft_version'], target_release_id=RELEASE,
+                    current={'release_id': RELEASE}, current_sha256=HASH,
+                    status='rolled_back' if kwargs['rollback'] else 'published', warnings=['AUDIT_PENDING'])
 
 @pytest.fixture
-def release_context(tmp_path: Path):
+def release_context():
     service = StubReleaseService()
-    app = create_app(data_root=tmp_path, service=service, start_worker=False)  # type: ignore[arg-type]
-    with TestClient(app) as client:
+    with TestClient(create_app(service=service, start_worker=False)) as client:
         yield client, service
 
+@pytest.mark.parametrize('body', [dict(check_id='old', confirm_immutable_release=True), {},
+    {**BUILD_BODY, 'check_id': 'old'}, {**BUILD_BODY, 'release_build_id': 'build_invalid'},
+    {**BUILD_BODY, 'minecraft_version': 26.2}])
+def test_build_strict_three_fields(release_context, body):
+    client, service = release_context
+    assert client.post('/api/releases/build', json=body).status_code == 422
+    assert not service.calls
 
-def _assert_error(response, status: int) -> dict[str, Any]:
+@pytest.mark.parametrize('reused,status', [(False, 201), (True, 200)])
+def test_build_passes_client_identity_and_preserves_receipt(release_context, reused, status):
+    client, service = release_context
+    service.build_result['reused'] = reused
+    response = client.post('/api/releases/build', json=BUILD_BODY)
     assert response.status_code == status
-    payload = response.json()
-    assert payload["ok"] is False
-    assert isinstance(payload["request_id"], str)
-    assert isinstance(payload["error_code"], str)
-    assert isinstance(payload["message"], str)
-    assert isinstance(payload["field_errors"], dict)
-    assert isinstance(payload["retryable"], bool)
-    return payload
+    assert response.json()['data'] == {**BUILD_DATA, 'reused': reused}
+    assert service.calls == [(RUN, '26.2', BUILD)]
 
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        {"run_id": "run_01J"},
-        {"minecraft_version": "26.2"},
-        {"run_id": 1, "minecraft_version": "26.2"},
-        {"run_id": "run_01J", "minecraft_version": 26.2},
-        {"run_id": "run_01J", "minecraft_version": "26.2", "extra": True},
-    ],
-)
-def test_release_check_requires_exact_strict_body(release_context, body: dict[str, Any]) -> None:
+@pytest.mark.parametrize('field,value', [('relative_path', '/private/path'), ('manifest_sha256', 'bad'), ('release_build_id', 'bad')])
+def test_build_receipt_fails_closed(release_context, field, value):
     client, service = release_context
-    response = client.post("/api/releases/check", json=body)
-    payload = _assert_error(response, 400)
-    assert payload["error_code"] == "INVALID_INPUT"
-    assert service.check_calls == []
+    service.build_result[field] = value
+    response = client.post('/api/releases/build', json=BUILD_BODY)
+    assert response.status_code == 500
+    assert '/private/path' not in response.text
 
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        {"check_id": "check_" + "a" * 32},
-        {"confirm_immutable_release": True},
-        {"check_id": 1, "confirm_immutable_release": True},
-        {"check_id": "check_" + "a" * 32, "confirm_immutable_release": 1},
-        {"check_id": "check_" + "a" * 32, "confirm_immutable_release": "true"},
-        {"check_id": "check_" + "a" * 32, "confirm_immutable_release": False},
-        {"check_id": "check_" + "a" * 32, "confirm_immutable_release": True, "extra": True},
-    ],
-)
-def test_release_build_requires_exact_true_strict_body(release_context, body: dict[str, Any]) -> None:
+@pytest.mark.parametrize('route', ['publish', 'rollback'])
+def test_publish_confirmation_and_audit_warning_are_success(release_context, route):
     client, service = release_context
-    response = client.post("/api/releases/build", json=body)
-    payload = _assert_error(response, 400)
-    assert payload["error_code"] == "INVALID_INPUT"
-    assert service.build_calls == []
-
-
-def test_release_check_returns_200_for_blocked_gate_without_changing_backend_data(release_context) -> None:
-    client, service = release_context
-    service.check_result = dict(CHECK_DATA)
-    response = client.post(
-        "/api/releases/check",
-        json={"run_id": "run_01J", "minecraft_version": "26.2"},
-    )
+    response = client.post('/api/releases/' + route, json=PUBLISH_BODY)
     assert response.status_code == 200
-    data = response.json()["data"]
-    assert set(data) == set(CHECK_DATA)
-    assert data == CHECK_DATA
-    assert service.check_calls == [("run_01J", "26.2")]
+    assert response.json()['data']['applied'] is True
+    assert response.json()['data']['warnings'] == ['AUDIT_PENDING']
+    assert service.calls == [{**PUBLISH_BODY, 'rollback': route == 'rollback'}]
 
-
-def test_release_build_returns_201_and_passes_true_confirmation(release_context) -> None:
+@pytest.mark.parametrize('change', [dict(confirm=False), dict(confirm=1), dict(set_as_default='true'),
+    dict(reviewer=' '), dict(reason='\n'), dict(expected_current_sha256='bad'), dict(check_id='old')])
+def test_publish_rejects_invalid_input(release_context, change):
     client, service = release_context
-    response = client.post(
-        "/api/releases/build",
-        json={"check_id": CHECK_DATA["check_id"], "confirm_immutable_release": True},
-    )
-    assert response.status_code == 201
-    data = response.json()["data"]
-    assert set(data) == set(BUILD_DATA)
-    assert data == BUILD_DATA
-    assert data["manifest_sha256"] == HASH
-    assert data["quality_report_sha256"] == HASH
-    assert data["checksums_sha256"] == HASH
-    assert service.build_calls == [(CHECK_DATA["check_id"], True)]
+    assert client.post('/api/releases/publish', json={**PUBLISH_BODY, **change}).status_code == 422
+    assert not service.calls
 
-
-@pytest.mark.parametrize(
-    "code,status",
-    [
-        ("RUN_NOT_FOUND", 404),
-        ("RELEASE_CHECK_NOT_READY", 409),
-        ("RELEASE_VERSION_MISMATCH", 409),
-        ("DATABASE_SCHEMA_MISMATCH", 422),
-        ("RELEASE_CHECK_FAILED", 422),
-        ("RELEASE_CHECK_STALE", 409),
-    ],
-)
-def test_release_check_error_mapping(release_context, code: str, status: int) -> None:
+@pytest.mark.parametrize('missing', ['set_as_default', 'expected_current_sha256'])
+def test_publish_requires_explicit_default_and_current_token(release_context, missing):
     client, service = release_context
-    service.check_error = code
-    payload = _assert_error(
-        client.post(
-            "/api/releases/check",
-            json={"run_id": "run_01J", "minecraft_version": "26.2"},
-        ),
-        status,
-    )
-    assert payload["error_code"] == code
-    assert payload["retryable"] is False
+    body = dict(PUBLISH_BODY); body.pop(missing)
+    assert client.post('/api/releases/publish', json=body).status_code == 422
+    assert not service.calls
 
-
-@pytest.mark.parametrize(
-    "code,status,retryable",
-    [
-        ("RELEASE_CHECK_NOT_FOUND", 404, False),
-        ("RELEASE_CHECK_NOT_READY", 409, False),
-        ("RELEASE_ALREADY_BUILT", 409, False),
-        ("RELEASE_BUILD_INTEGRITY_FAILED", 422, False),
-        ("WORKER_UNAVAILABLE", 503, True),
-        ("RELEASE_BUILD_FAILED", 500, False),
-    ],
-)
-def test_release_build_error_mapping(release_context, code: str, status: int, retryable: bool) -> None:
+@pytest.mark.parametrize('code,status', [('RUN_NOT_FOUND',404), ('RELEASE_NOT_FOUND',404),
+    ('RELEASE_BUILD_CONFLICT',409), ('RELEASE_FORMAT_UNSUPPORTED',409), ('CURRENT_SWITCH_BUSY',409)])
+def test_release_stable_errors(release_context, code, status):
     client, service = release_context
-    service.build_error = code
-    payload = _assert_error(
-        client.post(
-            "/api/releases/build",
-            json={"check_id": CHECK_DATA["check_id"], "confirm_immutable_release": True},
-        ),
-        status,
-    )
-    assert payload["error_code"] == code
-    assert payload["retryable"] is retryable
+    service.error = code
+    response = client.post('/api/releases/build', json=BUILD_BODY)
+    assert response.status_code == status
+    assert response.json()['error_code'] == code
+    assert 'private' not in response.text
 
-
-def test_release_adapter_redacts_absolute_paths_secrets_and_trace(release_context) -> None:
+def test_release_list_and_page_need_no_workspace(release_context):
     client, service = release_context
-    service.check_result = {
-        **CHECK_DATA,
-        "absolute_path": r"C:\private\release\secret.txt",
-        "secret": "sk-test-secret",
-        "trace": "Traceback (most recent call last): query=secret",
-        "relative_path": r"C:\private\release",
-    }
-    response = client.post(
-        "/api/releases/check",
-        json={"run_id": "run_01J", "minecraft_version": "26.2"},
-    )
+    assert client.get('/releases').status_code == 200
+    assert service.calls == []
+    assert client.get('/api/releases').status_code == 422
+    assert client.get('/api/releases?minecraft_version=26.2&minecraft_version=1.0').status_code == 422
+    response = client.get('/api/releases?minecraft_version=26.2')
     assert response.status_code == 200
-    serialized = response.text
-    assert r"C:\private\release\secret.txt" not in serialized
-    assert "sk-test-secret" not in serialized
-    assert "Traceback" not in serialized
-    assert "query=secret" not in serialized
-    assert response.json()["data"] == CHECK_DATA
+    assert response.json()['data']['current_sha256'] is None
+    assert service.calls == [('list', '26.2')]
 
-    service.build_error = "RELEASE_BUILD_FAILED"
-    error = client.post(
-        "/api/releases/build",
-        json={"check_id": CHECK_DATA["check_id"], "confirm_immutable_release": True},
-    )
-    assert r"C:\private\traceback.txt" not in error.text
-    assert "secret=hidden" not in error.text
-
-
-@pytest.mark.parametrize(
-    "field,bad_value",
-    [
-        ("check_id", "check_invalid"),
-        ("release_build_id", "build_invalid"),
-        ("run_id", r"C:\\private\\run"),
-        ("minecraft_version", "not-a-version"),
-        ("status", "blocked"),
-        ("can_build", "false"),
-        ("snapshot_fingerprint", "C:\\private\\trace"),
-        ("quality_report_sha256", "sha256:bad"),
-        ("created_at", "Traceback"),
-    ],
-)
-def test_release_check_invalid_backend_field_fails_closed(
-    release_context, field: str, bad_value: Any
-) -> None:
-    client, service = release_context
-    service.check_result = {**CHECK_DATA, field: bad_value}
-    response = client.post(
-        "/api/releases/check",
-        json={"run_id": "run_01J", "minecraft_version": "26.2"},
-    )
-    payload = _assert_error(response, 422)
-    assert payload["error_code"] == "RELEASE_CHECK_FAILED"
-    assert "C:\\private" not in response.text
-    assert "Traceback" not in response.text
-
-
-def test_release_check_missing_backend_field_fails_closed(release_context) -> None:
-    client, service = release_context
-    service.check_result = dict(CHECK_DATA)
-    service.check_result.pop("quality_report_sha256")
-    response = client.post(
-        "/api/releases/check",
-        json={"run_id": "run_01J", "minecraft_version": "26.2"},
-    )
-    payload = _assert_error(response, 422)
-    assert payload["error_code"] == "RELEASE_CHECK_FAILED"
-
-
-@pytest.mark.parametrize(
-    "field,bad_value",
-    [
-        ("check_id", "check_invalid"),
-        ("release_build_id", "build_invalid"),
-        ("release_id", "rel_invalid"),
-        ("run_id", r"C:\\private\\run"),
-        ("minecraft_version", "not-a-version"),
-        ("relative_path", r"C:\\private\\release"),
-        ("status", "passed"),
-        ("manifest_sha256", "sha256:bad"),
-        ("quality_report_sha256", "Traceback"),
-        ("checksums_sha256", "C:\\private\\checksums"),
-        ("built_at", "not-a-time"),
-    ],
-)
-def test_release_build_invalid_backend_field_fails_closed(
-    release_context, field: str, bad_value: Any
-) -> None:
-    client, service = release_context
-    service.build_result = {**BUILD_DATA, field: bad_value}
-    response = client.post(
-        "/api/releases/build",
-        json={"check_id": CHECK_DATA["check_id"], "confirm_immutable_release": True},
-    )
-    payload = _assert_error(response, 500)
-    assert payload["error_code"] == "RELEASE_BUILD_FAILED"
-    assert "C:\\private" not in response.text
-    assert "Traceback" not in response.text
-
-
-def test_release_build_missing_backend_field_fails_closed(release_context) -> None:
-    client, service = release_context
-    service.build_result = dict(BUILD_DATA)
-    service.build_result.pop("checksums_sha256")
-    response = client.post(
-        "/api/releases/build",
-        json={"check_id": CHECK_DATA["check_id"], "confirm_immutable_release": True},
-    )
-    payload = _assert_error(response, 500)
-    assert payload["error_code"] == "RELEASE_BUILD_FAILED"
-
-
-def test_release_route_surface_includes_activation_and_excludes_rollback(release_context) -> None:
+def test_removed_endpoints_have_no_routes(release_context):
     client, _ = release_context
     paths = {route.path for route in client.app.routes}
-    assert {path for path in paths if path.startswith("/api/releases")} == {
-        "/api/releases/check",
-        "/api/releases/build",
-        "/api/releases/activation-check",
-        "/api/releases/apply",
-    }
-    for path in (
-        "/api/releases/rollback",
-        "/api/releases/cleanup",
-        "/api/releases/unknown",
-        "/api/current",
-        "/api/search-tests",
-        "/api/mcp",
-    ):
-        assert client.post(path, json={}).status_code == 404
+    assert {path for path in paths if path.startswith('/api/releases')} == {
+        '/api/releases', '/api/releases/build', '/api/releases/publish', '/api/releases/rollback'}
+    for route in ['/api/releases/check', '/api/releases/activation-check', '/api/releases/apply', '/ui/imports/check', '/imports/checks/old']:
+        response = client.get(route) if route.startswith('/imports/') else client.post(route, json={})
+        assert response.status_code == 404
+    assert not any('banner-export-refresh' in path or '/imports/checks' in path for path in paths)
+
+
+def test_run_page_keeps_build_controls_after_new_terminal_state(release_context, monkeypatch):
+    client, service = release_context
+    run = dict(run_id=RUN, minecraft_version='26.2', current_stage='BUILD_RELEASE',
+               status='pending', boundary_event='R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING')
+    monkeypatch.setattr(service, 'get_run', lambda run_id: dict(run), raising=False)
+    before = client.get('/runs/' + RUN)
+    assert before.status_code == 200
+    assert 'data-release-candidate' in before.text
+    assert client.post('/api/releases/build', json=BUILD_BODY).status_code == 201
+    # The new builder's _finish() writes this terminal state.
+    run.update(status='succeeded', current_stage='BUILD_RELEASE', boundary_event='RELEASE_BUILT')
+    refreshed = client.get('/runs/' + RUN)
+    assert refreshed.status_code == 200
+    assert 'data-release-candidate data-build-complete="true"' in refreshed.text
+    assert 'data-candidate-build disabled' in refreshed.text
+    assert 'data-new-build' in refreshed.text
+    assert '该运行已构建候选' in refreshed.text
+    assert 'data-ai-configure' not in refreshed.text
+    # A retained client ID reads the same receipt, instead of making a new build.
+    service.build_result['reused'] = True
+    retried = client.post('/api/releases/build', json=BUILD_BODY)
+    assert retried.status_code == 200
+    assert retried.json()['data']['release_build_id'] == BUILD

@@ -12,9 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from .directory_chooser import DirectoryChooser
-from .banner_refresh import BannerRefreshFailure, refresh_banner_workspace
 from .activation import ActivationError, ActivationService
-from .importer import ImportCheck, ImportCheckInProgress, ImportCheckStart, ImportService
+from .importer import ImportService
 from .paths import DataRoot, resolve_data_root
 from .search import WorkspaceQueryService, human_semantics_complete
 from .stages import R3_BUILD_RELEASE_BOUNDARY_EVENT, R3_BOUNDARY_EVENT, R3_CANDIDATE_BUILT_BOUNDARY_EVENT, RunStateConflict, STUDIO_STAGES, require_transition
@@ -51,7 +50,8 @@ from .r3 import (
     sha256_bytes,
     sha256_json,
 )
-from .releases import ReleaseBuildFailure, ReleaseBuilder, ReleaseCheckNotFound
+from .releases import ReleaseBuildFailure, ReleaseBuilder
+from .local_files import StudioLease
 
 
 class R3Error(RuntimeError):
@@ -77,40 +77,45 @@ class StudioService:
     ):
         self.data_root = data_root if isinstance(data_root, DataRoot) else resolve_data_root(data_root)
         self.data_root.ensure_layout()
-        self.profile_store = ProviderProfileStore(path=self.data_root.cache / "provider-profiles.json")
-        self.secret_resolver = secret_resolver or SecretResolver()
-        self.provider_factory = provider_factory
-        self.probe_factory = probe_factory
-        self.directory_chooser = DirectoryChooser(self.data_root)
-        self.imports = ImportService(
-            self.data_root,
-            repo_root=repo_root,
-            force_normalized_like=force_normalized_like,
-            chooser=self.directory_chooser,
-        )
-        self.worker = WorkerService(
-            self.data_root,
-            repo_root=repo_root,
-            force_normalized_like=force_normalized_like,
-            toolchain_probe=toolchain_probe,
-            provider_factory=provider_factory,
-            profile_store=self.profile_store,
-            secret_resolver=self.secret_resolver,
-        )
-        self.run_snapshots = RunSnapshotService(self.data_root, stale_after_seconds=self.worker.stale_after_seconds)
-        self.release_builder = ReleaseBuilder(
-            self.data_root,
-            repo_root=self.worker.repo_root,
-            force_normalized_like=force_normalized_like,
-            pre_rename_hook=release_pre_rename_hook,
-        )
-        self.activation = ActivationService(
-            self.data_root,
-            repo_root=self.worker.repo_root,
-            force_normalized_like=force_normalized_like,
-        )
-        self._close_lock = threading.RLock()
-        self._closed = False
+        self._writer_lease = StudioLease(self.data_root)
+        try:
+            self.profile_store = ProviderProfileStore(path=self.data_root.cache / "provider-profiles.json")
+            self.secret_resolver = secret_resolver or SecretResolver()
+            self.provider_factory = provider_factory
+            self.probe_factory = probe_factory
+            self.directory_chooser = DirectoryChooser(self.data_root)
+            self.imports = ImportService(
+                self.data_root,
+                repo_root=repo_root,
+                force_normalized_like=force_normalized_like,
+                chooser=self.directory_chooser,
+            )
+            self.worker = WorkerService(
+                self.data_root,
+                repo_root=repo_root,
+                force_normalized_like=force_normalized_like,
+                toolchain_probe=toolchain_probe,
+                provider_factory=provider_factory,
+                profile_store=self.profile_store,
+                secret_resolver=self.secret_resolver,
+            )
+            self.run_snapshots = RunSnapshotService(self.data_root, stale_after_seconds=self.worker.stale_after_seconds)
+            self.release_builder = ReleaseBuilder(
+                self.data_root,
+                repo_root=self.worker.repo_root,
+                force_normalized_like=force_normalized_like,
+                pre_rename_hook=release_pre_rename_hook,
+            )
+            self.activation = ActivationService(
+                self.data_root,
+                repo_root=self.worker.repo_root,
+                force_normalized_like=force_normalized_like,
+            )
+            self._close_lock = threading.RLock()
+            self._closed = False
+        except BaseException:
+            self._writer_lease.close()
+            raise
 
     def close(self, *, timeout: float | None = 2.0) -> bool:
         with self._close_lock:
@@ -120,150 +125,65 @@ class StudioService:
             if not worker_closed:
                 return False
             self.imports.close()
+            self._writer_lease.close()
             self._closed = True
             return True
 
     # ---- R3 Phase C candidate check/build --------------------------------------
 
-    def check_candidate_release(self, run_id: str, minecraft_version: str) -> dict[str, Any]:
-        """Synchronously execute Gate C and persist its immutable check cache."""
 
-        try:
-            with self.worker.run_lock(run_id):
-                try:
-                    actual_version = self.worker._find_run_version(run_id)
-                except KeyError as exc:
-                    raise R3Error("RUN_NOT_FOUND") from exc
-                except DatabaseSchemaMismatch as exc:
-                    raise R3Error("DATABASE_SCHEMA_MISMATCH") from exc
-                if actual_version != minecraft_version:
-                    raise R3Error("RELEASE_VERSION_MISMATCH")
-                return self.release_builder.check(run_id, minecraft_version)
-        except R3Error:
-            raise
-        except ReleaseBuildFailure as exc:
-            code = exc.code if exc.code in {"RUN_NOT_FOUND", "RELEASE_VERSION_MISMATCH", "RELEASE_CHECK_NOT_READY", "DATABASE_SCHEMA_MISMATCH"} else "RELEASE_CHECK_FAILED"
-            raise R3Error(code) from exc
-        except (KeyError, ValueError, TypeError) as exc:
-            raise R3Error("RUN_NOT_FOUND") from exc
 
-    def build_candidate_release(self, check_id: str, confirm_immutable_release: bool = True) -> dict[str, Any]:
-        """Build exactly one immutable, not-yet-activated candidate."""
 
-        if confirm_immutable_release is not True:
-            raise R3Error("INVALID_INPUT")
-        try:
-            checked = self.release_builder.get_check_state(check_id)
-        except ReleaseCheckNotFound as exc:
-            raise R3Error("RELEASE_CHECK_NOT_FOUND") from exc
-        except ReleaseBuildFailure as exc:
-            raise R3Error(exc.code) from exc
-        run_id = str(checked.value["run_id"])
-        minecraft_version = str(checked.value["minecraft_version"])
-        try:
-            with self.worker.run_lock(run_id):
-                result = self.release_builder.build(check_id)
-                with WorkspaceDatabase.open(
-                    self.data_root.workspace_dir(minecraft_version, run_id) / "work.sqlite3",
-                    force_normalized_like=True,
-                ) as database:
-                    self._reconcile_candidate_workspace(database, run_id, result)
-                self.release_builder._mark_built(checked.value, result["release_id"])
-                return result
-        except R3Error:
-            raise
-        except ReleaseCheckNotFound as exc:
-            raise R3Error("RELEASE_CHECK_NOT_FOUND") from exc
-        except ReleaseBuildFailure as exc:
-            raise R3Error(exc.code) from exc
-        except DatabaseSchemaMismatch as exc:
-            raise R3Error("DATABASE_SCHEMA_MISMATCH") from exc
-        except (sqlite3.Error, OSError) as exc:
-            raise R3Error("RELEASE_BUILD_FAILED") from exc
-        except (KeyError, ValueError, TypeError) as exc:
-            raise R3Error("RELEASE_BUILD_FAILED") from exc
-        except Exception as exc:
-            raise R3Error("RELEASE_BUILD_FAILED") from exc
 
-    def _reconcile_candidate_workspace(self, database: WorkspaceDatabase, run_id: str, result: dict[str, Any]) -> None:
-        with database.transaction() as connection:
-            run = connection.execute("SELECT status,current_stage,boundary_event FROM runs WHERE run_id=?", (run_id,)).fetchone()
-            build_stage = connection.execute("SELECT status FROM stage_runs WHERE run_id=? AND stage='BUILD_RELEASE'", (run_id,)).fetchone()
-            activate_stage = connection.execute("SELECT status FROM stage_runs WHERE run_id=? AND stage='ACTIVATE_RELEASE'", (run_id,)).fetchone()
-            if run is None or build_stage is None or activate_stage is None:
-                raise R3Error("RELEASE_BUILD_FAILED")
-            now = result["built_at"]
-            cursor = canonical_json({"release_id": result["release_id"], "release_build_id": result["release_build_id"], "completed": True})
-            if run["boundary_event"] == R3_CANDIDATE_BUILT_BOUNDARY_EVENT:
-                if run["status"] != "paused" or run["current_stage"] != "ACTIVATE_RELEASE" or build_stage["status"] != "succeeded" or activate_stage["status"] != "pending":
-                    raise R3Error("RELEASE_BUILD_FAILED")
-                try:
-                    original_lineage = self.release_builder._read_repeat_cursor_lineage(
-                        connection,
-                        run_id,
-                        failure_code="RELEASE_BUILD_INTEGRITY_FAILED",
-                    )
-                    # A committed first build can reach this branch before
-                    # _mark_built succeeds.  Replaying that same check only
-                    # completes its cache state; it is not a new repeat
-                    # candidate and must not add another audit.
-                    if original_lineage == (result["release_id"], result["release_build_id"]):
-                        return
-                    self.release_builder._validate_repeat_candidate_lineage(
-                        connection,
-                        run_id,
-                        str(result["minecraft_version"]),
-                        snapshot=None,
-                        failure_code="RELEASE_BUILD_INTEGRITY_FAILED",
-                    )
-                except ReleaseBuildFailure as exc:
-                    raise R3Error(exc.code) from exc
-                # A repeat build intentionally leaves the workspace stage and
-                # its original cursor untouched.  The new immutable release
-                # gets its own idempotent boundary audit, keyed by both IDs.
-                seen_release = False
-                for audit in connection.execute(
-                    "SELECT details_json FROM audit_events WHERE run_id=? AND event_type=?",
-                    (run_id, R3_CANDIDATE_BUILT_BOUNDARY_EVENT),
-                ):
-                    details = _load_object(audit["details_json"])
-                    if details.get("release_id") == result["release_id"]:
-                        if details.get("release_build_id") != result["release_build_id"]:
-                            raise R3Error("RELEASE_BUILD_INTEGRITY_FAILED")
-                        seen_release = True
-                        break
-                if not seen_release:
-                    connection.execute(
-                        "INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)",
-                        (_audit_id(), R3_CANDIDATE_BUILT_BOUNDARY_EVENT, run_id, canonical_json({"release_id": result["release_id"], "release_build_id": result["release_build_id"]}), now),
-                    )
-            elif run["status"] == "paused" and run["current_stage"] == "BUILD_RELEASE" and build_stage["status"] == "pending" and activate_stage["status"] == "pending":
-                connection.execute("UPDATE stage_runs SET status='succeeded',worker_id=NULL,heartbeat_at=?,finished_at=?,cursor_json=? WHERE run_id=? AND stage='BUILD_RELEASE' AND status='pending'", (now, now, cursor, run_id))
-                connection.execute("UPDATE runs SET status='paused',current_stage='ACTIVATE_RELEASE',boundary_event=?,finished_at=NULL WHERE run_id=? AND status='paused' AND current_stage='BUILD_RELEASE'", (R3_CANDIDATE_BUILT_BOUNDARY_EVENT, run_id))
-                connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_audit_id(), R3_CANDIDATE_BUILT_BOUNDARY_EVENT, run_id, canonical_json({"release_id": result["release_id"], "release_build_id": result["release_build_id"]}), now))
-            else:
-                raise R3Error("RELEASE_BUILD_FAILED")
-
-    def check_activation(self, run_id: str, minecraft_version: str, target_release_id: str) -> dict[str, Any]:
-        try:
-            with self.worker.run_lock(run_id):
-                return self.activation.check(run_id, minecraft_version, target_release_id)
-        except ActivationError as exc:
-            raise R3Error(exc.code) from exc
-
-    def apply_activation(self, activation_check_id: str, *, confirm_current_switch: bool, set_as_default: bool) -> dict[str, Any]:
-        try:
-            state = self.activation._read_state(activation_check_id)
-            with self.worker.run_lock(str(state["run_id"])):
-                return self.activation.apply(
-                    activation_check_id,
-                    confirm_current_switch=confirm_current_switch,
-                    set_as_default=set_as_default,
-                )
-        except ActivationError as exc:
-            raise R3Error(exc.code) from exc
 
     # ---- Provider/profile application service ---------------------------------
+
+    def start_import(self, run_id: str, source_directory_ref: str, minecraft_version: str) -> dict[str, Any]:
+        return self.imports.start(run_id, source_directory_ref, minecraft_version)
+
+    def get_import(self, run_id: str) -> dict[str, Any]:
+        return self.imports.get(run_id)
+
+    def list_imports(self, minecraft_version: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        return self.imports.list(minecraft_version, limit)
+
+    def build_candidate_release(self, run_id: str, minecraft_version: str, release_build_id: str) -> dict[str, Any]:
+        with self.worker.run_lock(run_id):
+            if self.worker.has_live_ai_futures(run_id):
+                raise R3Error("RELEASE_BUSY")
+            try:
+                return self.release_builder.build(run_id, minecraft_version, release_build_id)
+            except ReleaseBuildFailure as exc:
+                raise R3Error(exc.code) from exc
+
+    def list_releases(self, minecraft_version: str) -> dict[str, Any]:
+        current, token = self.activation.current()
+        try:
+            audit_pending = self.activation.audit_pending()
+        except ActivationError:
+            audit_pending = True
+        return {"minecraft_version": minecraft_version, "releases": self.release_builder.list_releases(minecraft_version), "current": current, "current_sha256": token, "audit_pending": audit_pending}
+
+    def publish_release(self, minecraft_version: str, target_release_id: str, expected_current_sha256: str | None, *, confirm: bool, set_as_default: bool, reviewer: str, reason: str, rollback: bool = False) -> dict[str, Any]:
+        try:
+            return self.activation.publish(minecraft_version, target_release_id, expected_current_sha256, confirm=confirm, set_as_default=set_as_default, reviewer=reviewer, reason=reason, rollback=rollback)
+        except ActivationError as exc:
+            raise R3Error(exc.code) from exc
+
+    def continue_review(self, run_id: str) -> dict[str, Any]:
+        with self.worker.run_lock(run_id):
+            with self.worker.open_database(run_id) as database:
+                with database.transaction() as connection:
+                    run = connection.execute("SELECT status,current_stage FROM runs WHERE run_id=?", (run_id,)).fetchone()
+                    if run is None or run["status"] != "needs_review" or run["current_stage"] != "HUMAN_REVIEW":
+                        raise R3Error("RUN_STATE_CONFLICT")
+                    self.worker._reconcile_derived_review_tasks(connection, database, run_id)
+                    if connection.execute("SELECT 1 FROM review_tasks WHERE status='open'").fetchone() is not None:
+                        raise R3Error("REVIEW_TASKS_OPEN")
+                    connection.execute("UPDATE stage_runs SET status='pending',worker_id=NULL,heartbeat_at=NULL,finished_at=NULL WHERE run_id=? AND stage='HUMAN_REVIEW'", (run_id,))
+                    connection.execute("UPDATE runs SET status='pending',finished_at=NULL WHERE run_id=?", (run_id,))
+                    connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_audit_id(), "HUMAN_REVIEW_CONTINUED", run_id, "{}", utc_now()))
+        return self.get_run(run_id)
 
     def list_provider_profiles(self) -> list[dict[str, Any]]:
         return [self._public_profile(profile) for profile in self.profile_store.load().values()]
@@ -1298,35 +1218,6 @@ class StudioService:
 
     resolve_review_task = resolve_review
 
-    def continue_review(self, run_id: str) -> dict[str, Any]:
-        with self.worker.run_lock(run_id):
-            with self.worker.open_database(run_id) as database:
-                run = database.fetchone("SELECT status,current_stage FROM runs WHERE run_id=?", (run_id,))
-                if run is None:
-                    raise R3Error("RUN_NOT_FOUND")
-                if database.fetchone("SELECT 1 FROM review_tasks WHERE minecraft_version='26.2' AND status='open'") is not None:
-                    raise R3Error("REVIEW_TASKS_OPEN")
-                if run["current_stage"] != "HUMAN_REVIEW" or run["status"] != "needs_review":
-                    raise R3Error("RUN_STATE_CONFLICT")
-                try:
-                    WorkspaceQueryService(database).rebuild_index()
-                except Exception as exc:
-                    with database.transaction() as connection:
-                        self.worker.create_review_task(connection, "run", run_id, "FTS_BUILD_FAILED", "high", "Search index requires review.", [], dedupe_key="fts", reopen=True)
-                        now = utc_now()
-                        connection.execute("UPDATE stage_runs SET status='needs_review',worker_id=NULL,finished_at=? WHERE run_id=? AND stage='HUMAN_REVIEW'", (now, run_id))
-                        connection.execute("UPDATE runs SET status='needs_review',finished_at=? WHERE run_id=?", (now, run_id))
-                        connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_audit_id(), "HUMAN_REVIEW_REQUIRED", run_id, canonical_json({"closure_errors": ["FTS_BUILD_FAILED"]}), now))
-                    raise R3Error("FTS_BUILD_FAILED") from exc
-                with database.transaction() as connection:
-                    self.worker._reconcile_derived_review_tasks(connection, database, run_id, fts_ready=True)
-                    if connection.execute("SELECT 1 FROM review_tasks WHERE minecraft_version='26.2' AND status='open'").fetchone() is not None:
-                        raise R3Error("REVIEW_TASKS_OPEN")
-                    now = utc_now()
-                    connection.execute("UPDATE stage_runs SET status='pending',worker_id=NULL,heartbeat_at=NULL,finished_at=NULL WHERE run_id=? AND stage='HUMAN_REVIEW'", (run_id,))
-                    connection.execute("UPDATE runs SET status='pending',finished_at=NULL WHERE run_id=?", (run_id,))
-                    connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_audit_id(), "HUMAN_REVIEW_CONTINUED", run_id, "{}", now))
-                return self.get_run(run_id)
 
     def _safe_review(self, database: WorkspaceDatabase, row: Any) -> dict[str, Any]:
         target_id = str(row["target_id"])
@@ -1572,22 +1463,12 @@ class StudioService:
         row = connection.execute("SELECT input_sha256,output_hash FROM features WHERE variant_id=?", (target_id,)).fetchone()
         return sha256_json({"target_id": target_id, "feature": dict(row) if row is not None else {}})
 
-    def check_import(self, source_directory: str | Path, minecraft_version: str) -> ImportCheck:
-        return self.imports.check_import(source_directory, minecraft_version)
 
-    def start_import_check(self, source_directory_ref: str, minecraft_version: str) -> ImportCheckStart:
-        # Preserve the importer start envelope so WebUI callers retain
-        # duplicate/reuse status and the authoritative HTTP response code.
-        return self.imports.start_check(source_directory_ref, minecraft_version)
 
-    def get_import_check(self, check_id: str) -> ImportCheck:
-        return self.imports.get_check(check_id)
 
     def list_directories(self, minecraft_version: str, parent_ref: str | None = None) -> dict[str, Any]:
         return self.directory_chooser.list_directories(minecraft_version, parent_ref)
 
-    def import_checked(self, check_id: str, *, copy_mode: str = "copy_to_workspace") -> dict[str, Any]:
-        return self.imports.import_checked(check_id, copy_mode=copy_mode)
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         self.run_snapshots.stale_after_seconds = self.worker.stale_after_seconds
@@ -1887,28 +1768,6 @@ class StudioService:
     def tick(self, run_id: str) -> dict[str, Any]:
         return self.worker.tick(run_id)
 
-    def refresh_banner_export(
-        self,
-        run_id: str,
-        *,
-        check_id: str,
-        expected_base_export_id: str,
-        target_ids: list[str],
-        confirm: bool,
-    ) -> dict[str, Any]:
-        with self.worker.run_lock(run_id):
-            try:
-                return refresh_banner_workspace(
-                    imports=self.imports,
-                    worker=self.worker,
-                    run_id=run_id,
-                    check_id=check_id,
-                    expected_base_export_id=expected_base_export_id,
-                    target_ids=target_ids,
-                    confirm=confirm,
-                )
-            except BannerRefreshFailure as exc:
-                raise R3Error(exc.code) from exc
 
     def query_workspace(self, run_id: str, query: str, *, limit: int = 24) -> list[dict[str, Any]]:
         with self.worker.open_database(run_id) as database:
@@ -2101,11 +1960,3 @@ def _contains_machine_field(value: Any) -> bool:
 
 def _probe_png() -> bytes:
     return encode_rgba_png(1, 1, b"\xff\x00\x00\xff")
-
-
-def check_import(service: StudioService, source_directory: str | Path, minecraft_version: str) -> ImportCheck:
-    return service.check_import(source_directory, minecraft_version)
-
-
-def import_checked(service: StudioService, check_id: str, *, copy_mode: str = "copy_to_workspace") -> dict[str, Any]:
-    return service.import_checked(check_id, copy_mode=copy_mode)

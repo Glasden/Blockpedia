@@ -1,5 +1,7 @@
 # 状态策略与标准渲染设计
 
+> D-054：普通渲染算法保持；camera.v2 的 BannerBlock/WallBannerBlock 居中缩放继续使用。专用 banner-repair/refresh 与本地 checksum/inventory gate 已移除，涉及这些操作的旧要求只作历史背景。
+
 ## 1. 范围、术语和关联文档
 
 本文定义 Fabric exporter 如何从一个方块的全部合法 `BlockState` 选择最小 `VisualVariant`，以及如何在固定摄影棚中生成可复现图片。精确记录字段形状由 `schemas/exporter/` 下的真实 Schema 文件拥有；本文只定义选择/渲染行为。状态选择和 Minecraft 渲染只能由 exporter 执行；Python Studio 只验证 `export-variant.v1` 和 `render-metadata.v1` 结果。本文不改变注册表事实：所有合法状态仍必须进入 `states.jsonl`，R1 只为每个 block 选择唯一 default `BlockState` 作为 block-level visual representative；其余合法状态链接到该代表，或保留机器 skip/failure。
@@ -122,7 +124,7 @@ isolated context 使用固定中性背板和必要的中性支撑；支撑不进
 
 ## 8. 动态、流体和方块实体边界
 
-R1 不预建 block entity/NBT、任意流体、动画帧、组合邻接或通用 fixture 框架。`minecraft:end_portal` 与 `minecraft:end_gateway` 是 non-building 的 explicit machine pending skips：两个精确 block ID 及其全部合法 states 仍登记，exporter 在进入渲染前使用既有 `BLOCK_ENTITY_FIXTURE_UNSUPPORTED` 写入 ordinary auditable pending skip，不生成 preview、mask 或 render directory；所有 states 仍在 `states.jsonl` 中以现有 skipped mapping（空 `variant_ids`）保留，variant/failure 记录沿用 ordinary auditable pending skip 并要求后续 human review，绝不静默过滤。此类对象如果不能在普通 block model 的 isolated context 中稳定渲染，写机器可读 skip/failure 并保持 pending review；不得退化为随手截图或占位图片。当前范围预期保留 `43` 个 block-entity fixture skips 和 `10` 个 invisible/technical skips；`melon_stem`、`pumpkin_stem`、`tripwire` 的 `OBJECT_TOO_SMALL` 仍 reviewable，不由本 amendment 重新分类；现有 `152` 个 rerender events 属于历史审计证据，不得作为本次修复执行；D-045 只能通过其精确 banner-repair operation refresh 目标 workspace，不执行这些历史 events。
+R1 不预建 block entity/NBT、任意流体、动画帧、组合邻接或通用 fixture 框架。`minecraft:end_portal` 与 `minecraft:end_gateway` 是 non-building 的 explicit machine pending skips：两个精确 block ID 及其全部合法 states 仍登记，exporter 在进入渲染前使用既有 `BLOCK_ENTITY_FIXTURE_UNSUPPORTED` 写入 ordinary auditable pending skip，不生成 preview、mask 或 render directory；所有 states 仍在 `states.jsonl` 中以现有 skipped mapping（空 `variant_ids`）保留，variant/failure 记录沿用 ordinary auditable pending skip 并要求后续 human review，绝不静默过滤。此类对象如果不能在普通 block model 的 isolated context 中稳定渲染，写机器可读 skip/failure 并保持 pending review；不得退化为随手截图或占位图片。当前范围预期保留 `43` 个 block-entity fixture skips 和 `10` 个 invisible/technical skips；`melon_stem`、`pumpkin_stem`、`tripwire` 的 `OBJECT_TOO_SMALL` 仍 reviewable，不由本 amendment 重新分类；现有 `152` 个 rerender events 属于历史审计证据，不得作为本次修复执行；D-045 已有成果保留；不再执行专用 repair/refresh 或这些历史 events。
 
 ## 9. 渲染流水线和自动重试
 

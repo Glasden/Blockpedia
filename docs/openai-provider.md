@@ -1,10 +1,12 @@
 # OpenAI Provider 契约
 
+> D-054 边界：本文件继续定义 Studio 外部请求、批准和重试语义。构建/发布不依赖 active profile、Keyring、能力 probe 或历史请求重放；下文旧 artifact 文件证明、release 全链路 hash 绑定相关要求已由 [重构规格](export-build-refactor-spec.md) 取代。
+
 ## 文档状态、优先级与关联规范
 
 本文是 Blockpedia MVP 的 protocol-neutral OpenAI provider 行为契约。精确 wire/profile 字段形状唯一由 `schemas/provider/` 下的真实 Schema 文件拥有；本文示例仅用于说明行为。正文使用简体中文；`OpenAIProvider`、`openai_responses`、`openai_chat_completions`、字段名、Schema 标识、状态、错误码和命令保持英文。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 使用规范性含义。
 
-本文件服从 [`../AGENTS.md`](../AGENTS.md)、[`roadmap.md`](roadmap.md) 和 [`decisions.md`](decisions.md)，并与 [`product-scope.md`](product-scope.md) 和 [`architecture.md`](architecture.md) 保持一致。原始设计稿 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 仅作历史背景和最低优先级参考，不与本契约一起执行；冲突内容禁止实现。数据来源和发布边界还必须遵守 [`data-and-schemas.md`](data-and-schemas.md)、[`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)、[`export-contract.md`](export-contract.md) 与 [`state-policy-and-rendering.md`](state-policy-and-rendering.md)。
+本文件服从 [D-054 重构规格](export-build-refactor-spec.md)、[`roadmap.md`](roadmap.md) 和 [`decisions.md`](decisions.md)，并与 [`product-scope.md`](product-scope.md) 和 [`architecture.md`](architecture.md) 保持一致。原始设计稿 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 仅作历史背景和最低优先级参考，不与本契约一起执行；冲突内容禁止实现。数据来源和发布边界还必须遵守 [`data-and-schemas.md`](data-and-schemas.md)、[`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)、[`export-contract.md`](export-contract.md) 与 [`state-policy-and-rendering.md`](state-policy-and-rendering.md)。
 
 相关实现契约：
 

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -19,8 +20,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .features import axis_aligned_union, build_visual_variant_record, extract_features
-from .importer import _check_property_membership, _read_jsonl, _validate_projection_references
 from .paths import DataRoot, safe_relative_posix_ref
+from .local_files import safe_path
 from .schema import RecordSchemaError, validate_record
 from .search import WorkspaceQueryService, human_semantics_complete
 from .stages import R2_STAGES, R3_BUILD_RELEASE_BOUNDARY_EVENT, R3_BOUNDARY_EVENT, R3_STAGES, RunStateConflict, STUDIO_STAGES
@@ -423,6 +424,9 @@ class WorkerService:
         if minecraft_version is None:
             minecraft_version = self._find_run_version(run_id)
         path = self.data_root.workspace_dir(minecraft_version, run_id) / "work.sqlite3"
+        safe_path(path, self.data_root.root, directory=False)
+        if (path.parent / "banner-refresh.v1.json").exists():
+            raise RunStateConflict("LEGACY_REFRESH_RECOVERY_REQUIRED")
         return WorkspaceDatabase.open(path, force_normalized_like=self.force_normalized_like)
 
     @contextmanager
@@ -542,7 +546,7 @@ class WorkerService:
                         if row is None:
                             continue
                         run_id = str(row["run_id"])
-                        should_tick = row["status"] == "pending" or (row["status"] == "running" and not self._run_is_stale(database, run_id))
+                        should_tick = not (path.parent / "banner-refresh.v1.json").exists() and (row["status"] == "pending" or (row["status"] == "running" and not self._run_is_stale(database, run_id)))
                     if should_tick:
                         self.tick(run_id, minecraft_version)
                 except Exception as exc:
@@ -561,7 +565,10 @@ class WorkerService:
                     continue
                 path = run_dir / "work.sqlite3"
                 if run_dir.is_dir() and not run_dir.is_symlink() and path.is_file() and not path.is_symlink():
-                    paths.append(path)
+                    try:
+                        paths.append(safe_path(path, self.data_root.root, directory=False))
+                    except (ValueError, OSError):
+                        continue
         return paths
 
     def _record_infrastructure_failure(self, path: Path, run_id: str | None, minecraft_version: str | None, exc: Exception) -> None:
@@ -696,101 +703,32 @@ class WorkerService:
         self._persist_stage_success(database, run_id, stage, evidence)
 
     def _stage_evidence(self, database: WorkspaceDatabase, run_id: str, stage: str) -> dict[str, Any]:
-        if stage == "PREPARE":
-            result = self.toolchain_probe.check()
-            if not result.get("passed"):
-                raise StageFailure("TOOLCHAIN_NOT_LOCKED", "R2 PREPARE toolchain probe failed", result)
-            return {"stage": stage, "toolchain": result}
-        if stage == "IMPORT_EXPORT":
-            row = database.fetchone("SELECT import_id,manifest_sha256,checksum_sha256,expected_files_json FROM imports WHERE import_id=(SELECT import_id FROM runs WHERE run_id=?)", (run_id,))
-            manifest = database.path.parent / "export" / "manifest.json"
-            if row is None or not manifest.is_file() or _hash(manifest.read_bytes()) != row["manifest_sha256"]:
-                raise StageFailure("IMPORT_INCOMPLETE", "workspace export handoff evidence is incomplete")
-            return {"stage": stage, "import_id": row["import_id"], "manifest_sha256": row["manifest_sha256"], "checksum_sha256": row["checksum_sha256"], "expected_files": json.loads(row["expected_files_json"])}
-        if stage == "VALIDATE_REGISTRY":
-            manifest = _load_json(database.path.parent / "export" / "manifest.json")
-            block_ids = sorted((row["block_id"] for row in database.fetchall("SELECT block_id FROM blocks")), key=lambda value: value.encode("utf-8"))
-            actual_hash = _hash("\n".join(block_ids).encode("utf-8"))
-            expected_count = manifest.get("counts", {}).get("registry_blocks")
-            expected_hash = manifest.get("scope", {}).get("registry_snapshot_sha256")
-            if expected_count != len(block_ids) or expected_hash != actual_hash:
-                raise StageFailure("REGISTRY_INCOMPLETE", "registry manifest and workspace projection differ", {"actual_count": len(block_ids), "actual_hash": actual_hash, "expected_count": expected_count, "expected_hash": expected_hash})
-            return {"stage": stage, "registry_count": len(block_ids), "registry_snapshot_sha256": actual_hash}
-        if stage == "VALIDATE_VARIANTS":
-            blocks = {row["block_id"]: _load_json_text(row["record_json"]) for row in database.fetchall("SELECT block_id,record_json FROM blocks")}
-            states = [_load_json_text(row["record_json"]) for row in database.fetchall("SELECT record_json FROM states")]
-            variants = {record["variant_id"]: record for record in _read_jsonl(database.path.parent / "export" / "variants.jsonl")}
-            failures = [_load_json_text(row["record_json"]) for row in database.fetchall("SELECT record_json FROM failures")]
-            _validate_projection_references(blocks, states, variants, failures)
-            for state in states:
-                _check_property_membership(blocks[state["block_id"]], state)
-            return {"stage": stage, "block_count": len(blocks), "state_count": len(states), "selected_variant_count": len(variants), "failure_count": len(failures)}
-        if stage == "VALIDATE_RENDERS":
-            expected: set[str] = set()
-            checked: list[dict[str, str]] = []
-            for row in database.fetchall("SELECT variant_id,source_json FROM variants WHERE status='selected' ORDER BY variant_id"):
-                source = _load_json_text(row["source_json"])
-                render = source["render"]
-                for ref_key, hash_key in (("preview_path", "image_sha256"), ("mask_path", "mask_sha256")):
-                    ref = safe_relative_posix_ref(render[ref_key])
-                    file_path = database.path.parent / ref
-                    if file_path.is_symlink() or not file_path.is_file() or file_path.stat().st_nlink != 1 or _hash(file_path.read_bytes()) != render[hash_key]:
-                        raise StageFailure("RENDER_REFERENCE_INVALID", "workspace render reference or hash mismatch", {"relative_ref": ref})
-                    artifact = database.fetchone("SELECT sha256 FROM artifacts WHERE relative_ref=? AND sha256=? AND kind='render'", (ref, render[hash_key]))
-                    if artifact is None:
-                        raise StageFailure("RENDER_ARTIFACT_MISSING", "workspace render artifact evidence is missing", {"relative_ref": ref})
-                    expected.add(ref)
-                    checked.append({"relative_ref": ref, "sha256": render[hash_key]})
-                metadata_ref = safe_relative_posix_ref(render["render_metadata_path"])
-                metadata_path = database.path.parent / metadata_ref
-                if metadata_path.is_symlink() or not metadata_path.is_file() or metadata_path.stat().st_nlink != 1:
-                    raise StageFailure("RENDER_REFERENCE_INVALID", "workspace render metadata is missing", {"relative_ref": metadata_ref})
-                metadata = _load_json(metadata_path)
-                metadata_hash = _hash(_canonical_json(metadata).encode("utf-8"))
-                if metadata_hash != render["render_metadata_sha256"]:
-                    raise StageFailure("RENDER_REFERENCE_INVALID", "workspace render metadata hash mismatch", {"relative_ref": metadata_ref})
-                artifact = database.fetchone("SELECT sha256 FROM artifacts WHERE relative_ref=? AND sha256=? AND kind='render'", (metadata_ref, metadata_hash))
-                if artifact is None:
-                    raise StageFailure("RENDER_ARTIFACT_MISSING", "workspace render metadata artifact evidence is missing", {"relative_ref": metadata_ref})
-                expected.add(metadata_ref)
-                checked.append({"relative_ref": metadata_ref, "sha256": metadata_hash})
-            renders_root = database.path.parent / "renders"
-            for path in renders_root.rglob("*"):
-                if path.is_symlink() or (not path.is_file() and not path.is_dir()):
-                    raise StageFailure("RENDER_FILE_SET_INVALID", "workspace render tree contains a link or invalid entry")
-            actual = {path.relative_to(database.path.parent).as_posix() for path in renders_root.rglob("*") if path.is_file()}
-            if actual != expected:
-                raise StageFailure("RENDER_FILE_SET_INVALID", "workspace render file set differs", {"expected_count": len(expected), "actual_count": len(actual)})
-            return {"stage": stage, "render_count": len(checked), "render_hashes": checked}
-        return {"stage": stage}
+        row = database.fetchone("SELECT imports.import_id,imports.status FROM imports JOIN runs ON runs.import_id=imports.import_id WHERE runs.run_id=?", (run_id,))
+        if row is None or row["status"] != "passed":
+            raise StageFailure("IMPORT_INCOMPLETE", "committed import is missing")
+        return {"stage": stage, "import_id": row["import_id"]}
 
     def _persist_stage_success(self, database: WorkspaceDatabase, run_id: str, stage: str, evidence: dict[str, Any]) -> None:
-        output = _json(evidence)
-        output_hash = _hash(output)
-        relative_ref = f"generated/stages/{stage}.json"
         with self.run_lock(run_id):
             now = utc_now()
-            cursor = _json({"stage": stage, "output_hash": output_hash, "completed": True, "evidence": evidence})
+            cursor = _json({"stage": stage, "completed": True})
             try:
                 with database.transaction() as connection:
                     stage_update = connection.execute("UPDATE stage_runs SET status='succeeded',worker_id=NULL,heartbeat_at=?,finished_at=?,cursor_json=? WHERE run_id=? AND stage=? AND status='running' AND worker_id=?", (now, now, cursor, run_id, stage, self.worker_id))
                     if stage_update.rowcount != 1:
                         raise RunStateConflict("stage lease lost before success")
-                    _write_atomic(database.path.parent / relative_ref, output.encode("utf-8"))
                     next_stage = STUDIO_STAGES[STUDIO_STAGES.index(stage) + 1]
                     run_update = connection.execute("UPDATE runs SET current_stage=? WHERE run_id=? AND status='running'", (next_stage, run_id))
                     if run_update.rowcount != 1:
                         raise RunStateConflict("run state changed before stage success")
-                    connection.execute("INSERT INTO artifacts(artifact_id,job_id,kind,relative_ref,sha256,metadata_json) VALUES (?,?,?,?,?,?)", (_id("artifact"), None, "stage_output", relative_ref, output_hash, _json({"stage": stage})))
-                    connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), "STAGE_SUCCEEDED", run_id, _json({"stage": stage, "output_hash": output_hash}), now))
+                    connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), "STAGE_SUCCEEDED", run_id, _json({"stage": stage}), now))
             except RunStateConflict:
                 return
 
     def _persist_stage_failure(self, database: WorkspaceDatabase, run_id: str, stage: str, failure: StageFailure) -> None:
         now = utc_now()
         evidence = {"stage": stage, "error_code": failure.error_code, "error_message": _safe_diagnostic(failure, error_code=failure.error_code), "evidence": failure.evidence}
-        output_hash = _hash(_json(evidence))
-        cursor = _json({"stage": stage, "output_hash": output_hash, "completed": False, "error_code": failure.error_code})
+        cursor = _json({"stage": stage, "completed": False, "error_code": failure.error_code})
         with self.run_lock(run_id):
             with database.transaction() as connection:
                 stage_update = connection.execute("UPDATE stage_runs SET status='failed',worker_id=NULL,heartbeat_at=?,finished_at=?,cursor_json=? WHERE run_id=? AND stage=? AND status='running' AND worker_id=?", (now, now, cursor, run_id, stage, self.worker_id))
@@ -837,8 +775,6 @@ class WorkerService:
             feature_json = _json(features)
             output_payload = _json({"record": record, "features": features})
             output_hash = _hash(output_payload)
-            feature_ref = f"generated/features/{job['logical_key'].replace(':', '_')}.json"
-            safe_relative_posix_ref(feature_ref)
             now = utc_now()
             with self.run_lock(run_id):
                 with database.transaction() as connection:
@@ -852,16 +788,11 @@ class WorkerService:
                     )
                     if job_update.rowcount != 1:
                         raise LeaseLost("job lease lost before feature commit")
-                    _write_atomic(workspace_dir / feature_ref, output_payload.encode("utf-8"))
                     connection.execute(
                         "INSERT OR REPLACE INTO features(variant_id,input_sha256,feature_extractor_version,feature_json,output_hash) VALUES (?,?,?,?,?)",
                         (job["logical_key"], features["input_sha256"], features["feature_extractor_version"], feature_json, output_hash),
                     )
                     connection.execute("UPDATE variants SET record_json=? WHERE variant_id=?", (_json(record), job["logical_key"]))
-                    connection.execute(
-                        "INSERT INTO artifacts(artifact_id,job_id,kind,relative_ref,sha256,metadata_json) VALUES (?,?,?,?,?,?)",
-                        (_id("artifact"), job["job_id"], "feature_output", feature_ref, output_hash, _json({"variant_id": job["logical_key"]})),
-                    )
                     if stage_owner["pause_after_item"]:
                         connection.execute("UPDATE stage_runs SET status='paused',worker_id=NULL,pause_after_item=0,heartbeat_at=?,finished_at=? WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (now, now, run_id, self.worker_id))
                         connection.execute("UPDATE runs SET status='paused' WHERE run_id=? AND status='running'", (run_id,))
@@ -927,11 +858,12 @@ class WorkerService:
             remaining = database.fetchone("SELECT 1 FROM jobs WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status NOT IN ('succeeded','skipped')", (run_id,))
             if run is None or run["status"] != "running" or stage is None or stage["status"] != "running" or stage["worker_id"] != self.worker_id or remaining is not None:
                 return
-            WorkspaceQueryService(database).rebuild_index()
+            try:
+                WorkspaceQueryService(database).rebuild_index()
+            except sqlite3.Error:
+                pass  # This optional workspace view is not a release prerequisite.
             now = utc_now()
-            outputs = [{"logical_key": row["logical_key"], "output_hash": row["output_hash"]} for row in database.fetchall("SELECT logical_key,output_hash FROM jobs WHERE run_id=? AND stage='EXTRACT_FEATURES' ORDER BY logical_key", (run_id,))]
-            output_hash = _hash(_json(outputs))
-            cursor = _json({"stage": "EXTRACT_FEATURES", "output_hash": output_hash, "completed": True, "items": outputs})
+            cursor = _json({"stage": "EXTRACT_FEATURES", "completed": True})
             with database.transaction() as connection:
                 stage_update = connection.execute("UPDATE stage_runs SET status='succeeded',worker_id=NULL,heartbeat_at=?,finished_at=?,cursor_json=? WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (now, now, cursor, run_id, self.worker_id))
                 if stage_update.rowcount != 1:
@@ -1250,8 +1182,7 @@ class WorkerService:
             remaining = database.fetchone("SELECT 1 FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' AND status IN ('pending','running')", (run_id,))
             if stage is None or run is None or stage["status"] != "running" or stage["worker_id"] != self.worker_id or remaining is not None:
                 return
-            outputs = [{"logical_key": row["logical_key"], "output_hash": row["output_hash"], "status": row["status"]} for row in database.fetchall("SELECT logical_key,output_hash,status FROM jobs WHERE run_id=? AND stage='AI_ANNOTATE' ORDER BY logical_key", (run_id,))]
-            self._complete_r3_stage(database, run_id, "AI_ANNOTATE", {"outputs": outputs})
+            self._complete_r3_stage(database, run_id, "AI_ANNOTATE", {})
 
     def _commit_ai_result(self, database: WorkspaceDatabase, run_id: str, job: Any, profile: ProviderProfile, envelope: dict[str, Any], payload: dict[str, Any], result: Any) -> None:
         normalized = _provider_result(result)
@@ -1347,7 +1278,6 @@ class WorkerService:
             return
         output_payload = {"schema_version": "annotation-batch-output.v1", "annotations": list(validation.annotations)}
         output_hash = sha256_json(output_payload)
-        artifact_ref = f"generated/ai/{job['job_id']}.json"
         priority_by_variant = {item["variant_id"]: ("high" if item["confidence"] < 0.65 else "normal" if item["confidence"] < 0.80 else None) for item in artifact["items"]}
         with self.run_lock(run_id):
             with database.transaction() as connection:
@@ -1356,7 +1286,6 @@ class WorkerService:
                 if owner is None or current is None or current["status"] != "running" or current["worker_id"] != self.worker_id:
                     return
                 _insert_provider_request(connection, provider_request)
-                _write_atomic(database.path.parent / artifact_ref, canonical_json(output_payload).encode("utf-8"))
                 annotation_ids: list[str] = []
                 for annotation in validation.annotations:
                     annotation_ids.append(annotation["annotation_id"])
@@ -1396,7 +1325,6 @@ class WorkerService:
                         )
                 status = "succeeded" if validation.priority == "normal" and validation.review_route == "auto_valid" else "needs_review"
                 connection.execute("UPDATE jobs SET status=?,worker_id=NULL,heartbeat_at=?,finished_at=?,output_hash=?,cursor_json=?,error_code=?,error_message=? WHERE job_id=? AND status='running' AND worker_id=?", (status, utc_now(), utc_now(), output_hash, job["cursor_json"], None if status == "succeeded" else ("LOW_CONFIDENCE" if validation.priority in {"normal", "high"} else None), None, job["job_id"], self.worker_id))
-                connection.execute("INSERT INTO artifacts(artifact_id,job_id,kind,relative_ref,sha256,metadata_json) VALUES (?,?,?,?,?,?)", (_id("artifact"), job["job_id"], "ai_annotation", artifact_ref, output_hash, _json({"variant_ids": [item["variant_id"] for item in payload["tile_map"]]})))
                 connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)", (_id("audit"), "AI_BATCH_SUCCEEDED", run_id, job["job_id"], _json({"output_hash": output_hash, "annotation_count": len(annotation_ids)}), utc_now()))
 
     def _commit_ai_failure(
@@ -1511,48 +1439,8 @@ class WorkerService:
                 )
 
     def _validate_r3_stage(self, database: WorkspaceDatabase, run_id: str) -> None:
-        errors: list[tuple[str, str, str]] = []
-        try:
-            for row in database.fetchall("SELECT block_id,record_json FROM blocks ORDER BY block_id"):
-                validate_record("block-record.v1", json.loads(row["record_json"]), repo_root=self.repo_root)
-            for row in database.fetchall("SELECT variant_id,record_json FROM variants ORDER BY variant_id"):
-                if row["record_json"] is None:
-                    continue
-                variant = json.loads(row["record_json"])
-                try:
-                    validate_record("visual-variant-record.v1", variant, repo_root=self.repo_root)
-                except RecordSchemaError:
-                    errors.append(("variant", row["variant_id"], "SCHEMA_INVALID"))
-                refs = variant.get("annotation_refs", [])
-                for ref in refs:
-                    if database.fetchone("SELECT 1 FROM annotations WHERE annotation_id=?", (ref,)) is None:
-                        errors.append(("variant", row["variant_id"], "ANNOTATION_REFERENCE_INVALID"))
-                if variant.get("candidate_qualification") in {"eligible", "conditional"} and not refs and not human_semantics_complete(database.connection, str(row["variant_id"])) and not self._has_open_root_review(database.connection, str(row["variant_id"])):
-                    errors.append(("variant", row["variant_id"], "MISSING_SEMANTIC"))
-                if variant.get("candidate_qualification") == "excluded" and not variant.get("qualification_review_refs"):
-                    errors.append(("variant", row["variant_id"], "QUALIFICATION_REVIEW_MISSING"))
-            for row in database.fetchall("SELECT annotation_id,record_json FROM annotations ORDER BY annotation_id"):
-                try:
-                    validate_record("annotation-record.v1", json.loads(row["record_json"]), repo_root=self.repo_root)
-                except RecordSchemaError:
-                    errors.append(("variant", row["subject_id"], "SCHEMA_INVALID"))
-        except Exception:
-            errors.append(("run", run_id, "VALIDATE_FAILED"))
-        with self.run_lock(run_id):
-            with database.transaction() as connection:
-                for target_type, target_id, code in errors:
-                    self.create_review_task(connection, target_type, target_id, code, "high", "Validation requires human review.", [], dedupe_key=code, reopen=True)
-        try:
-            WorkspaceQueryService(database).rebuild_index()
-        except Exception:
-            with self.run_lock(run_id):
-                with database.transaction() as connection:
-                    self.create_review_task(connection, "run", run_id, "FTS_BUILD_FAILED", "high", "Search index requires review.", [], dedupe_key="fts", reopen=True)
-        else:
-            with self.run_lock(run_id):
-                with database.transaction() as connection:
-                    self._reconcile_derived_review_tasks(connection, database, run_id, fts_ready=True)
-        self._complete_r3_stage(database, run_id, "VALIDATE", {"error_count": len(errors)})
+        # Input writes own validation. Keep the historical stage label only.
+        self._complete_r3_stage(database, run_id, "VALIDATE", {})
 
     def _human_review_stage(self, database: WorkspaceDatabase, run_id: str) -> None:
         with self.run_lock(run_id):
@@ -1565,25 +1453,6 @@ class WorkerService:
                     connection.execute("UPDATE stage_runs SET status='needs_review',worker_id=NULL,finished_at=? WHERE run_id=? AND stage='HUMAN_REVIEW' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
                     connection.execute("UPDATE runs SET status='needs_review',finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
                     connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), "HUMAN_REVIEW_REQUIRED", run_id, "{}", now))
-                return
-            try:
-                WorkspaceQueryService(database).rebuild_index()
-            except Exception:
-                with database.transaction() as connection:
-                    self.create_review_task(connection, "run", run_id, "FTS_BUILD_FAILED", "high", "Search index requires review.", [], dedupe_key="fts", reopen=True)
-                    now = utc_now()
-                    connection.execute("UPDATE stage_runs SET status='needs_review',worker_id=NULL,finished_at=? WHERE run_id=? AND stage='HUMAN_REVIEW' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
-                    connection.execute("UPDATE runs SET status='needs_review',finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
-                    connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), "HUMAN_REVIEW_REQUIRED", run_id, _json({"closure_errors": ["FTS_BUILD_FAILED"]}), now))
-                return
-            with database.transaction() as connection:
-                self._reconcile_derived_review_tasks(connection, database, run_id, fts_ready=True)
-            open_tasks = database.fetchone("SELECT 1 FROM review_tasks WHERE status='open' AND severity IN ('normal','high') LIMIT 1")
-            if open_tasks is not None:
-                with database.transaction() as connection:
-                    now = utc_now()
-                    connection.execute("UPDATE stage_runs SET status='needs_review',worker_id=NULL,finished_at=? WHERE run_id=? AND stage='HUMAN_REVIEW' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
-                    connection.execute("UPDATE runs SET status='needs_review',finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
                 return
             closure_errors = self._review_closure_errors(database, run_id)
             if closure_errors:
@@ -1605,6 +1474,10 @@ class WorkerService:
                     connection.execute("UPDATE runs SET status='needs_review',finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
                     connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), "HUMAN_REVIEW_REQUIRED", run_id, _json({"closure_errors": [item[2] for item in closure_errors]}), now))
                 return
+            try:
+                WorkspaceQueryService(database).rebuild_index()
+            except Exception:
+                pass  # Optional workspace view; release builds its own search projection.
             self._complete_r3_stage(database, run_id, "HUMAN_REVIEW", {"open_tasks": 0}, boundary=True)
 
     def _review_closure_errors(self, database: WorkspaceDatabase, run_id: str) -> list[tuple[str, str, str, list[str]]]:
@@ -1669,25 +1542,6 @@ class WorkerService:
                 target_id = row["variant_id"] or row["state_id"] or row["block_id"] or failure_id
                 errors.append((target_type, str(target_id), "SKIP_REVIEW_MISSING", []))
 
-        try:
-            expected_documents = WorkspaceQueryService(database).expected_documents()
-            actual_documents = {
-                str(row["document_id"]): (str(row["block_id"]), str(row["content"]), str(row["normalized_content"]))
-                for row in database.fetchall("SELECT document_id,block_id,content,normalized_content FROM search_documents")
-            }
-            expected_document_values = {
-                document_id: (block_id, content, normalized)
-                for document_id, (_document_id, block_id, content, normalized) in expected_documents.items()
-            }
-            if actual_documents != expected_document_values:
-                errors.append(("run", run_id, "FTS_COVERAGE_MISSING", []))
-            if database.fts_mode == "trigram":
-                expected_blocks = {block_id: normalized for _document_id, block_id, _content, normalized in expected_documents.values()}
-                actual_blocks = {str(row["block_id"]): str(row["content"]) for row in database.fetchall("SELECT block_id,content FROM fts_documents")}
-                if actual_blocks != expected_blocks:
-                    errors.append(("run", run_id, "FTS_COVERAGE_MISSING", []))
-        except Exception:
-            errors.append(("run", run_id, "FTS_BUILD_FAILED", []))
         return errors
 
     def _has_open_root_review(self, connection: Any, target_id: str) -> bool:
@@ -1762,7 +1616,7 @@ class WorkerService:
                         satisfied = True
                         break
             elif reason_code in {"FTS_BUILD_FAILED", "FTS_COVERAGE_MISSING"}:
-                satisfied = fts_ready and self._fts_projection_current(database)
+                satisfied = True  # D-054 retires workspace FTS as a build prerequisite.
             if satisfied:
                 connection.execute("UPDATE review_tasks SET status='resolved',resolved_at=? WHERE review_id=? AND status='open'", (now, row["review_id"]))
 
@@ -1791,12 +1645,11 @@ class WorkerService:
                 if stage_row is None or stage_row["worker_id"] != self.worker_id or stage_row["status"] != "running":
                     return
                 now = utc_now()
-                output_hash = sha256_json(evidence)
                 next_stage = "BUILD_RELEASE" if boundary else STUDIO_STAGES[STUDIO_STAGES.index(stage) + 1]
                 event = R3_BUILD_RELEASE_BOUNDARY_EVENT if boundary else "STAGE_SUCCEEDED"
-                connection.execute("UPDATE stage_runs SET status='succeeded',worker_id=NULL,heartbeat_at=?,finished_at=?,cursor_json=? WHERE run_id=? AND stage=? AND status='running' AND worker_id=?", (now, now, canonical_json({"stage": stage, "output_hash": output_hash, "evidence": evidence}), run_id, stage, self.worker_id))
+                connection.execute("UPDATE stage_runs SET status='succeeded',worker_id=NULL,heartbeat_at=?,finished_at=?,cursor_json=? WHERE run_id=? AND stage=? AND status='running' AND worker_id=?", (now, now, canonical_json({"stage": stage, "completed": True}), run_id, stage, self.worker_id))
                 connection.execute("UPDATE runs SET status=?,current_stage=?,boundary_event=? WHERE run_id=? AND status='running'", ("paused" if boundary else "running", next_stage, event if boundary else None, run_id))
-                connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), event, run_id, _json({"stage": stage, "output_hash": output_hash}), now))
+                connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), event, run_id, _json({"stage": stage}), now))
 
     def _run_profile(self, database: WorkspaceDatabase, run_id: str) -> ProviderProfile:
         run = database.fetchone("SELECT config_snapshot_json FROM runs WHERE run_id=?", (run_id,))
@@ -2282,10 +2135,7 @@ class WorkerService:
                         raise RunStateConflict("stage is not stale")
                     if job_id is None and (stage_row["status"] != "running" or not _is_stale(stage_row["heartbeat_at"], cutoff)):
                         raise RunStateConflict("stage is not stale")
-                    if stage_row["recovery_attempt"] >= 1:
-                        stage_result = "needs_review"
-                    else:
-                        stage_result = "pending"
+                    stage_result = "pending"
                     all_job_rows = connection.execute("SELECT * FROM jobs WHERE run_id=? AND stage=? AND status='running' ORDER BY logical_key", (run_id, stage)).fetchall()
                     target_only = False
                     if job_id is not None:
@@ -2300,20 +2150,14 @@ class WorkerService:
                         if all_job_rows and not job_rows:
                             raise RunStateConflict("no stale running job in stale stage")
                         target_only = bool(all_job_rows and len(job_rows) < len(all_job_rows))
-                    if stage_result == "needs_review":
-                        for row in job_rows:
-                            connection.execute("UPDATE jobs SET status='needs_review',worker_id=NULL,heartbeat_at=?,finished_at=? WHERE job_id=? AND status='running'", (now, now, row["job_id"]))
-                    else:
-                        for row in job_rows:
-                            if row["output_hash"] and self._artifact_hash_is_complete(database, row["job_id"], row["output_hash"]):
-                                recovered_status = "succeeded"
-                            elif row["auto_attempt"] == 0:
-                                recovered_status = "pending"
-                            else:
-                                recovered_status = "needs_review"
-                            if recovered_status == "needs_review":
-                                stage_result = "needs_review"
-                            connection.execute("UPDATE jobs SET status=?,auto_attempt=CASE WHEN ?='pending' THEN 1 ELSE auto_attempt END,worker_id=NULL,heartbeat_at=NULL,finished_at=? WHERE job_id=? AND status='running'", (recovered_status, recovered_status, now, row["job_id"]))
+                    for row in job_rows:
+                        recovered_status = "needs_review" if stage == "AI_ANNOTATE" else "pending"
+                        if recovered_status == "needs_review":
+                            cursor = _load_object(row["cursor_json"])
+                            for variant_id in cursor.get("variant_ids", []):
+                                self.create_review_task(connection, "variant", variant_id, "PROVIDER_FAILURE", "high", "Provider outcome is unknown after interruption; review before retry.", [f"job:{row['job_id']}"], dedupe_key=row["input_signature"], reopen=True)
+                            connection.execute("UPDATE jobs SET error_code='PROVIDER_UNKNOWN',error_message='outcome unknown after interruption' WHERE job_id=?", (row["job_id"],))
+                        connection.execute("UPDATE jobs SET status=?,auto_attempt=CASE WHEN ?='pending' THEN 1 ELSE auto_attempt END,worker_id=NULL,heartbeat_at=NULL,finished_at=? WHERE job_id=? AND status='running'", (recovered_status, recovered_status, now, row["job_id"]))
                     if target_only:
                         connection.execute(
                             "INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)",
@@ -2324,12 +2168,10 @@ class WorkerService:
                             recovered = connection.execute("SELECT status,auto_attempt FROM jobs WHERE job_id=?", (job_id,)).fetchone()
                             result.update({"status": recovered["status"], "auto_attempt": recovered["auto_attempt"]})
                         return result
-                    if stage_result == "needs_review":
-                        connection.execute("UPDATE stage_runs SET status='needs_review',worker_id=NULL,recovery_attempt=1,heartbeat_at=?,finished_at=? WHERE run_id=? AND stage=? AND status IN ('running','pending')", (now, now, run_id, stage))
-                        connection.execute("UPDATE runs SET status='needs_review',finished_at=? WHERE run_id=? AND status IN ('running','pending')", (now, run_id))
-                    else:
-                        connection.execute("UPDATE stage_runs SET status='pending',worker_id=NULL,recovery_attempt=1,heartbeat_at=NULL WHERE run_id=? AND stage=? AND status IN ('running','pending')", (run_id, stage))
-                        connection.execute("UPDATE runs SET status='pending' WHERE run_id=? AND status IN ('running','pending')", (run_id,))
+                    # Unknown jobs stay terminal for review. Resume the stage's
+                    # aggregation so it can reach HUMAN_REVIEW without resending them.
+                    connection.execute("UPDATE stage_runs SET status='pending',worker_id=NULL,recovery_attempt=1,heartbeat_at=NULL WHERE run_id=? AND stage=? AND status IN ('running','pending')", (run_id, stage))
+                    connection.execute("UPDATE runs SET status='pending' WHERE run_id=? AND status IN ('running','pending')", (run_id,))
                     connection.execute(
                         "INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)",
                         (_id("audit"), "WORKER_RECOVERED_STALE_RUNNING", run_id, job_id, _json({"stage": stage, "result": stage_result, "job_count": len(job_rows)}), now),
@@ -2340,16 +2182,7 @@ class WorkerService:
                         result.update({"status": recovered["status"], "auto_attempt": recovered["auto_attempt"]})
                     return result
 
-    def _artifact_hash_is_complete(self, database: WorkspaceDatabase, job_id: str, output_hash: str) -> bool:
-        row = database.fetchone("SELECT relative_ref,sha256 FROM artifacts WHERE job_id=? AND sha256=?", (job_id, output_hash))
-        if row is None:
-            return False
-        try:
-            relative = safe_relative_posix_ref(row["relative_ref"])
-            artifact = database.path.parent / relative
-            return artifact.is_file() and _hash(artifact.read_bytes()) == output_hash
-        except (OSError, TypeError, ValueError):
-            return False
+
 
 
 def _is_stale(value: str | None, cutoff: datetime) -> bool:
@@ -2362,16 +2195,6 @@ def _is_stale(value: str | None, cutoff: datetime) -> bool:
     return parsed < cutoff
 
 
-def _write_atomic(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    with temporary.open("wb") as handle:
-        handle.write(payload)
-        handle.flush()
-        import os
-
-        os.fsync(handle.fileno())
-    temporary.replace(path)
 
 
 def _safe_diagnostic(exc: Exception, path: Path | None = None, *, error_code: str | None = None) -> str:
@@ -2384,16 +2207,12 @@ def _safe_diagnostic(exc: Exception, path: Path | None = None, *, error_code: st
     return f"{candidate}:{type(exc).__name__}"
 
 
-def _load_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _load_json_text(value: str) -> Any:
     return json.loads(value)
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _row_dict(row: Any) -> dict[str, Any]:
