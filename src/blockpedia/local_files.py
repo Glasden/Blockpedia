@@ -61,7 +61,7 @@ def sync_tree(root: Path) -> None:
         if path.is_dir():
             directories.append(path)
         else:
-            with path.open("rb") as handle:
+            with path.open("r+b" if os.name == "nt" else "rb") as handle:
                 os.fsync(handle.fileno())
     for directory in reversed(directories):
         sync_directory(directory)
