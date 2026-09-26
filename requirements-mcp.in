@@ -1,0 +1,4 @@
+# Local stdio MCP runtime only. Studio's provider and Keyring use the full lock.
+mcp==2.0.0
+jsonschema==4.26.0
+uvicorn==0.52.3
