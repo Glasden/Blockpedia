@@ -160,7 +160,17 @@ Studio 三类新写调用都必须使用同一个活动 profile、同一个 `ada
 }
 ```
 
-请求 **MUST** 为 `POST <base_url>/chat/completions`，并且 **MUST NOT** 包含 `store`。strict schema 位于 `response_format.json_schema`，并使用固定 `name`、`strict=true` 和对应 Schema。请求为 non-streaming；只解析 `choices[0]`。`message.refusal` 非 null 是 `PROVIDER_REFUSAL`；只有 `finish_reason=stop` 且 `message.content` 为 JSON string 才可解析。`length`、`content_filter`、`tool_calls`、`function_call`、未知 finish reason、缺失或非字符串 content 均为 `PROVIDER_INCOMPLETE`/失败，不得走正常 fallback。
+请求 **MUST** 为 `POST <base_url>/chat/completions`，并且 **MUST NOT** 包含 `store`。strict schema 位于 `response_format.json_schema`，并使用固定 `name`、`strict=true` 和对应 Schema。`offline_annotation` 使用下述流式响应；`query_spec`、`visual_rerank` 保持 non-streaming，只解析 `choices[0]`。`message.refusal` 非 null 是 `PROVIDER_REFUSAL`；只有 `finish_reason=stop` 且 `message.content` 为 JSON string 才可解析。`length`、`content_filter`、`tool_calls`、`function_call`、未知 finish reason、缺失或非字符串 content 均为 `PROVIDER_INCOMPLETE`/失败，不得走正常 fallback。
+
+#### 离线标注的流式响应
+
+两种 adapter 的 `offline_annotation` 请求（包括能力探测、重试和 Schema 修复）**MUST** 发送 `stream=true`，通过 HTTPX streaming context 逐帧读取 `text/event-stream`，不预先缓冲整个 HTTP body。SSE 的分块、UTF-8 跨块、注释心跳和多行 `data:` 按帧解码；仅 CR、LF、CRLF 分行，Unicode 分隔符保留为文本。片段仅存在于本次尝试的内存中。
+
+- Responses 等待 `response.completed`，用其中完整的 `response` 继续执行已有 model、status、assistant output 和本地 Schema 校验；delta 不能单独证明标注完成。`response.failed`/`response.incomplete`/`response.cancelled`、refusal 或 error 事件按失败处理。
+- Chat 仅累积 index 为 0 的 `delta.content`，必须同时收到 `finish_reason=stop` 和 `[DONE]`；refusal、工具调用、异常 finish reason、缺少终态或不完整 SSE 帧均不能生成成功标注。usage-only chunk 可忽略，usage 不保留。
+- 流中网络异常/超时沿用最多两次总尝试预算，每次从空结果开始；未收到正常终态的 EOF 为 `PROVIDER_INCOMPLETE`。完整 JSON 的本地校验和修复规则不变，修复请求仍使用流式。端点忽略 `stream=true` 返回普通 JSON 时不自动回退。
+
+完整批次通过校验后才返回 artifact，由既有 worker 事务落库；不写入部分标注，不增加逐 token UI 更新或新的持久记录。无论成功、拒绝、错误或断流，HTTP response 都会关闭。协议依据：[OpenAI streaming guide](https://developers.openai.com/api/docs/guides/streaming-responses)、[Responses streaming events](https://developers.openai.com/api/reference/resources/responses/streaming-events)。
 
 实现可以使用 SDK 等价的结构化参数，但发出的协议语义必须等价。三类请求 **MUST** 使用对应独立 Schema ID、对应 `name` 和 `strict=true`；Responses 使用 `text.format`，Chat 使用 `response_format.json_schema`。`name` 与 Schema ID 分离，且只能匹配 `[A-Za-z0-9_-]{1,64}`：
 
@@ -417,7 +427,7 @@ MCP D-051 host-supplied QuerySpec 不构成 provider artifact，且不得写入�
 1. 三阶段 × 两种 adapter 的六种请求形状均有覆盖：Responses `POST /responses`、`store=false`、`input_text/input_image`、`text.format`；Chat `POST /chat/completions`、省略 `store`、`text/image_url`、`response_format`。
 2. 两种 adapter 都使用同一个 configured/requested `model_id`、同三份 Schema/name、图片输入、strict output 和本地 ID/机器事实校验；`offline_annotation`、`query_spec`、`visual_rerank` 三个 Studio/history provider 阶段均必须发送非空 PNG。成功响应必须有 string `model`，但不同 echo 不失败、不持久化且不替换 requested `model_id`；不存在 `json_object`、自由文本或协议 fallback 正常路径。MCP 不调用这些 provider stages，也不构成 provider/model evidence。
 3. Probe 只验证选定 adapter：Responses 发送 `store=false` 但不检查 store/model echo equality；Chat 检查请求没有 `store` 且不检查 model echo equality；两者都验证 image、strict、错误分类、requested model/auth，并不宣称 retention 或远端模型身份已验证。
-4. Chat 仅按 `choices[0]`、`refusal`、`finish_reason=stop` 和 JSON string content 解析；其它 incomplete/failure 分支不得正常 fallback。SDK retry 加应用 retry 的总尝试数不超过 2。
+4. Chat 标注逐帧拼接 index 为 0 的 `delta.content`，要求 `finish_reason=stop` 与 `[DONE]`；其它阶段仍解析 `choices[0].message`。Responses 标注要求 `response.completed`。refusal、断流及其它 incomplete/failure 分支不得生成部分 artifact 或正常 fallback。SDK retry 加应用 retry 的总尝试数不超过 2。
 5. profile 只有一个活动 model/adapter；改变 adapter、model、base URL/Schema/semantic constraints 会改变 cache key 和 run snapshot；协议不得自动切换。
 6. cache key 缺任一字段即失败：`image_hash`、`machine_metadata_hash`、`adapter`、`prompt_version`、`model_id`、`schema_version`、`base_url_stable_id`、`stage`；缓存不含完整 response 或 usage。
 7. 既有 `openai_responses` profile、release 和 fixture 仍可读取；协议变更前的 in-flight cache/workspace 必须失效并 rerun，不迁移；keyring 优先于环境变量，SQLite/快照/日志/前端只出现 `secret_reference` 或掩码。

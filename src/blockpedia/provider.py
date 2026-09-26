@@ -968,6 +968,35 @@ def build_provider_batch_envelope(
 build_batch_envelope = build_provider_batch_envelope
 
 
+def _sse_data(response: httpx.Response) -> Iterable[str]:
+    """Read complete SSE data frames without buffering the HTTP response."""
+    response.encoding = "utf-8"
+    data: list[str] = []
+    line_parts: list[str] = []
+    skip_lf = False
+    # HTTPX iter_lines also splits Unicode separators, which are data in SSE.
+    for index, chunk in enumerate(response.iter_text()):
+        if index == 0:
+            chunk = chunk.removeprefix("\ufeff")
+        if skip_lf and chunk.startswith("\n"):
+            chunk = chunk[1:]
+        skip_lf = chunk.endswith("\r")
+        lines = re.split(r"\r\n|\r|\n", chunk)
+        if len(lines) == 1:
+            line_parts.append(chunk)
+            continue
+        lines[0] = "".join(line_parts) + lines[0]
+        line_parts = [lines[-1]]
+        for line in lines[:-1]:
+            if not line:
+                if data:
+                    yield "\n".join(data)
+                    data.clear()
+            elif line.startswith("data:"):
+                value = line[5:]
+                data.append(value[1:] if value.startswith(" ") else value)
+
+
 class OpenAIProvider:
     """Protocol-neutral OpenAI provider with one explicit profile adapter."""
 
@@ -1107,8 +1136,12 @@ class OpenAIProvider:
         repair_context: str | None = None,
     ) -> dict[str, Any]:
         if self.profile.adapter == "openai_responses":
-            return self._responses_body(stage, input_text, image_png, repair=repair, repair_context=repair_context)
-        return self._chat_body(stage, input_text, image_png, repair=repair, repair_context=repair_context)
+            body = self._responses_body(stage, input_text, image_png, repair=repair, repair_context=repair_context)
+        else:
+            body = self._chat_body(stage, input_text, image_png, repair=repair, repair_context=repair_context)
+        if stage == "offline_annotation":
+            body["stream"] = True
+        return body
 
     @staticmethod
     def _error(
@@ -1234,6 +1267,65 @@ class OpenAIProvider:
             for field in ("code", "type")
         )
 
+    def _stream_payload(self, response: httpx.Response, request_id: str | None) -> Mapping[str, Any] | _Attempt:
+        if response.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "text/event-stream":
+            return self._error("PROVIDER_INCOMPLETE", request_id=request_id)
+        content: list[str] = []
+        model: str | None = None
+        finish_reason: str | None = None
+        for data in _sse_data(response):
+            if data == "[DONE]":
+                if self.profile.adapter == "openai_chat_completions" and finish_reason == "stop" and content:
+                    return {"model": model, "choices": [{"index": 0, "message": {"role": "assistant", "content": "".join(content)}, "finish_reason": finish_reason}]}
+                return self._error("PROVIDER_INCOMPLETE", request_id=request_id)
+            try:
+                event = json.loads(data)
+            except ValueError:
+                return self._error("PROVIDER_SCHEMA_INVALID_REPAIRABLE", repairable=True, request_id=request_id)
+            if not isinstance(event, Mapping):
+                return self._error("PROVIDER_SCHEMA_INVALID_REPAIRABLE", repairable=True, request_id=request_id)
+            if event.get("type") == "error" or event.get("error") is not None:
+                return self._error("PROVIDER_REQUEST_INVALID", request_id=request_id)
+            if self.profile.adapter == "openai_responses":
+                event_type = event.get("type")
+                if event_type in ("response.refusal.delta", "response.refusal.done"):
+                    return self._error("PROVIDER_REFUSAL", request_id=request_id)
+                if event_type in ("response.failed", "response.incomplete", "response.cancelled"):
+                    return self._error("PROVIDER_INCOMPLETE", request_id=request_id)
+                if event_type == "response.completed":
+                    payload = event.get("response")
+                    if isinstance(payload, Mapping):
+                        return payload
+                    return self._error("PROVIDER_SCHEMA_INVALID_REPAIRABLE", repairable=True, request_id=request_id)
+                continue
+            if not isinstance(event.get("model"), str):
+                return self._error("PROVIDER_MODEL_UNAVAILABLE", request_id=request_id)
+            model = event["model"]
+            choices = event.get("choices")
+            if not isinstance(choices, list):
+                return self._error("PROVIDER_INCOMPLETE", request_id=request_id)
+            if not choices:  # Optional usage-only chunk; usage is never retained.
+                continue
+            if len(choices) != 1 or not isinstance(choices[0], Mapping):
+                return self._error("PROVIDER_INCOMPLETE", request_id=request_id)
+            choice = choices[0]
+            delta = choice.get("delta")
+            if type(choice.get("index")) is not int or choice["index"] != 0 or not isinstance(delta, Mapping) or finish_reason is not None:
+                return self._error("PROVIDER_INCOMPLETE", request_id=request_id)
+            if delta.get("refusal") is not None:
+                return self._error("PROVIDER_REFUSAL", request_id=request_id)
+            if delta.get("role") not in (None, "assistant") or any(delta.get(key) is not None for key in ("tool_calls", "function_call")):
+                return self._error("PROVIDER_INCOMPLETE", request_id=request_id)
+            text = delta.get("content")
+            if text is not None:
+                if not isinstance(text, str):
+                    return self._error("PROVIDER_INCOMPLETE", request_id=request_id)
+                content.append(text)
+            finish_reason = choice.get("finish_reason")
+            if finish_reason is not None and finish_reason != "stop":
+                return self._error("PROVIDER_INCOMPLETE", request_id=request_id)
+        return self._error("PROVIDER_INCOMPLETE", request_id=request_id)
+
     def _post(
         self,
         stage: str,
@@ -1248,7 +1340,11 @@ class OpenAIProvider:
         if not secret:
             return self._error("PROVIDER_NOT_CONFIGURED", error_class="not_configured")
         body = dict(body_override) if body_override is not None else self._body(stage, input_text, image_png, repair=repair, repair_context=repair_context)
+        streaming = stage == "offline_annotation"
+        if streaming:
+            body["stream"] = True
         request_id: str | None = None
+        payload: Any = None
         try:
             endpoint = "/responses" if self.profile.adapter == "openai_responses" else "/chat/completions"
             request_kwargs: dict[str, Any] = {
@@ -1256,8 +1352,20 @@ class OpenAIProvider:
                 "json": body,
                 "follow_redirects": False,
             }
-            response = self.client.post(self.profile.base_url.rstrip("/") + endpoint, **request_kwargs)
-            request_id = _redact_request_id(response.headers.get("x-request-id"))
+            url = self.profile.base_url.rstrip("/") + endpoint
+            if streaming:
+                request_kwargs["headers"]["Accept"] = "text/event-stream"
+                with self.client.stream("POST", url, **request_kwargs) as response:
+                    request_id = _redact_request_id(response.headers.get("x-request-id"))
+                    if 200 <= response.status_code < 300:
+                        payload = self._stream_payload(response, request_id)
+                        if isinstance(payload, _Attempt):
+                            return payload
+                    else:
+                        response.read()
+            else:
+                response = self.client.post(url, **request_kwargs)
+                request_id = _redact_request_id(response.headers.get("x-request-id"))
         except httpx.TimeoutException:
             return self._error("PROVIDER_TIMEOUT", error_class="timeout", retryable=True, request_id=request_id)
         except httpx.RequestError:
@@ -1282,21 +1390,22 @@ class OpenAIProvider:
             return self._error("PROVIDER_SERVER_ERROR", retryable=True, request_id=request_id)
         if status < 200 or status >= 300:
             return self._error("PROVIDER_REQUEST_INVALID", request_id=request_id)
-        try:
-            payload = response.json()
-        except (ValueError, json.JSONDecodeError):
-            return self._error(
-                "PROVIDER_SCHEMA_INVALID_REPAIRABLE",
-                repairable=True,
-                request_id=request_id,
-                repair_context=response.text,
-            )
+        if not streaming:
+            try:
+                payload = response.json()
+            except (ValueError, json.JSONDecodeError):
+                return self._error(
+                    "PROVIDER_SCHEMA_INVALID_REPAIRABLE",
+                    repairable=True,
+                    request_id=request_id,
+                    repair_context=response.text,
+                )
         if not isinstance(payload, Mapping):
             return self._error(
                 "PROVIDER_SCHEMA_INVALID_REPAIRABLE",
                 repairable=True,
                 request_id=request_id,
-                repair_context=response.text,
+                repair_context=self._bounded(payload),
                 validation_diagnostic=_validation_diagnostic("output_shape", "output_shape", payload) if stage == "offline_annotation" else None,
             )
         if not isinstance(payload.get("model"), str):

@@ -133,6 +133,19 @@ def chat_response(output: dict[str, object], *, model: object = "model-v1", fini
     return {"model": model, "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}]}
 
 
+def wire_response(request: httpx.Request, payload: dict[str, Any]) -> httpx.Response:
+    """Serve the requested wire format while preserving each test's payload."""
+    if not json.loads(request.content).get("stream"):
+        return httpx.Response(200, json=payload)
+    if request.url.path.endswith("/responses"):
+        event = {"type": "response.completed", "response": payload}
+        body = "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+    else:
+        event = {**payload, "choices": [{"index": choice.get("index"), "delta": choice.get("message"), "finish_reason": choice.get("finish_reason")} for choice in payload.get("choices", [])]}
+        body = "data: " + json.dumps(event, ensure_ascii=False) + "\n\ndata: [DONE]\n\n"
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode("utf-8"))
+
+
 def nested_incomplete_response(status: str) -> dict[str, object]:
     response = raw_response(annotation())
     response["output"][0]["status"] = status  # type: ignore[index]
@@ -314,7 +327,7 @@ def test_three_wire_shapes_and_probe_store_echo() -> None:
             return httpx.Response(400, json={"error": {"type": "invalid_request"}})
         name = body["text"]["format"]["name"]
         output = annotation() if name == "annotation_batch_output_v1" else query() if name == "query_spec_output_v1" else rerank()
-        return httpx.Response(200, json=raw_response(output))
+        return wire_response(request, raw_response(output))
 
     provider = OpenAIResponsesProvider(
         profile(),
@@ -325,6 +338,7 @@ def test_three_wire_shapes_and_probe_store_echo() -> None:
     assert result.capability_status == "verified"
     assert result.adapter == "openai_responses"
     assert len(seen) == 4
+    assert [body.get("stream") for body in seen] == [True, None, None, None]
     assert [body["text"]["format"]["name"] for body in seen[:3]] == [
         "annotation_batch_output_v1", "query_spec_output_v1", "rerank_output_v1"
     ]
@@ -349,7 +363,7 @@ def test_chat_probe_uses_three_strict_shapes_without_store() -> None:
             return httpx.Response(400, json={"error": {"type": "invalid_request"}})
         name = body["response_format"]["json_schema"]["name"]
         output = annotation() if name == "annotation_batch_output_v1" else query() if name == "query_spec_output_v1" else rerank()
-        return httpx.Response(200, json=chat_response(output))
+        return wire_response(request, chat_response(output))
 
     provider = OpenAIProvider(
         profile(adapter="openai_chat_completions"),
@@ -360,6 +374,7 @@ def test_chat_probe_uses_three_strict_shapes_without_store() -> None:
     assert result.capability_status == "verified"
     assert result.adapter == "openai_chat_completions"
     assert len(seen) == 4
+    assert [body.get("stream") for _url, body in seen] == [True, None, None, None]
     assert all(url.endswith("/chat/completions") for url, _body in seen)
     assert [body["response_format"]["json_schema"]["name"] for _url, body in seen[:3]] == [
         "annotation_batch_output_v1", "query_spec_output_v1", "rerank_output_v1"
@@ -390,7 +405,7 @@ def test_probe_query_spec_uses_exact_return_fixture_instruction(adapter: str) ->
         if structured["strict"] is not True:
             return httpx.Response(400, json={"error": {"type": "invalid_request"}})
         output = annotation() if structured["name"] == "annotation_batch_output_v1" else query() if structured["name"] == "query_spec_output_v1" else rerank()
-        return httpx.Response(200, json=raw_response(output) if adapter == "openai_responses" else chat_response(output))
+        return wire_response(request, raw_response(output) if adapter == "openai_responses" else chat_response(output))
 
     provider = OpenAIProvider(
         profile(adapter=adapter),
@@ -582,7 +597,7 @@ def test_chat_query_spec_invalid_enum_is_rejected_locally() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, json=chat_response(invalid_query))
+        return wire_response(_request, chat_response(invalid_query))
 
     p = profile(adapter="openai_chat_completions", enabled=True, capability_status="verified")
     provider = OpenAIProvider(
@@ -606,7 +621,7 @@ def test_chat_retry_never_switches_to_responses() -> None:
         urls.append(str(request.url))
         if calls == 1:
             return httpx.Response(503)
-        return httpx.Response(200, json=chat_response(annotation()))
+        return wire_response(request, chat_response(annotation()))
 
     p = profile(adapter="openai_chat_completions", enabled=True, capability_status="verified")
     provider = OpenAIProvider(
@@ -629,7 +644,7 @@ def test_probe_error_classification_must_be_real_and_non_retryable() -> None:
             return httpx.Response(429, json={"error": {"type": "rate_limit"}})
         name = body["text"]["format"]["name"]
         output = annotation() if name == "annotation_batch_output_v1" else query() if name == "query_spec_output_v1" else rerank()
-        return httpx.Response(200, json=raw_response(output))
+        return wire_response(request, raw_response(output))
 
     provider = OpenAIResponsesProvider(
         profile(), secret_resolver=SecretResolver(keyring_backend=Keyring("secret")),
@@ -649,7 +664,7 @@ def test_missing_store_echo_does_not_block_responses_probe() -> None:
         output = annotation() if name == "annotation_batch_output_v1" else query() if name == "query_spec_output_v1" else rerank()
         payload = raw_response(output)
         payload.pop("store", None)
-        return httpx.Response(200, json=payload)
+        return wire_response(request, payload)
 
     provider = OpenAIResponsesProvider(
         profile(),
@@ -669,7 +684,7 @@ def test_retry_budget_and_non_retry_refusal() -> None:
         calls += 1
         if calls == 1:
             return httpx.Response(503)
-        return httpx.Response(200, json=raw_response(annotation()))
+        return wire_response(request, raw_response(annotation()))
 
     provider = OpenAIResponsesProvider(
         enabled_profile(), secret_resolver=SecretResolver(keyring_backend=Keyring("secret")),
@@ -685,7 +700,7 @@ def test_retry_budget_and_non_retry_refusal() -> None:
         refusal_calls += 1
         response = raw_response(annotation())
         response["output"] = [{"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "refusal", "refusal": "no"}]}]
-        return httpx.Response(200, json=response)
+        return wire_response(request, response)
 
     refusing = OpenAIResponsesProvider(
         enabled_profile(), secret_resolver=SecretResolver(keyring_backend=Keyring("secret")),
@@ -724,7 +739,7 @@ def test_chat_response_refusal_finish_reason_and_content_fail_closed(payload_kin
             payload = chat_response(annotation(), content={"function_call": {"name": "bad"}})
         else:
             payload = {"model": "model-v1", "choices": [{"index": 0, "message": {"role": "assistant"}, "finish_reason": "stop"}]}
-        return httpx.Response(200, json=payload)
+        return wire_response(_request, payload)
 
     p = profile(adapter="openai_chat_completions", enabled=True, capability_status="verified")
     provider = OpenAIProvider(
@@ -795,7 +810,7 @@ def test_real_raw_nested_parser_rejects_sdk_only_output_text() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, json={"status": "completed", "model": "model-v1", "store": False, "usage": {"tokens": 9}, "cost": 3, "budget": 4, "output_text": json.dumps(annotation())})
+        return wire_response(request, {"status": "completed", "model": "model-v1", "store": False, "usage": {"tokens": 9}, "cost": 3, "budget": 4, "output_text": json.dumps(annotation())})
 
     provider = OpenAIResponsesProvider(
         enabled_profile(),
@@ -824,7 +839,7 @@ def test_raw_refusal_incomplete_and_missing_model_fail_closed(payload: dict[str,
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, json=payload)
+        return wire_response(request, payload)
 
     provider = OpenAIResponsesProvider(
         enabled_profile(), secret_resolver=SecretResolver(keyring_backend=Keyring("secret")),
@@ -849,7 +864,7 @@ def test_model_echo_mismatch_succeeds_without_entering_provenance(adapter: str) 
             if adapter == "openai_responses"
             else chat_response(annotation(), model=gateway_model)
         )
-        return httpx.Response(200, json=payload)
+        return wire_response(request, payload)
 
     provider = OpenAIProvider(
         p,
@@ -916,7 +931,7 @@ def test_model_echo_must_be_a_string(adapter: str, model_shape: str) -> None:
             payload.pop("model")
         else:
             payload["model"] = None if model_shape == "null" else 123
-        return httpx.Response(200, json=payload)
+        return wire_response(_request, payload)
 
     p = profile(adapter=adapter, enabled=True, capability_status="verified")
     provider = OpenAIProvider(
@@ -955,7 +970,7 @@ def test_authoritative_capabilities_and_atomic_enable(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, json=raw_response(annotation()))
+        return wire_response(request, raw_response(annotation()))
 
     provider = OpenAIResponsesProvider(
         profile(), profile_store=store, secret_resolver=SecretResolver(keyring_backend=Keyring("secret")),
@@ -1049,8 +1064,8 @@ def test_repair_is_bounded_and_untrusted() -> None:
             broken = "x" * 5000
             response = raw_response(annotation())
             response["output"] = [{"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": broken}]}]
-            return httpx.Response(200, json=response)
-        return httpx.Response(200, json=raw_response(annotation()))
+            return wire_response(request, response)
+        return wire_response(request, raw_response(annotation()))
 
     provider = OpenAIResponsesProvider(
         enabled_profile(), secret_resolver=SecretResolver(keyring_backend=Keyring("secret")),
@@ -1073,8 +1088,8 @@ def test_chat_schema_id_repair_uses_local_feedback_without_persisting_context() 
         if len(bodies) == 1:
             broken = annotation()
             broken["schema_id"] = "query-spec-output.v1"
-            return httpx.Response(200, json=chat_response(broken))
-        return httpx.Response(200, json=chat_response(annotation()))
+            return wire_response(request, chat_response(broken))
+        return wire_response(request, chat_response(annotation()))
 
     p = profile(adapter="openai_chat_completions", enabled=True, capability_status="verified")
     provider = OpenAIProvider(
@@ -1146,7 +1161,7 @@ def test_final_annotation_diagnostics_are_exactly_six_safe_fields(adapter: str, 
             response["output"][0]["content"][0]["text"] = output  # type: ignore[index]
         else:
             response = chat_response(annotation(), content=output)
-        return httpx.Response(200, json=response)
+        return wire_response(_request, response)
 
     provider = OpenAIProvider(
         p,
@@ -1180,7 +1195,7 @@ def test_successful_second_annotation_repair_has_no_diagnostic(adapter: str) -> 
             response["output"][0]["content"][0]["text"] = output  # type: ignore[index]
         else:
             response = chat_response(annotation(), content=output)
-        return httpx.Response(200, json=response)
+        return wire_response(_request, response)
 
     provider = OpenAIProvider(
         p,
@@ -1200,7 +1215,7 @@ def test_cache_caller_mismatch_makes_zero_network_calls() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, json=raw_response(annotation()))
+        return wire_response(request, raw_response(annotation()))
 
     provider = OpenAIResponsesProvider(
         enabled_profile(), secret_resolver=SecretResolver(keyring_backend=Keyring("secret")),
@@ -1222,7 +1237,7 @@ def test_envelope_and_machine_inputs_are_verified_before_network() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, json=raw_response(annotation()))
+        return wire_response(request, raw_response(annotation()))
 
     provider = OpenAIResponsesProvider(
         enabled_profile(), secret_resolver=SecretResolver(keyring_backend=Keyring("secret")),
@@ -1264,7 +1279,7 @@ def test_visual_rerank_inputs_are_canonical_and_fully_verified() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, json=raw_response(rerank()))
+        return wire_response(request, raw_response(rerank()))
 
     provider = OpenAIResponsesProvider(
         enabled_profile(), secret_resolver=SecretResolver(keyring_backend=Keyring("secret")),
