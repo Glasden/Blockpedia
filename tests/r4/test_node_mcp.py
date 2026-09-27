@@ -86,7 +86,7 @@ def node_session(data_root: Path):
     assert stderr == "" or (
         len(stderr.splitlines()) == 2
         and "ExperimentalWarning: SQLite is an experimental feature" in stderr
-        and stderr.splitlines()[1].startswith("(Use `node --trace-warnings")
+        and stderr.splitlines()[1].lower().startswith(("(use `node --trace-warnings", "(use `node.exe --trace-warnings"))
     ), stderr
 
 

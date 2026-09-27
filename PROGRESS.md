@@ -152,7 +152,7 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 
 | 项目 | 本次新 release 的计划 |
 |---|---|
-| 渲染偏暗 | D1 已修复继承 GUI 方向光的问题，使用固定的原版 DEFAULT/LEVEL 双灯 diffuse 预设，详见第 8 节。不是统一补亮，也不宣称采用 terrain 的 0.8/0.6 面阴影系数。完整重新导出与特征重算尚待后续执行，旧稿统一 L*≥85 不作为门槛。 |
+| 渲染偏暗 | D1 已修复继承 GUI 方向光的问题，使用固定的原版 DEFAULT/LEVEL 双灯 diffuse 预设，详见第 8 节。本次 Windows 完整单次导出及特征重算已完成，见第 9 节；双次确定性验证仍待执行。旧稿统一 L*≥85 不作为门槛。 |
 | 形状分类 | 优先将已有 stairs/slabs/walls/fences 等 registry tags 映射到统一分类；只有缺少事实的类别才补 exporter 最小运行时分类。查询词与实际分类对齐。 |
 | 搜索相关性 | 保留现有 FTS/LIKE 宽召回，改进短语、词覆盖率与字段加权；英文按词边界，名称/同义词高于用途/材料/风格，再高于摘要。补中文颜色与常用用途映射，材料真正参与评分；不新增在线模型。 |
 | `avoid_for` | 只从正向索引文本排除。暂不拆分标注字段或重做受控词表：没有旧兼容要求，也不意味着必须扩大本次 Schema 改造。保留共享语义投影/人工覆盖功能，不把含义混杂的历史字段直接用于负向惩罚。 |
@@ -174,9 +174,9 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 | A 文档收敛 | 本文件、旧文档归档、必要引用接线 | 主代理：归档完整性、有效链接、原稿和 evidence 保留、候选提交审核 | 文档已整理；18 项名单已获用户批准；提交状态见会话 |
 | B 详情与 MCP 图片输出 | summary/states、分页；三种带图工具最终响应采用256卡片/无损WebP，处理过程使用原图 | 实现者：两个摘要尺寸断言、全 release 大小扫描、分页集合一致、Schema/MIME、图片元数据、无损解码、客户端及视觉检查 | 未实施；图片方案已批准 |
 | C 特征多 worker | 第 4 节配置与进程池；可与 B/D 独立开发 | 实现者：串并行结果一致、生命周期/故障检查、同 run 并行证据及真实计时 | 已实现；默认 1。Windows 本次已用 5 个实际子进程完成 1,172 项特征；Linux 生命周期与计时见第 4.1 节 |
-| D 渲染与形状事实 | D1 颜色修复先独立交付；形状分类、新完整导出继续待办 | 实现者：Java 构建、真实 GPU 样本、分类来源检查；主代理核对完整导出验证 | D1 代码及定向 GPU 验证完成，见第 8 节；阶段整体未完成 |
+| D 渲染与形状事实 | D1 颜色修复及完整单次导出已交付；形状分类继续待办 | 实现者：Java 构建、真实 GPU 样本、分类来源检查；主代理核对完整导出验证 | 定向 GPU 与 Windows 完整单次导入校验已完成，见第 8、9 节；形状分类及双次确定性验证未完成 |
 | E 搜索与名单 | 相关性、中文映射、技术及虫蚀降权；名单已获用户批准，最终颜色/形状验收依赖 D | 实现者：约20条查询、FTS/LIKE、精确与泛用途查询对照、稳定排序 | E1 技术及虫蚀降权已实现；广义相关性、中文映射与完整建筑查询集仍未实施 |
-| F 新 release | 整合 B–E，新 workspace 完整处理并构建 | 主代理：构建通过，真实产物 summary 扫描、查询集、四工具 stdio 和状态引用一致；provider 结果独立取证 | 未执行；无新 release ID |
+| F 新 release | 整合 B–E，新 workspace 完整处理并构建 | 主代理：构建通过，真实产物 summary 扫描、查询集、四工具 stdio 和状态引用一致；provider 结果独立取证 | 当前已实现版本的 Windows 候选已构建并通过四工具验证，见第 9 节；B、D 形状分类及 E 剩余项未完成，因此不代表全部计划验收完成 |
 | G 发布 | F 验收后由用户明确发布 | 主代理：实际指针切换及下一次 MCP 查询指向新 release | 未授权执行，未发布 |
 
 聚焦测试、概念验证、真实 GPU 导出、provider 标注、Windows/Linux 平台证据和最终发布分别报告，不用其中一种替代其他证明。失败只修复对应范围并复验，不为追求全绿重跑外部请求或降低既有安全边界。
@@ -211,9 +211,9 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 
 复验入口：`renderLightingProbeJar` 生成独立测试 JAR；与 exporter 一起放进隔离 Fabric 游戏目录，指定 `-Dblockpedia.probe.output=<全新输出目录>` 后加载测试世界，探针运行完会退出客户端。必须检查 `PASS.txt` 存在且无 `FAIL.txt`，再以 `BLOCKPEDIA_RENDER_EVIDENCE=<该目录> python -m pytest -q tests/test_render_lighting.py` 检查真实 PNG。没有 GPU 产物时该项明确跳过，不算通过。原图、纹理及本地量测保留在忽略目录 `build/lighting-v2-evidence/{before,final}/`，不提交游戏资产；远端临时计划任务已移除。
 
-剩余边界：未完成全注册表新导出、完整导出的双次确定性验证、Linux/Vulkan GPU 验证或新 release 构建。旧 release 不会因代码修复自动变亮；后续仍需新导出、特征重算与新标注。本阶段没有顺带实施形状分类、搜索、详情压缩或多 worker。
+后续 Windows 完整单次导出、特征重算、新标注与候选构建已完成，见第 9 节。仍未完成完整导出的双次确定性验证、Linux/Vulkan GPU 验证、形状分类或详情压缩。旧 release 保留原始产物；新候选尚未发布。
 
-## 9. Windows 新导出与构建准备（2026-09-27）
+## 9. Windows 新导出与候选 release 验证（2026-09-27）
 
 用户在 `D:\Code\blockpedia` 客户端手动完成 `export_20260927T110503Z`，使用 `camera.v3`、`lighting.v2`，记录 1,196 个方块、32,366 个合法状态、1,172 个视觉候选及 24 项跳过。该导出通过当前 Studio 完整导入校验；第 8 节“尚待完整导出”的限制已由本次单次导出更新，双次确定性和 Linux/Vulkan 验证仍未完成。
 
@@ -221,4 +221,10 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 
 用户已明确保留 24 项跳过：10 项空渲染、9 项越界、3 项过小、2 项场景不支持；通过正式 review API 写入各自机器失败引用及用户决定。标注沿用 `jianshang / gpt-6-sol`，98 批、并发 5；两批 ID 集合不匹配被拒绝入库，定向重试均成功。1,172 项标注已齐全，原失败 job 记录保留作历史，未重复发送其他成功批次。
 
-质量核查由 Codex 查看实际预览并对照官方名称、选中状态及机器事实完成，记录的 reviewer 为 `Codex`，不称作人类逐项确认。修正了未连接的涂蜡斑驳铜栏杆被描述为多根镂空杆，以及黄色床脚部预览被加入白色颜色词两处语义；保留原始置信度与机器事实。包括既有跳过项及重试闭环，当前 1,220 条 review 均已 resolved；`HUMAN_REVIEW` 已 succeeded，运行停在 `R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING`。发布 `current.json` 未获授权，本次不切换发布指针。
+质量核查由 Codex 查看实际预览并对照官方名称、选中状态及机器事实完成，记录的 reviewer 为 `Codex`，不称作人类逐项确认。修正了未连接的涂蜡斑驳铜栏杆被描述为多根镂空杆，以及黄色床脚部预览被加入白色颜色词两处语义；保留原始置信度与机器事实。包括既有跳过项及重试闭环，1,220 条 review 均已 resolved；`HUMAN_REVIEW` 已 succeeded，当前 run 为 `succeeded / BUILD_RELEASE / RELEASE_BUILT`。
+
+构建使用已通过 Oracle 审核的 E1 源码提交 `d0251de`，Windows Studio 实际运行目录为 `D:\Code\blockpedia\build\studio-d0251de`。构建 ID 为 `build_ec8397fe58cb4faba5fa15b1de406ca0`，候选 release 为 **`rel_ec8397fe58cb4faba5fa15b1de406ca0`**，目录为 `D:\Code\blockpedia\run\blockpedia-data\releases\26.2\rel_ec8397fe58cb4faba5fa15b1de406ca0`。质量报告的 registry、合法状态、视觉候选、已审核语义与搜索准备五项均 passed；包含 1,196 blocks、32,366 states、1,172 visual variants 与 1,172 annotations。
+
+Windows Node 24.14.0 的真实 stdio 客户端使用候选副本和隔离验证指针执行四工具检查，Schema 与图片返回通过。`infested` 查询的 7 个虫蚀候选分数均为 0.25；`command` 查询的 3 个命令方块分数均为 0.25；完整中英文官方名称免罚并优先，精确 ID 可定位；沙子与沙砾仍为原始分数且没有名单提示。详情返回本地虫蚀风险提示。验证同时修正测试夹具对 Windows `node.EXE` 标准 SQLite 实验性警告的识别；Linux MCP 测试 7 项通过，生产检索逻辑未因此更改。
+
+本地证据在忽略目录 `build/windows-release-evidence/`，包含构建回执、质量报告、release 元信息与 MCP 验证报告。正式 `current.json` 在构建及验证前后 SHA-256 均为 `633f6f309f4a95f6673a8e5e0379b1c3a98a36b4140e5ca09ea0348ac19f298d`。发布未获授权，本次只构建候选并验证，不切换正式指针。
