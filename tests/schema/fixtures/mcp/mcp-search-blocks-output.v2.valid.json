@@ -8,14 +8,12 @@
       "candidate_qualification": "eligible",
       "score": 1,
       "score_breakdown": {
-        "shape": 0,
+        "text": 1,
         "color": 0,
-        "use": 0,
-        "name_synonym": 1,
-        "style": 0,
-        "behavior": 0
+        "shape": 0,
+        "light": 0
       },
-      "reason": "Matches name_synonym.",
+      "reason": "Matches 橡木楼梯 (name).",
       "warnings": []
     },
     {
@@ -26,14 +24,12 @@
       "candidate_qualification": "eligible",
       "score": 1,
       "score_breakdown": {
-        "shape": 0,
+        "text": 1,
         "color": 0,
-        "use": 0,
-        "name_synonym": 1,
-        "style": 0,
-        "behavior": 0
+        "shape": 0,
+        "light": 0
       },
-      "reason": "Matches name_synonym.",
+      "reason": "Matches 金合欢木楼梯 (name).",
       "warnings": []
     }
   ],

@@ -1,0 +1,527 @@
+{
+  "description": "Real building requests for search_blocks. Each query passes when all of its top-3 block IDs match `accept` (fnmatch patterns without the minecraft: prefix) and no `reject` pattern appears in the top 8. `top1` pins the first result where the answer is unambiguous. Acceptable sets are deliberately broad: the gate checks relevance, not one fixed order. `max_per_series` caps how many members of one 16-dye-colour series (white_wool ... black_wool) may appear in the top 8; without a colour in the query they are merged into one candidate.",
+  "queries": [
+    {
+      "keywords": [
+        "smooth stone wall"
+      ],
+      "accept": [
+        "smooth_stone",
+        "stone",
+        "stone_bricks",
+        "polished_andesite",
+        "polished_diorite",
+        "polished_tuff",
+        "polished_deepslate",
+        "polished_blackstone",
+        "smooth_quartz",
+        "smooth_sandstone",
+        "smooth_basalt",
+        "calcite",
+        "tuff_bricks"
+      ],
+      "reject": [
+        "*_sign",
+        "*_hanging_sign",
+        "*_shelf",
+        "*_button",
+        "*_banner"
+      ]
+    },
+    {
+      "keywords": [
+        "光滑石墙"
+      ],
+      "accept": [
+        "smooth_stone",
+        "stone",
+        "stone_bricks",
+        "polished_andesite",
+        "polished_diorite",
+        "polished_tuff",
+        "polished_deepslate",
+        "polished_blackstone",
+        "smooth_quartz",
+        "smooth_sandstone",
+        "smooth_basalt",
+        "calcite",
+        "tuff_bricks"
+      ],
+      "reject": [
+        "*_sign",
+        "*_hanging_sign",
+        "*_shelf",
+        "*_button",
+        "*_banner"
+      ]
+    },
+    {
+      "keywords": [
+        "dark wood roof"
+      ],
+      "accept": [
+        "dark_oak_*",
+        "spruce_*",
+        "mangrove_*",
+        "crimson_*",
+        "stripped_dark_oak_*",
+        "stripped_spruce_*"
+      ],
+      "reject": [
+        "*lightning_rod",
+        "andesite_*",
+        "deepslate_*",
+        "cobblestone_*",
+        "*_door",
+        "*_button",
+        "*_sign"
+      ]
+    },
+    {
+      "keywords": [
+        "深色",
+        "木",
+        "屋顶"
+      ],
+      "accept": [
+        "dark_oak_*",
+        "spruce_*",
+        "mangrove_*",
+        "crimson_*",
+        "stripped_dark_oak_*",
+        "stripped_spruce_*"
+      ],
+      "reject": [
+        "*lightning_rod",
+        "andesite_*",
+        "deepslate_*",
+        "cobblestone_*",
+        "*_door",
+        "*_button",
+        "*_sign"
+      ]
+    },
+    {
+      "keywords": [
+        "window shutter"
+      ],
+      "accept": [
+        "*_trapdoor"
+      ],
+      "reject": []
+    },
+    {
+      "keywords": [
+        "百叶窗"
+      ],
+      "accept": [
+        "*_trapdoor"
+      ],
+      "reject": []
+    },
+    {
+      "keywords": [
+        "white plaster wall"
+      ],
+      "accept": [
+        "white_concrete",
+        "white_concrete_powder",
+        "calcite",
+        "white_terracotta",
+        "smooth_quartz",
+        "quartz_block",
+        "quartz_bricks",
+        "snow_block",
+        "polished_diorite",
+        "diorite",
+        "white_wool",
+        "bone_block",
+        "mushroom_stem",
+        "smooth_sandstone"
+      ],
+      "reject": [
+        "*_sign",
+        "*_hanging_sign",
+        "*_banner",
+        "*_button",
+        "*_candle",
+        "*_tulip",
+        "azure_bluet"
+      ]
+    },
+    {
+      "keywords": [
+        "白色抹灰墙"
+      ],
+      "accept": [
+        "white_concrete",
+        "white_concrete_powder",
+        "calcite",
+        "white_terracotta",
+        "smooth_quartz",
+        "quartz_block",
+        "quartz_bricks",
+        "snow_block",
+        "polished_diorite",
+        "diorite",
+        "white_wool",
+        "bone_block",
+        "mushroom_stem",
+        "smooth_sandstone"
+      ],
+      "reject": [
+        "*_sign",
+        "*_hanging_sign",
+        "*_banner",
+        "*_button",
+        "*_candle",
+        "*_tulip",
+        "azure_bluet"
+      ]
+    },
+    {
+      "keywords": [
+        "mossy old wall"
+      ],
+      "accept": [
+        "mossy_cobblestone",
+        "mossy_stone_bricks",
+        "mossy_cobblestone_wall",
+        "mossy_stone_brick_wall",
+        "cracked_stone_bricks",
+        "cobblestone",
+        "mossy_cobblestone_*",
+        "mossy_stone_brick_*"
+      ],
+      "reject": [
+        "*_sign",
+        "*_hanging_sign",
+        "*_banner",
+        "*_button",
+        "infested_*"
+      ]
+    },
+    {
+      "keywords": [
+        "苔藓",
+        "旧墙"
+      ],
+      "accept": [
+        "mossy_cobblestone",
+        "mossy_stone_bricks",
+        "mossy_cobblestone_wall",
+        "mossy_stone_brick_wall",
+        "cracked_stone_bricks",
+        "cobblestone",
+        "mossy_cobblestone_*",
+        "mossy_stone_brick_*"
+      ],
+      "reject": [
+        "*_sign",
+        "*_hanging_sign",
+        "*_banner",
+        "*_button",
+        "infested_*"
+      ]
+    },
+    {
+      "keywords": [
+        "wooden beam"
+      ],
+      "accept": [
+        "*_log",
+        "*_wood",
+        "stripped_*_log",
+        "stripped_*_wood",
+        "*_stem",
+        "*_hyphae",
+        "bamboo_block",
+        "stripped_bamboo_block"
+      ],
+      "reject": [
+        "*_button",
+        "*_pressure_plate",
+        "*_door",
+        "*_sign",
+        "*_hanging_sign",
+        "*_shelf",
+        "bell"
+      ]
+    },
+    {
+      "keywords": [
+        "木梁"
+      ],
+      "accept": [
+        "*_log",
+        "*_wood",
+        "stripped_*_log",
+        "stripped_*_wood",
+        "*_stem",
+        "*_hyphae",
+        "bamboo_block",
+        "stripped_bamboo_block"
+      ],
+      "reject": [
+        "*_button",
+        "*_pressure_plate",
+        "*_door",
+        "*_sign",
+        "*_hanging_sign",
+        "*_shelf",
+        "bell"
+      ]
+    },
+    {
+      "keywords": [
+        "railing"
+      ],
+      "accept": [
+        "*_fence",
+        "iron_bars",
+        "*copper_bars",
+        "*_fence_gate",
+        "*_wall"
+      ],
+      "reject": [
+        "vine"
+      ]
+    },
+    {
+      "keywords": [
+        "栏杆"
+      ],
+      "accept": [
+        "*_fence",
+        "iron_bars",
+        "*copper_bars",
+        "*_fence_gate",
+        "*_wall"
+      ],
+      "reject": [
+        "vine"
+      ]
+    },
+    {
+      "keywords": [
+        "window sill trim"
+      ],
+      "accept": [
+        "*_slab",
+        "*_stairs",
+        "*_trapdoor"
+      ],
+      "reject": [
+        "*_carpet",
+        "potted_*"
+      ]
+    },
+    {
+      "keywords": [
+        "窗台",
+        "线脚"
+      ],
+      "accept": [
+        "*_slab",
+        "*_stairs",
+        "*_trapdoor"
+      ],
+      "reject": [
+        "*_carpet",
+        "potted_*"
+      ]
+    },
+    {
+      "keywords": [
+        "warm light lamp"
+      ],
+      "accept": [
+        "lantern",
+        "glowstone",
+        "shroomlight",
+        "redstone_lamp",
+        "torch",
+        "wall_torch",
+        "jack_o_lantern",
+        "ochre_froglight",
+        "campfire",
+        "copper_bulb",
+        "exposed_copper_bulb",
+        "weathered_copper_bulb",
+        "oxidized_copper_bulb",
+        "waxed_*copper_bulb",
+        "candle",
+        "*_candle",
+        "copper_torch",
+        "copper_wall_torch",
+        "end_rod"
+      ],
+      "reject": [
+        "*_door",
+        "*_planks",
+        "daylight_detector",
+        "*lightning_rod",
+        "soul_*"
+      ]
+    },
+    {
+      "keywords": [
+        "暖光灯"
+      ],
+      "accept": [
+        "lantern",
+        "glowstone",
+        "shroomlight",
+        "redstone_lamp",
+        "torch",
+        "wall_torch",
+        "jack_o_lantern",
+        "ochre_froglight",
+        "campfire",
+        "copper_bulb",
+        "exposed_copper_bulb",
+        "weathered_copper_bulb",
+        "oxidized_copper_bulb",
+        "waxed_*copper_bulb",
+        "candle",
+        "*_candle",
+        "copper_torch",
+        "copper_wall_torch",
+        "end_rod"
+      ],
+      "reject": [
+        "*_door",
+        "*_planks",
+        "daylight_detector",
+        "*lightning_rod",
+        "soul_*"
+      ]
+    },
+    {
+      "keywords": [
+        "stone"
+      ],
+      "top1": "stone",
+      "accept": [
+        "stone",
+        "stone_bricks",
+        "smooth_stone",
+        "cobblestone",
+        "stone_slab",
+        "stone_stairs",
+        "stone_brick_*",
+        "smooth_stone_slab",
+        "cracked_stone_bricks",
+        "chiseled_stone_bricks",
+        "mossy_stone_bricks"
+      ],
+      "reject": []
+    },
+    {
+      "keywords": [
+        "oak stairs"
+      ],
+      "top1": "oak_stairs",
+      "accept": [
+        "*_stairs"
+      ],
+      "reject": []
+    },
+    {
+      "keywords": [
+        "white"
+      ],
+      "accept": [
+        "white_*",
+        "snow_block",
+        "snow",
+        "quartz_*",
+        "smooth_quartz",
+        "calcite",
+        "bone_block",
+        "diorite",
+        "polished_diorite",
+        "powder_snow"
+      ],
+      "reject": []
+    },
+    {
+      "keywords": [
+        "red brick wall"
+      ],
+      "accept": [
+        "bricks",
+        "brick_wall",
+        "brick_slab",
+        "brick_stairs",
+        "red_nether_bricks",
+        "red_nether_brick_*",
+        "mud_bricks",
+        "red_terracotta",
+        "terracotta",
+        "cinnabar_brick*",
+        "cinnabar_bricks"
+      ],
+      "reject": [
+        "*_sign",
+        "*_hanging_sign",
+        "*_banner",
+        "*_candle"
+      ]
+    },
+    {
+      "keywords": [
+        "深色",
+        "石头",
+        "地板"
+      ],
+      "accept": [
+        "deepslate*",
+        "polished_deepslate*",
+        "cobbled_deepslate*",
+        "blackstone*",
+        "polished_blackstone*",
+        "basalt",
+        "polished_basalt",
+        "smooth_basalt",
+        "tuff*",
+        "polished_tuff*"
+      ],
+      "reject": [
+        "*_sign",
+        "*_button",
+        "*_pressure_plate",
+        "infested_*"
+      ]
+    },
+    {
+      "keywords": [
+        "stained glass window"
+      ],
+      "accept": [
+        "*_stained_glass",
+        "*_stained_glass_pane",
+        "glass",
+        "glass_pane",
+        "tinted_glass"
+      ],
+      "reject": [],
+      "max_per_series": 1
+    },
+    {
+      "keywords": [
+        "彩色玻璃",
+        "窗"
+      ],
+      "accept": [
+        "*_stained_glass",
+        "*_stained_glass_pane",
+        "glass",
+        "glass_pane",
+        "tinted_glass"
+      ],
+      "reject": [],
+      "max_per_series": 1
+    }
+  ]
+}

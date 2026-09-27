@@ -15,7 +15,7 @@ from typing import Any
 
 from blockpedia.r3 import encode_rgba_png
 from blockpedia.features import FEATURE_EXTRACTOR_VERSION, _normalized_hash, _oklab_and_lab
-from blockpedia.search import SEMANTIC_LIST_FIELDS, SEMANTIC_SCALAR_FIELDS, normalize_text
+from blockpedia.search import POSITIVE_LIST_FIELDS, SEMANTIC_SCALAR_FIELDS, normalize_text
 
 
 HASH = "sha256:" + "a" * 64
@@ -182,7 +182,7 @@ def _create_index(path: Path, blocks: list[dict[str, Any]], states: list[dict[st
         text_parts.extend(str(value) for value in variant["machine_facts"].get("machine_tags", []))
         text_parts.extend(str(value) for value in variant["machine_facts"].get("geometry", {}).get("geometry_classes", []))
         semantic = annotations[variant["variant_id"]]
-        for key in SEMANTIC_LIST_FIELDS + SEMANTIC_SCALAR_FIELDS:
+        for key in POSITIVE_LIST_FIELDS + SEMANTIC_SCALAR_FIELDS:
             value = semantic.get(key)
             if isinstance(value, list):
                 text_parts.extend(str(item) for item in value)

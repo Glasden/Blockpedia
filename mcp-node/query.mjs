@@ -2,8 +2,9 @@
 //
 // Port of src/blockpedia/mcp_query.py onto Node 24 with the sibling
 // ./release.mjs reader and ./png.mjs image composition.  Keyword recall (FTS5
-// trigram or LIKE), deterministic scoring/ranking, per-request preview caching
-// and pointer switching per request follow the Python business logic.  Outputs
+// trigram or LIKE), per-request preview caching and pointer switching per
+// request follow the Python business logic; ranking is the field-weighted
+// scoring below, checked against tests/r4/golden_queries.json.  Outputs
 // carry only what a host needs to choose blocks: no request IDs, schema
 // versions, release hashes or image digests.  Release completeness stays with
 // the build/activation gate; no local tamper check is reintroduced here.
@@ -14,7 +15,6 @@ export const BLOCK_ID_RE = /^minecraft:[a-z0-9_./-]+$/;
 const VERSION_RE = /^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$/;
 const IMAGE_MIME_TYPE = 'image/webp';
 
-export const WEIGHTS = { shape: 0.35, color: 0.3, use: 0.15, name_synonym: 0.1, style: 0.05, behavior: 0.05 };
 const blockSet = (...ids) => new Set(ids.map((id) => `minecraft:${id}`));
 const TECHNICAL_BLOCKS = blockSet(
   'air', 'cave_air', 'void_air', 'barrier', 'light', 'structure_void',
@@ -84,29 +84,178 @@ const exactBlockQuery = (query, blockId, names) =>
 export const OFFICIAL_DISCLAIMER =
   'NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.';
 
-const COLOR_LAB_TARGETS = {
-  red: [53.24, 80.09, 67.2], '红': [53.24, 80.09, 67.2], '红色': [53.24, 80.09, 67.2],
-  yellow: [80.0, 0.0, 93.0], '黄': [80.0, 0.0, 93.0], '黄色': [80.0, 0.0, 93.0],
-  blue: [32.3, 79.2, -107.9], '蓝': [32.3, 79.2, -107.9], '蓝色': [32.3, 79.2, -107.9],
-  green: [46.2, -51.7, 49.9], '绿': [46.2, -51.7, 49.9], '绿色': [46.2, -51.7, 49.9],
-  white: [100.0, 0.0, 0.0], black: [0.0, 0.0, 0.0], gray: [53.6, 0.0, 0.0], grey: [53.6, 0.0, 0.0],
+// ---- Search vocabulary ------------------------------------------------------
+//
+// Use, material and style words are matched directly against the annotation
+// fields.  This table only holds what those fields cannot answer on their own:
+// intents scored from machine facts (colour from preview Lab, shape class from
+// registry tags, light from emission level) and bridges from Chinese or
+// building jargon to the words annotations actually use.
+//
+//   color: COLOR_SCORES id          shapes: acceptable SHAPE_TAGS classes
+//   light: wants a light source      alts: further words that satisfy the term
+//
+// A term with neither alts nor shapes is an intent only and is not matched as
+// text: "light" would hit "Light Gray", and "dark" is a lightness preference.
+const VOCAB = [
+  [['white', '白', '白色', '纯白'], { color: 'white' }],
+  [['black', '黑', '黑色'], { color: 'black' }],
+  [['gray', 'grey', '灰', '灰色'], { color: 'gray' }],
+  [['brown', '棕', '棕色', '褐', '褐色'], { color: 'brown' }],
+  [['red', '红', '红色'], { color: 'red' }],
+  [['orange', '橙', '橙色', '橘色'], { color: 'orange' }],
+  [['yellow', '黄', '黄色'], { color: 'yellow' }],
+  [['green', '绿', '绿色'], { color: 'green' }],
+  [['cyan', 'teal', '青', '青色'], { color: 'cyan' }],
+  [['blue', '蓝', '蓝色'], { color: 'blue' }],
+  [['purple', 'violet', '紫', '紫色'], { color: 'purple' }],
+  [['pink', '粉', '粉色', '粉红', '粉红色'], { color: 'pink' }],
+  [['dark', '深', '深色', '暗', '暗色'], { color: 'dark' }],
+  [['pale', '浅', '浅色', '淡色'], { color: 'pale' }],
+  [['warm', '暖', '暖色'], { color: 'warm' }],
+  [['红砖'], { color: 'red', alts: ['brick', '砖'] }],
+  [['light', 'lighting', 'glowing', 'luminous', '光', '发光', '照明', '光源'], { light: true }],
+  [['暖光'], { color: 'warm', light: true }],
+  [['lamp', 'lamps', '灯', '灯具'], { light: true, alts: ['lamp', 'lantern', 'light source', '灯'] }],
+  [['暖光灯'], { color: 'warm', light: true, alts: ['lamp', 'lantern', 'light source', '灯'] }],
+  [['lantern', 'lanterns', '灯笼'], { light: true, alts: ['lantern', 'lamp', '灯'] }],
+  [['stairs', 'stair', 'staircase', '楼梯', '阶梯'], { shapes: ['stairs'] }],
+  [['slab', 'slabs', '台阶', '半砖'], { shapes: ['slab'] }],
+  [['fence', 'fences', '栅栏', '篱笆'], { shapes: ['fence'] }],
+  [['fence gate', '栅栏门'], { shapes: ['fence_gate'] }],
+  [['trapdoor', 'trapdoors', '活板门', '活门'], { shapes: ['trapdoor'] }],
+  [['door', 'doors', '门'], { shapes: ['door'] }],
+  [['pane', 'panes', 'glass pane', '玻璃板'], { shapes: ['pane'] }],
+  [['carpet', 'carpets', '地毯'], { shapes: ['carpet'] }],
+  [['button', 'buttons', '按钮'], { shapes: ['button'] }],
+  [['pressure plate', '压力板'], { shapes: ['pressure_plate'] }],
+  [['围墙'], { shapes: ['wall'], alts: ['wall'] }],
+  [['shutter', 'shutters', '百叶', '百叶窗'], { shapes: ['trapdoor'], alts: ['shutter', 'trapdoor'] }],
+  [['railing', 'railings', 'balustrade', 'baluster', 'handrail', '栏杆', '护栏', '扶手'], { shapes: ['fence', 'pane', 'wall', 'fence_gate'], alts: ['railing', 'fence', 'bars', 'balustrade'] }],
+  [['sill', '窗台'], { shapes: ['slab', 'stairs', 'trapdoor'], alts: ['sill', 'ledge', 'trim'] }],
+  [['trim', 'molding', 'moulding', 'cornice', '线脚', '腰线', '饰线', '装饰线'], { alts: ['trim', 'molding', 'border', 'ledge'] }],
+  [['beam', 'beams', '梁', '横梁'], { alts: ['beam', 'log', 'pillar'] }],
+  [['木梁'], { alts: ['beam', 'log', '原木'] }],
+  [['shingle', 'shingles', '瓦', '瓦片', '屋瓦'], { alts: ['shingle', 'roof', 'roofing', 'tile'] }],
+  [['plaster', 'stucco', '抹灰', '灰泥', '灰浆', '粉刷'], { alts: ['plaster', 'stucco', 'concrete'] }],
+  [['old', 'aged', 'ancient', '旧', '老', '古旧', '破旧', '陈旧'], { alts: ['old', 'weathered', 'cracked', 'mossy', 'aged'] }],
+  [['wooden', 'wood', '木', '木头', '木质', '木制', '木材'], { alts: ['wood', 'wooden', 'planks', '木'] }],
+  [['墙', '墙面', '墙体', '墙壁'], { alts: ['wall', '墙'] }],
+  [['屋顶', '房顶'], { alts: ['roof', 'roofing', '屋顶'] }],
+  [['屋檐'], { alts: ['eave', 'roof', '屋檐'] }],
+  [['地板', '地面', '铺地'], { alts: ['floor', 'flooring', '地板'] }],
+  [['柱', '柱子'], { alts: ['pillar', 'column', '柱'] }],
+  [['窗', '窗户'], { alts: ['window', '窗'] }],
+  [['窗框'], { alts: ['window frame', 'window', '窗框'] }],
+  [['石', '石头', '石材'], { alts: ['stone', '石'] }],
+  [['光滑', '平滑'], { alts: ['smooth', '平滑'] }],
+  [['砖', '砖块'], { alts: ['brick', '砖'] }],
+  [['玻璃'], { alts: ['glass', '玻璃'] }],
+  [['金属'], { alts: ['metal', 'metallic', '金属'] }],
+  [['铜'], { alts: ['copper', '铜'] }],
+  [['铁'], { alts: ['iron', '铁'] }],
+  [['苔藓', '青苔', '苔'], { alts: ['moss', 'mossy', '苔'] }],
+  [['现代'], { alts: ['modern', '现代'] }],
+  [['古典'], { alts: ['classic', 'classical', '古典'] }],
+  [['简约', '简单'], { alts: ['minimal', 'simple', 'plain', '简约'] }],
+  [['乡村'], { alts: ['rustic', '乡村'] }],
+  [['装饰'], { alts: ['decorative', 'decoration', '装饰'] }],
+];
+const VOCAB_INDEX = new Map(VOCAB.flatMap(([terms, spec]) => terms.map((term) => [term, spec])));
+// Words that state a colour in a name or annotation; official zh names use
+// the 色 forms (白色混凝土, 淡灰色羊毛).
+const COLOR_NAME_WORDS = {
+  white: ['white', '白色'], black: ['black', '黑色'], gray: ['gray', 'grey', '灰色'], brown: ['brown', '棕色'],
+  red: ['red', '红色'], orange: ['orange', '橙色'], yellow: ['yellow', '黄色'], green: ['green', '绿色'],
+  cyan: ['cyan', 'teal', '青色'], blue: ['blue', '蓝色'], purple: ['purple', '紫色'], pink: ['pink', '粉红色'],
+  dark: ['dark', '深色'], pale: ['pale', '淡'], warm: ['warm', 'amber', 'orange', 'golden', 'gold', '暖'],
 };
-const COLOR_OKLAB_TARGETS = {
-  red: [0.628, 0.225, 0.126], '红': [0.628, 0.225, 0.126], '红色': [0.628, 0.225, 0.126],
-  yellow: [0.968, -0.071, 0.199], '黄': [0.968, -0.071, 0.199], '黄色': [0.968, -0.071, 0.199],
-  blue: [0.452, -0.032, -0.312], '蓝': [0.452, -0.032, -0.312], '蓝色': [0.452, -0.032, -0.312],
-  green: [0.866, -0.234, 0.179], '绿': [0.866, -0.234, 0.179], '绿色': [0.866, -0.234, 0.179],
-  white: [1.0, 0.0, 0.0], black: [0.0, 0.0, 0.0], gray: [0.6, 0.0, 0.0], grey: [0.6, 0.0, 0.0],
+
+// Colour intents over the preview's mean CIELAB as L, chroma, hue.  Previews
+// carry the renderer's directional shading, so a white block averages L*
+// 64-75 and the thresholds sit on that scale rather than on texture colour.
+const ramp = (value, from, to) => clamp01((value - from) / (to - from));
+const hueNear = (hue, center, width) => clamp01(1 - Math.abs(((hue - center + 540) % 360) - 180) / width);
+const COLOR_SCORES = {
+  white: ([l, c]) => ramp(l, 45, 62) * ramp(c, 16, 8),
+  black: ([l, c]) => ramp(l, 28, 15) * ramp(c, 20, 10),
+  gray: ([l, c]) => Math.min(ramp(l, 10, 22), ramp(l, 62, 48)) * ramp(c, 12, 5),
+  brown: ([l, c, h]) => hueNear(h, 60, 40) * ramp(c, 6, 14) * ramp(l, 55, 40),
+  red: ([, c, h]) => hueNear(h, 30, 30) * ramp(c, 15, 30),
+  orange: ([l, c, h]) => hueNear(h, 55, 20) * ramp(c, 20, 35) * ramp(l, 25, 35),
+  yellow: ([l, c, h]) => hueNear(h, 85, 25) * ramp(c, 20, 35) * ramp(l, 35, 50),
+  green: ([, c, h]) => hueNear(h, 130, 45) * ramp(c, 12, 25),
+  cyan: ([, c, h]) => hueNear(h, 200, 35) * ramp(c, 8, 20),
+  blue: ([, c, h]) => hueNear(h, 265, 40) * ramp(c, 12, 25),
+  purple: ([, c, h]) => hueNear(h, 310, 35) * ramp(c, 12, 25),
+  pink: ([l, c, h]) => hueNear(h, 355, 35) * ramp(c, 10, 25) * ramp(l, 35, 50),
+  dark: ([l]) => ramp(l, 40, 20),
+  pale: ([l]) => ramp(l, 45, 62),
+  warm: ([, c, h]) => hueNear(h, 55, 45) * ramp(c, 8, 20),
 };
-const COLOR_TERMS = new Set(Object.keys(COLOR_LAB_TARGETS));
-const MATERIAL_TERMS = new Set(['stone', 'wood', 'brick', 'glass', 'metal', '石', '木', '砖', '玻璃']);
-const USE_TERMS = new Set(['roof', 'eave', 'wall', 'floor', 'trim', '屋檐', '屋顶', '墙', '地板']);
-const STYLE_TERMS = new Set(['modern', 'classic', 'simple', 'rustic', '现代', '古典', '简单']);
-const SHAPE_TERMS = new Set([
-  'button_like', 'cross_plane', 'fence_like', 'full_cube', 'horizontal_thin_sheet', 'irregular',
-  'liquid_surface', 'pane_like', 'partial_cube', 'post_like', 'rod_like', 'slab_like', 'stair_like',
-  'vertical_thin_sheet', 'wall_like', 'carpet', 'stair', 'slab', 'pane', 'wall', 'fence',
+const lch = (lab) => {
+  if (!Array.isArray(lab) || lab.length !== 3 || lab.some((value) => typeof value !== 'number')) return null;
+  const [l, a, b] = lab;
+  return [l, Math.hypot(a, b), ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360];
+};
+
+// Shape class of a block from its registry tags; the first matching row wins.
+// Vanilla has no tag for glass panes, bars or moss carpets, so those fall back
+// to the registry naming rule below until the exporter reports block classes.
+const SHAPE_TAGS = [
+  ['stairs', 'stairs'], ['slab', 'slabs'], ['wall', 'walls'], ['fence_gate', 'fence_gates'], ['fence', 'fences'],
+  ['trapdoor', 'trapdoors'], ['door', 'doors'], ['button', 'buttons'], ['pressure_plate', 'pressure_plates'],
+  ['carpet', 'wool_carpets'], ['sign', 'all_signs'], ['banner', 'banners'], ['bed', 'beds'], ['candle', 'candles'],
+  ['rod', 'lightning_rods'],
+].map(([shape, tag]) => [shape, `minecraft:${tag}`]);
+const SHAPE_ID_SUFFIXES = [['pane', '_pane'], ['pane', '_bars'], ['carpet', '_carpet'], ['rod', '_rod'], ['chain', '_chain']];
+// "wall" is ambiguous between a wall surface and the wall block shape, so it
+// is not a shape intent.  In a wall block's own name (闪长岩墙) it names the
+// shape and counts only as much as an annotation role; in a wall-mounted
+// variant (acacia_wall_sign, white_wall_banner, wall_torch) it says where the
+// item hangs and does not count at all.
+const WALL_MOUNTED_RE = /(?:^|_)wall_/;
+const WALL_WORDS = new Set(['wall', '墙']);
+const WALL_SHAPE_WEIGHT = 0.6;
+// When the query names no shape, derived forms of a material rank below the
+// base block, and small fixtures that only borrow its texture rank lower still.
+const SHAPE_FACTORS = new Map([
+  ...['stairs', 'slab', 'wall', 'fence_gate', 'fence', 'trapdoor', 'door', 'carpet', 'pane'].map((shape) => [shape, 0.9]),
+  ...['button', 'pressure_plate', 'sign', 'banner', 'wall_mounted', 'rod', 'chain'].map((shape) => [shape, 0.8]),
 ]);
+// The 16 dye colours in creative-inventory order.  A colour series is a block
+// ID suffix that all 16 carry (white_wool ... black_wool); tulips or red and
+// brown mushrooms are not one.  Longer names first so light_blue_ is not read
+// as blue_.
+const DYE_COLORS = [
+  'white', 'light_gray', 'gray', 'black', 'brown', 'red', 'orange', 'yellow',
+  'lime', 'green', 'cyan', 'light_blue', 'blue', 'purple', 'magenta', 'pink',
+];
+const DYE_PREFIXES = [...DYE_COLORS].sort((left, right) => right.length - left.length);
+const colorSeries = (blockId, blockIds) => {
+  const path = blockId.replace(/^minecraft:/, '');
+  const color = DYE_PREFIXES.find((dye) => path.startsWith(`${dye}_`));
+  if (color === undefined) return null;
+  const suffix = path.slice(color.length + 1);
+  if (!DYE_COLORS.every((dye) => blockIds.has(`minecraft:${dye}_${suffix}`))) return null;
+  return { key: suffix, color };
+};
+
+// A material the game also offers as stairs, slab or wall is a construction
+// material (stone, smooth_stone, stone_bricks, oak_planks); end_stone or a
+// moss block is not.
+const FORM_BASES = [[/_planks$/, ''], [/_block$/, ''], [/_bricks$/, '_brick'], [/_tiles$/, '_tile'], [/$/, '']];
+const hasBuildingForms = (blockId, blockIds) => FORM_BASES.some(([pattern, replacement]) => {
+  if (!pattern.test(blockId)) return false;
+  const base = blockId.replace(pattern, replacement);
+  return ['_stairs', '_slab', '_wall'].some((suffix) => blockIds.has(`${base}${suffix}`));
+});
+const shapeClass = (blockId, tags = []) => {
+  const tagged = SHAPE_TAGS.find(([, tag]) => tags.includes(tag));
+  if (tagged !== undefined) return tagged[0];
+  if (WALL_MOUNTED_RE.test(blockId.replace(/^minecraft:/, ''))) return 'wall_mounted';
+  return SHAPE_ID_SUFFIXES.find(([, suffix]) => blockId.endsWith(suffix))?.[0] ?? null;
+};
 
 const ERROR_CODES = new Set([
   'DATA_ROOT_INVALID', 'CURRENT_POINTER_MISSING', 'CURRENT_POINTER_INVALID', 'VERSION_NOT_AVAILABLE',
@@ -407,56 +556,148 @@ const errorResult = (error, invalidBlockIds = []) => {
 
 const toolResult = (output, images = []) => ({ structuredContent: output, images: [...images], isError: false });
 
-const keywordTokens = (keywords) => {
-  const tokens = [];
-  for (const keyword of keywords) tokens.push(...normalized(keyword).split(' ').filter(Boolean));
-  return tokens;
+// ---- Query terms and field matching ----------------------------------------
+const HAN_RE = /\p{Script=Han}/u;
+const HAN_RUN_RE = /(\p{Script=Han}+)/u;
+// Plural folding only, applied to query and field words alike.
+const stem = (word) => {
+  if (word.length > 3 && word.endsWith('ies')) return `${word.slice(0, -3)}y`;
+  if (word.length > 3 && word.endsWith('s') && !word.endsWith('ss')) return word.slice(0, -1);
+  return word;
+};
+const wordsOf = (text) => (text.match(/[\p{L}\p{N}]+/gu) ?? []).map(stem);
+
+const ALT_WEIGHT = 0.85;
+// A Han alt that is part of the query word itself is the same morpheme (苔 of
+// 苔藓 in 苔石, mossy cobblestone), not a translation.
+const MORPHEME_WEIGHT = 0.95;
+const BREADTH_RANGE = 0.1;
+const FIELD_WEIGHTS = {
+  name: 1.0, synonym: 0.9, role: 0.6, material: 0.6, style: 0.6, 'shape term': 0.6, 'color term': 0.6, 'machine tag': 0.6, summary: 0.35,
+};
+// avoid_for is deliberately absent: its entries mix unsuitable uses with
+// look-alike blocks, so they never count as a positive match.
+const ANNOTATION_FIELDS = [
+  ['synonym', 'synonyms_zh'], ['synonym', 'synonyms_en'], ['role', 'building_roles'], ['material', 'material_impressions'],
+  ['style', 'style_tags'], ['shape term', 'shape_terms'], ['color term', 'color_terms'], ['summary', 'summary_zh'], ['summary', 'summary_en'],
+];
+const DIM_WEIGHTS = { text: 0.5, color: 0.3, shape: 0.25, light: 0.25 };
+
+// Start indices where needle occurs as a contiguous run in haystack.
+const runStarts = (haystack, needle) => {
+  const starts = [];
+  for (let start = 0; start + needle.length <= haystack.length; start += 1) {
+    if (needle.every((part, offset) => haystack[start + offset] === part)) starts.push(start);
+  }
+  return starts;
 };
 
-const keywordIntent = (keywords) => {
-  const tokens = keywordTokens(keywords);
+// One matcher per query word: Han by substring (no word boundaries), others by
+// whole stemmed words in order.
+const matcher = (text) => {
+  if (HAN_RE.test(text)) return { text, han: true, test: (item) => item.raw.includes(text) };
+  const words = wordsOf(text);
+  return { text, han: false, words, test: (item) => runStarts(item.words, words).length > 0 };
+};
+
+const fieldItem = (field, text) => {
+  const raw = normalized(text);
+  return { field, weight: FIELD_WEIGHTS[field], raw, words: wordsOf(raw) };
+};
+
+// Longest-match segmentation of an unspaced Han run; characters no lexicon
+// entry starts with stay together as one term.
+const segmentHan = (run, lexicon) => {
+  const chars = [...run];
+  const out = [];
+  let pending = '';
+  for (let index = 0; index < chars.length;) {
+    let hit = '';
+    for (let length = Math.min(8, chars.length - index); length >= 1 && !hit; length -= 1) {
+      const candidate = chars.slice(index, index + length).join('');
+      if (lexicon.has(candidate)) hit = candidate;
+    }
+    if (hit) {
+      if (pending) out.push(pending);
+      pending = '';
+      out.push(hit);
+      index += [...hit].length;
+    } else {
+      pending += chars[index];
+      index += 1;
+    }
+  }
+  if (pending) out.push(pending);
+  return out;
+};
+
+const queryTerm = (text) => {
+  const spec = VOCAB_INDEX.get(text) ?? {};
+  const textual = spec.alts !== undefined || spec.shapes !== undefined || (spec.color === undefined && !spec.light);
+  const alts = textual ? [...new Set([text, ...(spec.alts ?? [])])] : [];
   return {
-    keywords: tokens,
-    colors: tokens.filter((token) => COLOR_TERMS.has(token)),
-    materials: tokens.filter((token) => MATERIAL_TERMS.has(token)),
-    uses: tokens.filter((token) => USE_TERMS.has(token)),
-    styles: tokens.filter((token) => STYLE_TERMS.has(token)),
-    shape_terms: tokens.filter((token) => SHAPE_TERMS.has(token)),
-    avoid_for: [],
+    text,
+    textual,
+    matchers: alts.map((alt, index) => ({
+      ...matcher(alt),
+      weight: index === 0 ? 1 : HAN_RE.test(alt) && text.includes(alt) ? MORPHEME_WEIGHT : ALT_WEIGHT,
+    })),
+    color: spec.color ?? null,
+    shapes: spec.shapes ?? [],
+    light: spec.light === true,
   };
 };
 
-const containsAny = (texts, terms) => {
-  if (!terms || terms.length === 0) return 0.0;
-  const haystack = texts.map((item) => normalized(item)).join(' ');
-  return terms.some((term) => haystack.includes(normalized(term))) ? 1.0 : 0.0;
+// Keywords become terms: two-word vocabulary entries ("fence gate") merge,
+// Han runs are segmented.  Returns the terms plus the union of their intents.
+const parseQuery = (keywords, lexicon) => {
+  const texts = [];
+  for (const keyword of keywords) {
+    const words = normalized(keyword).split(' ').filter(Boolean)
+      .flatMap((piece) => piece.split(HAN_RUN_RE).filter(Boolean).flatMap((part) => (HAN_RE.test(part) ? segmentHan(part, lexicon) : [part])));
+    for (let index = 0; index < words.length; index += 1) {
+      const pair = `${words[index]} ${words[index + 1]}`;
+      if (index + 1 < words.length && VOCAB_INDEX.has(pair)) {
+        texts.push(pair);
+        index += 1;
+      } else {
+        texts.push(words[index]);
+      }
+    }
+  }
+  const unique = [...new Set(texts)];
+  // One field word satisfies at most one query term: an alt that is another
+  // query word ("roof" for "shingle" in "roof shingle") or an earlier term's
+  // alt ("mossy" for both 苔藓 and 旧) is dropped.
+  const claimed = new Set(unique);
+  const terms = unique.map(queryTerm).map((term) => {
+    const matchers = term.matchers.filter((candidate, index) => index === 0 || !claimed.has(candidate.text));
+    for (const candidate of matchers) claimed.add(candidate.text);
+    return { ...term, matchers };
+  });
+  const phrase = normalized(keywords.join(' '));
+  return {
+    terms,
+    textTerms: terms.filter((term) => term.textual),
+    colors: [...new Set(terms.map((term) => term.color).filter(Boolean))],
+    shapes: new Set(terms.flatMap((term) => term.shapes)),
+    light: terms.some((term) => term.light),
+    phrase: terms.length > 1 ? matcher(HAN_RE.test(phrase) ? phrase.replace(/ /g, '') : phrase) : null,
+  };
 };
 
-const featureColorScore = (feature, terms) => {
-  const lab = feature.lab;
-  const oklab = feature.oklab;
-  if (!Array.isArray(lab) || lab.length !== 3 || !Array.isArray(oklab) || oklab.length !== 3) return 0.0;
-  const targets = [];
-  for (const term of terms) {
-    const value = normalized(term);
-    for (const key of Object.keys(COLOR_LAB_TARGETS)) {
-      if (value.includes(key)) targets.push([COLOR_LAB_TARGETS[key], COLOR_OKLAB_TARGETS[key]]);
-    }
+// Fraction of a name's words (Han: characters) that some matching query word
+// covers, so "stone" prefers "Stone" to "Stone Button".
+const nameCoverage = (item, matchers) => {
+  const han = HAN_RE.test(item.raw);
+  const units = han ? [...item.raw] : item.words;
+  const covered = new Array(units.length).fill(false);
+  for (const candidate of matchers) {
+    if (candidate.han !== han) continue;
+    const needle = han ? [...candidate.text] : candidate.words;
+    for (const start of runStarts(units, needle)) covered.fill(true, start, start + needle.length);
   }
-  if (targets.length === 0) return 0.0;
-  let best = Infinity;
-  for (const [targetLab, targetOklab] of targets) {
-    let labSum = 0.0;
-    let oklabSum = 0.0;
-    for (let index = 0; index < 3; index += 1) {
-      labSum += (Number(lab[index]) - targetLab[index]) ** 2;
-      oklabSum += (Number(oklab[index]) - targetOklab[index]) ** 2;
-    }
-    const distance =
-      (0.5 * Math.sqrt(labSum)) / 181.0 + (0.5 * Math.sqrt(oklabSum)) / Math.sqrt(3.0);
-    if (distance < best) best = distance;
-  }
-  return pyRound8(clamp01(1.0 - best));
+  return covered.filter(Boolean).length / Math.max(1, units.length);
 };
 
 const behavior = (variant, state) => {
@@ -480,21 +721,104 @@ const semantic = (annotation) => {
   return result;
 };
 
-export const deterministicScore = (matches) => {
-  const present = Object.keys(WEIGHTS).filter((key) => key in matches);
-  let denominator = 0.0;
-  const breakdown = {};
-  for (const key of Object.keys(WEIGHTS)) {
-    breakdown[key] = pyRound8(clamp01(Number(matches[key] ?? 0.0)));
+const RELATIVE_COLORS = new Set(['dark', 'pale']);
+const NAMED_COLOR_WEIGHTS = { name: 1.0, 'color term': 0.8, style: 0.8, summary: 0.5 };
+const COLOR_MATCHERS = Object.fromEntries(Object.entries(COLOR_NAME_WORDS).map(([color, words]) => [color, words.map(matcher)]));
+
+// Relevance of one candidate document to a parsed query.  Dimensions are
+// averaged over the ones the query asks for, so a pure colour query is not
+// diluted by an empty text score.
+const scoreDocument = (doc, query) => {
+  const breakdown = { text: 0, color: 0, shape: 0, light: 0 };
+  const present = [];
+  const notes = [];
+  if (query.textTerms.length > 0) {
+    present.push('text');
+    let total = 0;
+    const hits = [];
+    const nameMatchers = [];
+    for (const term of query.textTerms) {
+      let best = 0;
+      let where = null;
+      const fields = new Set();
+      for (const item of doc.fields) {
+        for (const candidate of term.matchers) {
+          const wallWord = WALL_WORDS.has(candidate.text);
+          if (doc.mounted && wallWord) continue;
+          const fieldWeight = wallWord && doc.shape === 'wall' ? Math.min(item.weight, WALL_SHAPE_WEIGHT) : item.weight;
+          const value = fieldWeight * candidate.weight;
+          if ((value > best || !fields.has(item.field)) && candidate.test(item)) {
+            fields.add(item.field);
+            if (value > best) {
+              best = value;
+              where = item.field;
+            }
+          }
+        }
+      }
+      // Several annotation fields agreeing (name, role "aged walls", style
+      // "weathered") is stronger evidence than one stray synonym.
+      total += best * (1 - BREADTH_RANGE + BREADTH_RANGE * Math.min(1, (fields.size - 1) / 2));
+      if (where !== null) hits.push(`${term.text} (${where})`);
+      nameMatchers.push(...term.matchers.filter((candidate) => !(WALL_WORDS.has(candidate.text) && (doc.mounted || doc.shape === 'wall'))
+        && doc.names.some((item) => candidate.test(item))));
+    }
+    for (const color of query.colors) nameMatchers.push(...COLOR_MATCHERS[color]);
+    const specificity = Math.max(0, ...doc.names.map((item) => nameCoverage(item, nameMatchers)));
+    let text = (total / query.textTerms.length) * (0.85 + 0.15 * specificity);
+    if (query.phrase !== null) {
+      const phrase = Math.max(0, ...doc.fields.filter((item) => query.phrase.test(item)).map((item) => item.weight));
+      text = 0.9 * text + 0.1 * phrase;
+      if (phrase > 0) hits.push('whole phrase');
+    }
+    breakdown.text = text;
+    if (hits.length > 0) notes.push(`matches ${hits.join(', ')}`);
   }
-  for (const key of present) denominator += WEIGHTS[key];
-  let score = 0.0;
-  if (denominator !== 0) {
-    let total = 0.0;
-    for (const key of present) total += breakdown[key] * WEIGHTS[key];
-    score = total / denominator;
+  if (query.colors.length > 0) {
+    present.push('color');
+    let total = 0;
+    for (const color of query.colors) {
+      // A preview shows the fixture's body, not the colour of the light it
+      // gives, so "warm light" rests on what the annotation says.
+      const measured = doc.lch === null || (color === 'warm' && query.light) ? 0 : COLOR_SCORES[color](doc.lch);
+      let named = 0;
+      for (const item of doc.colorItems) {
+        if (COLOR_MATCHERS[color].some((candidate) => candidate.test(item))) named = Math.max(named, NAMED_COLOR_WEIGHTS[item.field]);
+      }
+      // Stating the colour, above all in the name, edges out a block that only
+      // measures as it.  "Dark"/"pale" in a name are relative to the base
+      // material (Dark Prismarine is lighter than blackstone), so lightness
+      // rests on the measurement.
+      const base = RELATIVE_COLORS.has(color) ? measured : Math.max(measured, named);
+      total += 0.85 * base + 0.15 * named;
+    }
+    breakdown.color = total / query.colors.length;
+    if (breakdown.color > 0) notes.push(`${query.colors.join('+')} colour ${breakdown.color.toFixed(2)}`);
   }
-  return [pyRound8(clamp01(score)), breakdown];
+  if (query.shapes.size > 0) {
+    present.push('shape');
+    breakdown.shape = doc.shape !== null && query.shapes.has(doc.shape) ? 1 : 0;
+    if (breakdown.shape > 0) notes.push(`shape ${doc.shape}`);
+  }
+  if (query.light) {
+    present.push('light');
+    breakdown.light = doc.light;
+    if (doc.light > 0) notes.push(`light level up to ${Math.round(doc.light * 15)}`);
+  }
+  let weight = 0;
+  let score = 0;
+  for (const key of present) {
+    breakdown[key] = pyRound8(clamp01(breakdown[key]));
+    weight += DIM_WEIGHTS[key];
+    score += DIM_WEIGHTS[key] * breakdown[key];
+  }
+  score = weight === 0 ? 0 : score / weight;
+  const factor = query.shapes.size === 0 ? SHAPE_FACTORS.get(doc.shape) : undefined;
+  if (factor !== undefined) {
+    score *= factor;
+    if (score > 0) notes.push(`${doc.shape} form ×${factor} (no shape asked)`);
+  }
+  return { score: pyRound8(clamp01(score)), breakdown, notes };
 };
 
 const sortedObject = (mapping) => {
@@ -652,20 +976,21 @@ export class MCPQueryService {
       if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 12) {
         throw new MCPInputError('limit must be an integer from 1 to 12');
       }
-      const intent = keywordIntent(keywords);
       const handle = this.resolver.resolve(version);
       try {
         const snapshot = this._snapshot(handle);
+        const query = parseQuery(keywords, this._searchIndex(snapshot).lexicon);
         const rows = this._eligibleRows(snapshot);
         const exactQuery = normalized(joinedQuery);
-        const recalled = this._recall(handle, rows, intent.keywords, exactQuery);
-        const ranked = this._rankRows(recalled, snapshot, intent, exactQuery);
-        const selected = ranked.slice(0, 24).slice(0, limit);
+        const recalled = this._recall(handle, rows, query, exactQuery);
+        const ranked = this._rankRows(recalled, snapshot, query, exactQuery);
+        const merged = query.colors.length > 0 ? ranked : MCPQueryService._mergeColorSeries(ranked);
+        const selected = merged.slice(0, 24).slice(0, limit);
         const candidates = this._candidateDicts(selected, snapshot);
         if (candidates.length === 0) return toolResult({ candidates, images: [] });
         const sheet = this._contactSheet(
           handle,
-          candidates.map((candidate, index) => ({ candidateId: candidate.candidate_id, blockId: candidate.block_id, variantId: selected[index][0][0] })),
+          candidates.map((candidate, index) => ({ candidateId: candidate.candidate_id, blockId: candidate.block_id, variantId: selected[index].row[0] })),
           4,
           resources,
         );
@@ -786,11 +1111,77 @@ export class MCPQueryService {
     return rows;
   }
 
-  _recall(handle, rows, keywords, exactQuery) {
-    const tokens = keywordTokens(keywords);
-    if (tokens.length === 0) return [...rows];
+  // Per-release search documents and the Han segmentation lexicon, built once
+  // per snapshot: vocabulary words, official zh names and name prefixes that
+  // at least three names share (橡木, 深色橡木, 石砖).
+  _searchIndex(snapshot) {
+    if (snapshot.search !== undefined) return snapshot.search;
+    // A light source counts by its brightest legal state: a redstone lamp's
+    // canonical state is unlit.
+    const emission = new Map();
+    for (const state of Object.values(snapshot.states)) {
+      const level = Number(state.behavior?.emission_level);
+      if (Number.isFinite(level) && level > (emission.get(state.block_id) ?? 0)) emission.set(state.block_id, level);
+    }
+    const docs = new Map();
+    const blockIds = new Set(Object.keys(snapshot.blocks));
+    for (const [variantId, variant] of Object.entries(snapshot.variants)) {
+      const block = snapshot.blocks[String(variant.block_id)];
+      if (block === undefined) continue;
+      const names = block.official_names ?? {};
+      const semanticValue = semantic(snapshot.annotations[variantId]);
+      const nameItems = [names.zh_cn, names.en_us, String(variant.block_id).replace(/^minecraft:/, '').replace(/_/g, ' ')]
+        .filter((value) => typeof value === 'string' && value)
+        .map((value) => fieldItem('name', value));
+      // Everything the recall text holds is scoreable, except avoid_for.
+      const fields = [...nameItems, ...(variant.machine_facts?.machine_tags ?? []).map((tag) => fieldItem('machine tag', String(tag)))];
+      for (const [field, key] of ANNOTATION_FIELDS) {
+        const value = semanticValue[key];
+        for (const text of Array.isArray(value) ? value : [value]) {
+          if (typeof text === 'string' && text) fields.push(fieldItem(field, text));
+        }
+      }
+      const level = emission.get(String(variant.block_id)) ?? 0;
+      docs.set(variantId, {
+        fields,
+        names: nameItems,
+        colorItems: fields.filter((item) => ['name', 'color term', 'style', 'summary'].includes(item.field)),
+        // A wall sign keeps its sign class but is still wall-mounted.
+        mounted: WALL_MOUNTED_RE.test(String(variant.block_id).replace(/^minecraft:/, '')),
+        shape: shapeClass(String(variant.block_id), block.tags ?? []),
+        light: clamp01(level / 15),
+        lch: lch(snapshot.features[variantId]?.lab),
+        confidence: typeof semanticValue.confidence === 'number' ? semanticValue.confidence : 0,
+        buildingForms: hasBuildingForms(String(variant.block_id), blockIds),
+        series: colorSeries(String(variant.block_id), blockIds),
+      });
+    }
+    const lexicon = new Set([...VOCAB_INDEX.keys()].filter((term) => HAN_RE.test(term)));
+    const prefixes = new Map();
+    for (const block of Object.values(snapshot.blocks)) {
+      const name = block.official_names?.zh_cn;
+      if (typeof name !== 'string' || !HAN_RE.test(name)) continue;
+      lexicon.add(normalized(name));
+      const chars = [...normalized(name)];
+      for (let length = 2; length <= Math.min(4, chars.length - 1); length += 1) {
+        const prefix = chars.slice(0, length).join('');
+        prefixes.set(prefix, (prefixes.get(prefix) ?? 0) + 1);
+      }
+    }
+    for (const [prefix, count] of prefixes) if (count >= 3) lexicon.add(prefix);
+    snapshot.search = { docs, lexicon };
+    return snapshot.search;
+  }
+
+  // Wide recall through the release index.  A colour, shape or light intent is
+  // scored from machine facts that the text index cannot see, so it recalls
+  // every candidate and lets scoring decide.
+  _recall(handle, rows, query, exactQuery) {
+    if (query.colors.length > 0 || query.shapes.size > 0 || query.light) return [...rows];
+    const texts = new Set(query.textTerms.flatMap((term) => term.matchers.map((item) => (item.han ? item.text : item.words.join(' ')))));
     const ids = new Set();
-    for (const token of tokens) {
+    for (const token of texts) {
+      if (!token) continue;
       let cursor;
       // Python len() counts code points; JS .length counts UTF-16 units, so a
       // supplementary character would wrongly satisfy the trigram threshold.
@@ -808,39 +1199,81 @@ export class MCPQueryService {
       || exactBlockQuery(exactQuery, row[1].block_id, row[3].official_names ?? {}));
   }
 
-  _rankRows(rows, snapshot, intent, exactQuery) {
+  // Exact official names and IDs first; then score.  Ties go to annotation
+  // confidence, then (when no shape was asked) base blocks over their derived
+  // forms, then construction materials, then eligible over conditional, then
+  // variant ID.
+  _rankRows(rows, snapshot, query, exactQuery) {
+    const { docs } = this._searchIndex(snapshot);
     const result = [];
     for (const row of rows) {
       const [variantId, variant, , block] = row;
-      const semanticValue = semantic(snapshot.annotations[variantId]);
-      const names = block.official_names ?? {};
-      const feature = snapshot.features[variantId];
-      const geometry = (feature.geometry_classes ?? []).map(String);
-      const matches = {};
-      if (intent.shape_terms.length > 0) matches.shape = containsAny(geometry, intent.shape_terms);
-      if (intent.colors.length > 0) matches.color = featureColorScore(feature, intent.colors);
-      if (intent.uses.length > 0) matches.use = containsAny(semanticValue.building_roles ?? [], intent.uses);
-      if (intent.keywords.length > 0) {
-        matches.name_synonym = containsAny(
-          [names.zh_cn, names.en_us, ...(semanticValue.synonyms_zh ?? []), ...(semanticValue.synonyms_en ?? [])],
-          intent.keywords,
-        );
-      }
-      if (intent.styles.length > 0) matches.style = containsAny(semanticValue.style_tags ?? [], intent.styles);
-      const [score, breakdown] = deterministicScore(matches);
-      const exact = exactBlockQuery(exactQuery, variant.block_id, names);
-      result.push([row, policyWarning(variant.block_id) && !exact ? pyRound8(score * 0.25) : score, breakdown, exact]);
+      const doc = docs.get(variantId);
+      const exact = exactBlockQuery(exactQuery, variant.block_id, block.official_names ?? {});
+      const { score, breakdown, notes } = scoreDocument(doc, query);
+      if (!exact && score <= 0) continue;
+      const penalized = policyWarning(variant.block_id) !== null && !exact;
+      result.push({
+        row,
+        // A full official name or block ID is a perfect match by definition.
+        score: exact ? 1 : penalized ? pyRound8(score * 0.25) : score,
+        breakdown,
+        exact,
+        penalized,
+        notes,
+        confidence: doc.confidence,
+        derived: query.shapes.size === 0 && SHAPE_FACTORS.has(doc.shape),
+        buildingForms: doc.buildingForms,
+        series: doc.series,
+        conditional: variant.candidate_qualification === 'conditional',
+      });
     }
-    result.sort((left, right) => Number(right[3]) - Number(left[3]) || right[1] - left[1] || byUtf8(left[0][0], right[0][0]));
+    result.sort((left, right) => Number(right.exact) - Number(left.exact)
+      || right.score - left.score
+      || right.confidence - left.confidence
+      || Number(left.derived) - Number(right.derived)
+      || Number(right.buildingForms) - Number(left.buildingForms)
+      || Number(left.conditional) - Number(right.conditional)
+      || byUtf8(left.row[0], right.row[0]));
     return result;
   }
 
+  // Without a colour in the query, the 16 dye colours of one series collapse
+  // into their best-ranked member (white first among equal scores), placed
+  // where the series first appears.  An exact name or ID keeps its own entry.
+  static _mergeColorSeries(ranked) {
+    const bySeries = new Map();
+    for (const entry of ranked) {
+      if (entry.series === null || entry.exact) continue;
+      const members = bySeries.get(entry.series.key) ?? [];
+      members.push(entry);
+      bySeries.set(entry.series.key, members);
+    }
+    const out = [];
+    for (const entry of ranked) {
+      const members = entry.series === null || entry.exact ? undefined : bySeries.get(entry.series.key);
+      if (members === undefined) {
+        out.push(entry);
+        continue;
+      }
+      if (members[0] !== entry) continue;
+      const best = members.filter((member) => member.score === entry.score)
+        .sort((left, right) => DYE_COLORS.indexOf(left.series.color) - DYE_COLORS.indexOf(right.series.color))[0];
+      if (members.length === 1) {
+        out.push(best);
+        continue;
+      }
+      const others = DYE_COLORS.filter((dye) => dye !== best.series.color && members.some((member) => member.series.color === dye));
+      out.push({ ...best, others });
+    }
+    return out;
+  }
+
   _candidateDicts(ranked, snapshot) {
-    return ranked.map(([row, score, breakdown, exact], index) => {
+    return ranked.map(({ row, score, breakdown, penalized, notes, series, others }, index) => {
       const [variantId, variant, , block] = row;
       const names = block.official_names ?? {};
-      const semanticValue = semantic(snapshot.annotations[variantId]);
-      const policy = policyWarning(variant.block_id);
+      const reason = MCPQueryService._reason(notes, semantic(snapshot.annotations[variantId]));
       return {
         candidate_id: `T${String(index + 1).padStart(2, '0')}`,
         block_id: String(variant.block_id),
@@ -851,17 +1284,20 @@ export class MCPQueryService {
         candidate_qualification: String(variant.candidate_qualification),
         score,
         score_breakdown: breakdown,
-        reason: exact || !policy
-          ? MCPQueryService._reason(breakdown, semanticValue)
-          : `${MCPQueryService._reason(breakdown, semanticValue).slice(0, 450)} Local recommendation rule: general-use score ×0.25.`,
+        reason: penalized ? `${reason.slice(0, 450)} Local recommendation rule: general-use score ×0.25.` : reason,
         warnings: blockWarnings(variant, String(variant.block_id), block),
+        ...(others === undefined ? {} : {
+          color_series: { block_id_pattern: `minecraft:{color}_${series.key}`, other_colors: others },
+        }),
       };
     });
   }
 
-  static _reason(breakdown, semanticValue) {
-    const active = Object.keys(breakdown).filter((key) => breakdown[key] > 0);
-    if (active.length > 0) return `Matches ${active.join(', ')}.`;
+  static _reason(notes, semanticValue) {
+    if (notes.length > 0) {
+      const text = `${notes.join('; ')}.`;
+      return text.charAt(0).toUpperCase() + text.slice(1, 500);
+    }
     const summary = semanticValue.summary_en;
     return typeof summary === 'string' && summary ? summary.slice(0, 500) : 'Deterministic release candidate.';
   }

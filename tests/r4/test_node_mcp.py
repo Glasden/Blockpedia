@@ -200,7 +200,8 @@ def test_e1_local_ranking_exact_names_and_warnings(tmp_path: Path, force_like: b
         assert by_id["minecraft:soul_fire"]["score"] == by_id["minecraft:packed_ice"]["score"] == by_id["minecraft:glass"]["score"]
         assert by_id["minecraft:barrier"]["score_breakdown"] == by_id["minecraft:glass"]["score_breakdown"]
         assert by_id["minecraft:sand"]["score"] == by_id["minecraft:gravel"]["score"] == by_id["minecraft:glass"]["score"]
-        assert [item["block_id"] for item in wall if item["block_id"] in {"minecraft:barrier", "minecraft:command_block"}] == ["minecraft:barrier", "minecraft:command_block"]
+        # Equal scores: eligible before conditional, then variant ID.
+        assert [item["block_id"] for item in wall if item["block_id"] in {"minecraft:barrier", "minecraft:command_block"}] == ["minecraft:command_block", "minecraft:barrier"]
         assert "Local recommendation rule" in by_id["minecraft:infested_stone"]["reason"]
         assert "蠹虫风险" in " ".join(by_id["minecraft:infested_stone"]["warnings"])
         assert "existing review warning" in by_id["minecraft:barrier"]["warnings"]
@@ -211,12 +212,12 @@ def test_e1_local_ranking_exact_names_and_warnings(tmp_path: Path, force_like: b
         for term in ("MINECRAFT:INFESTED_STONE", "  iNfEsTeD   StOnE  ", "  虫蚀石头  "):
             item = search(term, 1)[0]
             assert item["block_id"] == "minecraft:infested_stone"
-            assert item["score"] == (0 if term.startswith("MINECRAFT:") else 1)
+            assert item["score"] == 1
             assert "Local recommendation rule" not in item["reason"]
         for term in ("infested", "bugstone"):
             item = next(item for item in search(term) if item["block_id"] == "minecraft:infested_stone")
             assert "Local recommendation rule" in item["reason"]
-            assert item["score"] == 0.25
+            assert 0 < item["score"] <= 0.25
         assert search("MINECRAFT:BARRIER", 1)[0]["block_id"] == "minecraft:barrier"
         assert search("  BARRIER  ", 1)[0]["score"] == 1
         assert search("屏障", 1)[0]["block_id"] == "minecraft:barrier"
@@ -241,6 +242,9 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
         db.execute("UPDATE blocks SET record_json=? WHERE block_id=?", (json.dumps(record), "minecraft:stone"))
         table = "search_text" if force_like else "search_fts"
         db.execute(f"UPDATE {table} SET normalized_text=normalized_text || ? WHERE variant_id=?", (" 😀a", "minecraft:stone"))
+        annotation = json.loads(db.execute("SELECT semantic_json FROM annotations WHERE variant_id=?", ("minecraft:stone",)).fetchone()[0])
+        annotation["synonyms_en"].append("😀a")
+        db.execute("UPDATE annotations SET semantic_json=? WHERE variant_id=?", (json.dumps(annotation), "minecraft:stone"))
     before = _inventory(tmp_path)
     with node_session(tmp_path) as send:
         listed = send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
@@ -272,7 +276,7 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
             if name == "index_info":
                 assert (structured["minecraft_version"], structured["release_id"]) == ("26.2", fixture.release.name)
             if name == "search_blocks":
-                assert [(item["block_id"], item["score"]) for item in structured["candidates"]] == [("minecraft:yellow_carpet", 0.48389055)]
+                assert [(item["block_id"], item["score"]) for item in structured["candidates"]] == [("minecraft:yellow_carpet", 1)]
                 assert metadata[0]["tiles"] == [{"candidate_id": "T01", "block_id": "minecraft:yellow_carpet", "row": 0, "column": 0}]
                 assert (images[0].width, images[0].height) == (CARD, CARD)
                 preview = decode_rgba_png((fixture.release / "previews/minecraft/yellow_carpet/preview.png").read_bytes())
@@ -301,7 +305,7 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
         ranked = call(send, 14, "search_blocks", {"keywords": ["yellow", "stone", "glass"]})
         ranked_data = ranked["structuredContent"]
         assert [(item["block_id"], item["score"]) for item in ranked_data["candidates"]] == [
-            ("minecraft:yellow_carpet", 0.90729479), ("minecraft:stone", 0.73314455), ("minecraft:glass", 0.63587496),
+            ("minecraft:yellow_carpet", 0.3375), ("minecraft:glass", 0.28125), ("minecraft:stone", 0.28125),
         ]
         assert [item["candidate_id"] for item in ranked_data["candidates"]] == ["T01", "T02", "T03"]
         assert [(item["candidate_id"], item["block_id"]) for item in ranked_data["images"][0]["tiles"]] == [(item["candidate_id"], item["block_id"]) for item in ranked_data["candidates"]]
@@ -448,3 +452,42 @@ def test_details_summary_budget_state_pages_and_lossless_card(tmp_path: Path) ->
         beyond = call(send, 11, "get_block_details", {"block_id": block_id, "detail": "states", "offset": 25})["structuredContent"]
         assert (beyond["states"], beyond["next_offset"], beyond["total"]) == ([], None, 20)
     assert _inventory(tmp_path) == before
+
+
+DYES = ("white", "light_gray", "gray", "black", "brown", "red", "orange", "yellow", "lime", "green", "cyan", "light_blue", "blue", "purple", "magenta", "pink")
+
+
+@pytest.mark.parametrize("force_like", [False, True], ids=["fts5", "like"])
+def test_color_series_merge(tmp_path: Path, force_like: bool) -> None:
+    fixture = build_fixture(tmp_path, force_like=force_like)
+    with sqlite3.connect(fixture.release / "index.sqlite3") as db:
+        for dye in DYES:
+            _add_search_block(db, f"minecraft:{dye}_wool", f"{dye}羊毛", f"{dye.replace('_', ' ').title()} Wool")
+        # Four colours are not a 16-colour series and never merge.
+        for dye in DYES[:4]:
+            _add_search_block(db, f"minecraft:{dye}_tulip", f"{dye}郁金香", f"{dye.replace('_', ' ').title()} Tulip")
+    schema = Draft202012Validator(load_schema(SCHEMAS["search_blocks"]))
+    with node_session(tmp_path) as send:
+        def search(keywords: list[str]) -> dict:
+            result = call(send, 60, "search_blocks", {"keywords": keywords, "limit": 12})
+            assert not result["isError"]
+            schema.validate(result["structuredContent"])
+            return result["structuredContent"]
+
+        merged = search(["wool"])
+        assert [item["block_id"] for item in merged["candidates"]] == ["minecraft:white_wool"]
+        assert merged["candidates"][0]["color_series"] == {"block_id_pattern": "minecraft:{color}_wool", "other_colors": list(DYES[1:])}
+        assert [tile["block_id"] for tile in merged["images"][0]["tiles"]] == ["minecraft:white_wool"]
+
+        tulips = search(["tulip"])
+        assert sorted(item["block_id"] for item in tulips["candidates"]) == sorted(f"minecraft:{dye}_tulip" for dye in DYES[:4])
+        assert not any("color_series" in item for item in tulips["candidates"])
+
+        # A colour in the query lists every colour separately.
+        colored = search(["red", "wool"])
+        assert len(colored["candidates"]) == 12
+        assert not any("color_series" in item for item in colored["candidates"])
+        # An exact block ID keeps its own entry.
+        exact = search(["minecraft:red_wool"])
+        assert exact["candidates"][0]["block_id"] == "minecraft:red_wool"
+        assert "color_series" not in exact["candidates"][0]

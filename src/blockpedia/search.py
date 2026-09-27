@@ -23,6 +23,7 @@ SEMANTIC_LIST_FIELDS = (
     "style_tags",
     "avoid_for",
 )
+POSITIVE_LIST_FIELDS = tuple(field for field in SEMANTIC_LIST_FIELDS if field != "avoid_for")
 SEMANTIC_SCALAR_FIELDS = ("summary_zh", "summary_en")
 HUMAN_SEMANTIC_FIELDS = SEMANTIC_LIST_FIELDS + SEMANTIC_SCALAR_FIELDS + ("confidence",)
 DEPRIORITIZED_BLOCKS = frozenset("minecraft:" + block_id for block_id in (
@@ -103,7 +104,9 @@ class WorkspaceQueryService:
         facts = record.get("machine_facts", {})
         tags.extend(str(tag) for tag in facts.get("machine_tags", []))
         tags.extend(str(tag) for tag in facts.get("geometry", {}).get("geometry_classes", []))
-        for key in SEMANTIC_LIST_FIELDS + SEMANTIC_SCALAR_FIELDS:
+        # avoid_for mixes unsuitable uses with look-alike blocks; it is never
+        # positive evidence, so it stays out of the recall text.
+        for key in (*POSITIVE_LIST_FIELDS, *SEMANTIC_SCALAR_FIELDS):
             value = semantics.get(key)
             if isinstance(value, list):
                 tags.extend(str(item) for item in value)

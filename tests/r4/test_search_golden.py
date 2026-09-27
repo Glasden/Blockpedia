@@ -1,0 +1,99 @@
+"""Relevance gate: real building queries against a published release.
+
+The golden set only means something on real annotations, so this runs against
+the release selected by BLOCKPEDIA_GOLDEN_DATA_ROOT (default: the local data
+root).  Without a published release it skips; a skip is not a pass.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+from collections import Counter
+from fnmatch import fnmatchcase
+from pathlib import Path
+
+import pytest
+
+from blockpedia.paths import default_data_root
+
+
+ROOT = Path(__file__).resolve().parents[2]
+NODE = Path(os.environ.get("BLOCKPEDIA_NODE") or (
+    "/opt/node-v24.21.0-linux-arm64/bin/node" if Path("/opt/node-v24.21.0-linux-arm64/bin/node").is_file() else shutil.which("node") or "node"
+))
+GOLDEN = json.loads((ROOT / "tests/r4/golden_queries.json").read_text(encoding="utf-8"))["queries"]
+TOP_N = 8
+
+
+def _data_root() -> Path:
+    configured = os.environ.get("BLOCKPEDIA_GOLDEN_DATA_ROOT")
+    root = Path(configured) if configured else default_data_root()
+    if not (root / "current.json").is_file():
+        pytest.skip(f"no published release under {root}; set BLOCKPEDIA_GOLDEN_DATA_ROOT")
+    return root
+
+
+def run_queries(data_root: Path, queries: list[list[str]]) -> list[list[str]]:
+    """Top-N block IDs per query through the real ranking code (no images)."""
+    script = f"""import {{ readFileSync }} from 'node:fs';
+const {{ MCPQueryService }} = await import({json.dumps((ROOT / 'mcp-node/query.mjs').as_uri())});
+const service = new MCPQueryService({json.dumps(str(data_root))});
+service._contactSheet = () => ({{ image: {{}}, webp: new Uint8Array() }});
+const out = JSON.parse(readFileSync(0, 'utf8')).map((keywords) => {{
+  const result = service.searchBlocks({{ keywords, limit: {TOP_N} }});
+  if (result.isError) throw new Error(JSON.stringify(result.structuredContent));
+  return result.structuredContent.candidates.map((item) => item.block_id);
+}});
+process.stdout.write(JSON.stringify(out));
+"""
+    result = subprocess.run(
+        [str(NODE), "--no-warnings", "--input-type=module", "-e", script],
+        input=json.dumps(queries).encode(), capture_output=True, check=True,
+    )
+    return json.loads(result.stdout)
+
+
+def _matches(block_id: str, patterns: list[str]) -> bool:
+    name = block_id.removeprefix("minecraft:")
+    return any(fnmatchcase(name, pattern) for pattern in patterns)
+
+
+def evaluate(entry: dict, ranked: list[str]) -> list[str]:
+    problems = []
+    top3 = ranked[:3]
+    if len(top3) < 3:
+        problems.append(f"only {len(top3)} results")
+    if entry.get("top1") and (not ranked or ranked[0] != "minecraft:" + entry["top1"]):
+        problems.append(f"top1 is not {entry['top1']}")
+    problems.extend(f"{block_id} in top 3 is not acceptable" for block_id in top3 if not _matches(block_id, entry["accept"]))
+    problems.extend(f"{block_id} is rejected but ranked #{index}" for index, block_id in enumerate(ranked, 1) if _matches(block_id, entry["reject"]))
+    if "max_per_series" in entry:
+        series = Counter(_series(block_id) for block_id in ranked)
+        series.pop(None, None)
+        problems.extend(f"{count} members of *_{key}" for key, count in series.items() if count > entry["max_per_series"])
+    return problems
+
+
+DYES = ("white", "light_gray", "gray", "black", "brown", "red", "orange", "yellow", "lime", "green", "cyan", "light_blue", "blue", "purple", "magenta", "pink")
+
+
+def _series(block_id: str) -> str | None:
+    name = block_id.removeprefix("minecraft:")
+    dye = next((dye for dye in sorted(DYES, key=len, reverse=True) if name.startswith(dye + "_")), None)
+    return None if dye is None else name[len(dye) + 1:]
+
+
+def test_golden_building_queries() -> None:
+    if not NODE.is_file():
+        pytest.skip("Node 24 is unavailable")
+    results = run_queries(_data_root(), [entry["keywords"] for entry in GOLDEN])
+    failures = []
+    for entry, ranked in zip(GOLDEN, results, strict=True):
+        problems = evaluate(entry, ranked)
+        if problems:
+            shown = " ".join(block_id.removeprefix("minecraft:") for block_id in ranked)
+            failures.append(f"{entry['keywords']}: {'; '.join(problems)}\n    got: {shown}")
+    assert not failures, f"{len(failures)}/{len(GOLDEN)} golden queries failed:\n" + "\n".join(failures)

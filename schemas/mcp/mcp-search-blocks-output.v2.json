@@ -85,21 +85,19 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "description": "Local deterministic score after recommendation-list deprioritization."
+          "description": "Local deterministic relevance after the derived-shape factor and recommendation-list deprioritization."
         },
         "score_breakdown": {
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "shape",
+            "text",
             "color",
-            "use",
-            "name_synonym",
-            "style",
-            "behavior"
+            "shape",
+            "light"
           ],
           "properties": {
-            "shape": {
+            "text": {
               "type": "number",
               "minimum": 0,
               "maximum": 1
@@ -109,27 +107,18 @@
               "minimum": 0,
               "maximum": 1
             },
-            "use": {
+            "shape": {
               "type": "number",
               "minimum": 0,
               "maximum": 1
             },
-            "name_synonym": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 1
-            },
-            "style": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 1
-            },
-            "behavior": {
+            "light": {
               "type": "number",
               "minimum": 0,
               "maximum": 1
             }
-          }
+          },
+          "description": "Dimensions the query asked for, each 0-1; a dimension the query did not ask for is 0 and not part of score. text: name/synonym/annotation word coverage; color: preview colour and stated colour; shape: registry-tag shape class; light: brightest emission level / 15."
         },
         "reason": {
           "type": "string",
@@ -138,6 +127,47 @@
         },
         "warnings": {
           "$ref": "#/$defs/warnings"
+        },
+        "color_series": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Present when the query named no colour and other dye colours of this block's 16-colour series also matched; they are folded into this candidate. Substitute a colour into block_id_pattern for its block ID.",
+          "required": [
+            "block_id_pattern",
+            "other_colors"
+          ],
+          "properties": {
+            "block_id_pattern": {
+              "type": "string",
+              "pattern": "^minecraft:\\{color\\}_[a-z0-9_./-]+$"
+            },
+            "other_colors": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 15,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "white",
+                  "light_gray",
+                  "gray",
+                  "black",
+                  "brown",
+                  "red",
+                  "orange",
+                  "yellow",
+                  "lime",
+                  "green",
+                  "cyan",
+                  "light_blue",
+                  "blue",
+                  "purple",
+                  "magenta",
+                  "pink"
+                ]
+              }
+            }
+          }
         }
       }
     },
