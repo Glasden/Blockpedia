@@ -128,7 +128,8 @@ process.stdout.write(JSON.stringify(out));
     result = subprocess.run([str(NODE), "--no-warnings", "--input-type=module", "-e", script], input=json.dumps(ids).encode(), capture_output=True, check=True)
     families = dict(zip(ids, json.loads(result.stdout), strict=True))
     for block_id, expected in FAMILIES.items():
-        assert families["minecraft:" + block_id]["material_blocks"] == ["minecraft:" + value for value in expected], block_id
+        family = families["minecraft:" + block_id]
+        assert ["minecraft:" + template.replace("*", family["material"]) for template in family["material_blocks"]] == ["minecraft:" + value for value in expected], block_id
     # The bamboo plant is not bamboo wood; infested stone is not stone.
     assert families["minecraft:bamboo"] is None or "material_blocks" not in families["minecraft:bamboo"]
     assert families["minecraft:infested_stone"] is None or "material_blocks" not in families["minecraft:infested_stone"]

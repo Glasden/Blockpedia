@@ -47,7 +47,6 @@
         }
       },
       "semantics": {
-        "summary_zh": "橡木楼梯，由两级木板构成阶梯轮廓。",
         "summary_en": "Oak plank stairs with a two-level stepped profile.",
         "color_terms": [
           "light tan",
@@ -68,19 +67,20 @@
       },
       "family": {
         "base_block": "minecraft:oak_planks",
-        "forms": {
-          "stairs": "minecraft:oak_stairs",
-          "slab": "minecraft:oak_slab",
-          "fence": "minecraft:oak_fence",
-          "fence_gate": "minecraft:oak_fence_gate",
-          "door": "minecraft:oak_door",
-          "trapdoor": "minecraft:oak_trapdoor",
-          "button": "minecraft:oak_button",
-          "pressure_plate": "minecraft:oak_pressure_plate",
-          "sign": "minecraft:oak_sign",
-          "hanging_sign": "minecraft:oak_hanging_sign",
-          "shelf": "minecraft:oak_shelf"
-        }
+        "forms": [
+          "stairs",
+          "slab",
+          "fence",
+          "fence_gate",
+          "door",
+          "trapdoor",
+          "button",
+          "pressure_plate",
+          "sign",
+          "hanging_sign",
+          "shelf"
+        ],
+        "form_id_pattern": "minecraft:oak_{form}"
       },
       "warnings": []
     },
@@ -129,7 +129,6 @@
         }
       },
       "semantics": {
-        "summary_zh": "透明感玻璃方块，边缘呈浅青色。",
         "summary_en": "A clear-looking glass block outlined by pale cyan edges.",
         "color_terms": [
           "black",
@@ -152,9 +151,10 @@
       },
       "family": {
         "base_block": "minecraft:glass",
-        "forms": {
-          "pane": "minecraft:glass_pane"
-        }
+        "forms": [
+          "pane"
+        ],
+        "form_id_pattern": "minecraft:glass_{form}"
       },
       "warnings": []
     }
@@ -173,20 +173,7 @@
       "mime_type": "image/webp",
       "width": 512,
       "height": 256,
-      "tiles": [
-        {
-          "candidate_id": "T01",
-          "block_id": "minecraft:oak_stairs",
-          "row": 0,
-          "column": 0
-        },
-        {
-          "candidate_id": "T02",
-          "block_id": "minecraft:glass",
-          "row": 0,
-          "column": 1
-        }
-      ]
+      "columns": 2
     }
   ],
   "unexpected": true

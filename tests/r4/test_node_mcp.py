@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -190,16 +191,21 @@ def test_e1_local_ranking_exact_names_and_warnings(tmp_path: Path, force_like: b
         by_id = {item["block_id"]: item for item in wall}
         assert [item["block_id"] for item in wall[:1]] == ["minecraft:glass"]
         assert search("wall", 1)[0]["block_id"] == "minecraft:glass"
-        assert by_id["minecraft:barrier"]["score"] == by_id["minecraft:glass"]["score"] * 0.25
-        assert by_id["minecraft:infested_stone"]["score"] == by_id["minecraft:stone"]["score"] * 0.25
-        assert by_id["minecraft:bedrock"]["score"] == by_id["minecraft:stone"]["score"] * 0.25
+        # Shown scores are rounded to 2 decimals; ranking keeps full precision.
+        assert by_id["minecraft:barrier"]["score"] == pytest.approx(by_id["minecraft:glass"]["score"] * 0.25, abs=0.01)
+        assert by_id["minecraft:infested_stone"]["score"] == pytest.approx(by_id["minecraft:stone"]["score"] * 0.25, abs=0.01)
+        assert by_id["minecraft:bedrock"]["score"] == pytest.approx(by_id["minecraft:stone"]["score"] * 0.25, abs=0.01)
+        assert all(len(str(item["score"]).partition(".")[2]) <= 2 for item in wall)
         assert "结构生成" in " ".join(by_id["minecraft:bedrock"]["warnings"])
         assert by_id["minecraft:sand"]["warnings"] == ["行为提示（依据 tag minecraft:sand）：受重力影响，下方悬空时会下落。"]
         assert by_id["minecraft:gravel"]["warnings"] == ["行为提示（本地方块规则）：受重力影响，下方悬空时会下落。"]
         assert "minecraft:fire" in " ".join(by_id["minecraft:soul_fire"]["warnings"])
         assert by_id["minecraft:packed_ice"]["warnings"] == []
         assert by_id["minecraft:soul_fire"]["score"] == by_id["minecraft:packed_ice"]["score"] == by_id["minecraft:glass"]["score"]
-        assert by_id["minecraft:barrier"]["score_breakdown"] == by_id["minecraft:glass"]["score_breakdown"]
+        assert by_id["minecraft:barrier"]["score_breakdown"] == by_id["minecraft:glass"]["score_breakdown"] == {"text": by_id["minecraft:glass"]["score"]}
+        # Defaults are left out: eligible qualification and a state equal to the block ID.
+        assert by_id["minecraft:barrier"]["candidate_qualification"] == "conditional"
+        assert not {"candidate_qualification", "recommended_state_id"} & set(by_id["minecraft:glass"])
         assert by_id["minecraft:sand"]["score"] == by_id["minecraft:gravel"]["score"] == by_id["minecraft:glass"]["score"]
         # Equal scores: eligible before conditional, then variant ID.
         assert [item["block_id"] for item in wall if item["block_id"] in {"minecraft:barrier", "minecraft:command_block"}] == ["minecraft:command_block", "minecraft:barrier"]
@@ -278,7 +284,7 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
                 assert (structured["minecraft_version"], structured["release_id"]) == ("26.2", fixture.release.name)
             if name == "search_blocks":
                 assert [(item["block_id"], item["score"]) for item in structured["candidates"]] == [("minecraft:yellow_carpet", 1)]
-                assert metadata[0]["tiles"] == [{"candidate_id": "T01", "block_id": "minecraft:yellow_carpet", "row": 0, "column": 0}]
+                assert metadata[0]["columns"] == 1 and "tiles" not in metadata[0]
                 assert (images[0].width, images[0].height) == (CARD, CARD)
                 preview = decode_rgba_png((fixture.release / "previews/minecraft/yellow_carpet/preview.png").read_bytes())
                 assert _pixel(images[0], 128, 128) == _pixel(preview, 256, 256)
@@ -290,8 +296,7 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
             if name == "compare_blocks":
                 assert [(item["candidate_id"], item["block_id"]) for item in structured["blocks"]] == [("T01", "minecraft:stone"), ("T02", "minecraft:glass")]
                 assert "transparent" in structured["differing_fields"]
-                assert [tile["candidate_id"] for tile in metadata[0]["tiles"]] == ["T01", "T02"]
-                assert [(tile["candidate_id"], tile["block_id"], tile["column"]) for tile in metadata[0]["tiles"]] == [("T01", "minecraft:stone", 0), ("T02", "minecraft:glass", 1)]
+                assert metadata[0]["columns"] == 2
                 assert (images[0].width, images[0].height) == (2 * CARD, CARD)
                 for x, name in [(128, "stone"), (384, "glass")]:
                     preview = decode_rgba_png((fixture.release / f"previews/minecraft/{name}/preview.png").read_bytes())
@@ -309,10 +314,10 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
         ranked = call(send, 14, "search_blocks", {"keywords": ["yellow", "stone", "glass"]})
         ranked_data = ranked["structuredContent"]
         assert [(item["block_id"], item["score"]) for item in ranked_data["candidates"]] == [
-            ("minecraft:yellow_carpet", 0.3375), ("minecraft:glass", 0.28125), ("minecraft:stone", 0.28125),
+            ("minecraft:yellow_carpet", 0.34), ("minecraft:glass", 0.28), ("minecraft:stone", 0.28),
         ]
         assert [item["candidate_id"] for item in ranked_data["candidates"]] == ["T01", "T02", "T03"]
-        assert [(item["candidate_id"], item["block_id"]) for item in ranked_data["images"][0]["tiles"]] == [(item["candidate_id"], item["block_id"]) for item in ranked_data["candidates"]]
+        assert ranked_data["images"][0]["columns"] == 3
         [sheet] = result_images(ranked)
         assert (sheet.width, sheet.height) == (3 * CARD, CARD)
         for index, candidate in enumerate(ranked_data["candidates"]):
@@ -321,6 +326,22 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
             assert _pixel(sheet, index * CARD + 128, 128) == _pixel(preview, 256, 256)
             label = _pixel(sheet, index * CARD + 7, CARD - 5)
             assert label == bytes([0x18, 0x18, 0x18, 0xFF]), "T-label backing must be drawn inside its 256px card"
+        # compact: isometric and top views at 64px side by side per 128x64 tile.
+        compact = call(send, 29, "search_blocks", {"keywords": ["yellow", "stone", "glass"], "image": "compact"})
+        Draft202012Validator(load_schema(SCHEMAS["search_blocks"])).validate(compact["structuredContent"])
+        assert compact["structuredContent"]["candidates"] == ranked_data["candidates"]
+        assert compact["structuredContent"]["images"] == [{"content_index": 1, "mime_type": "image/webp", "width": 384, "height": 64, "columns": 3}]
+        [small] = result_images(compact)
+        assert (small.width, small.height) == (384, 64)
+        for index, candidate in enumerate(ranked_data["candidates"]):
+            preview = decode_rgba_png((fixture.release / f"previews/minecraft/{candidate['block_id'].removeprefix('minecraft:')}/preview.png").read_bytes())
+            assert _pixel(small, index * 128 + 40, 20) == _pixel(preview, 160, 80)
+            assert _pixel(small, index * 128 + 64 + 40, 20) == _pixel(preview, 256 + 160, 256 + 80)
+            assert _pixel(small, index * 128 + 2, 64 - 3) == bytes([0x18, 0x18, 0x18, 0xFF])
+        # none: the same candidates and no image content.
+        bare = call(send, 30, "search_blocks", {"keywords": ["yellow", "stone", "glass"], "image": "none"})
+        assert bare["structuredContent"] == {"candidates": ranked_data["candidates"], "images": []}
+        assert len(bare["content"]) == 1
         empty = call(send, 15, "search_blocks", {"keywords": ["term-not-present"]})
         assert empty["isError"] is False
         assert empty["structuredContent"] == {"candidates": [], "images": []}
@@ -333,6 +354,7 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
             (26, "search_blocks", {}),
             (27, "search_blocks", {"similar_to": "stone"}),
             (28, "search_blocks", {"similar_to": None}),
+            (31, "search_blocks", {"keywords": ["stone"], "image": "small"}),
             (16, "search_blocks", {"query": "stone"}),
             (17, "search_blocks", {"keywords": ["stone"], "limit": 0}),
             (18, "search_blocks", {"keywords": ["x"] * 17}),
@@ -416,7 +438,9 @@ def test_details_summary_budget_state_pages_and_lossless_card(tmp_path: Path) ->
         state = json.loads(db.execute("SELECT record_json FROM states WHERE state_id=?", (block_id,)).fetchone()[0])
         for index, state_id in enumerate(extra):
             state.update(state_id=state_id, is_default=False, properties={"level": str(index)}, variant_ids=[], mapping_status="skipped")
-            db.execute("INSERT INTO states SELECT ?,block_id,?,0,? FROM states WHERE state_id=?", (state_id, json.dumps(state["properties"]), json.dumps(state), block_id))
+            # One state whose collision differs from its outline shape.
+            record = {**state, "collision": {"boxes": []}} if index == 1 else state
+            db.execute("INSERT INTO states SELECT ?,block_id,?,0,? FROM states WHERE state_id=?", (state_id, json.dumps(state["properties"]), json.dumps(record), block_id))
     expected = sorted([block_id, *extra], key=lambda value: value.encode("utf-8"))
     before = _inventory(tmp_path)
     details_schema = Draft202012Validator(load_schema(SCHEMAS["get_block_details"]))
@@ -429,6 +453,8 @@ def test_details_summary_budget_state_pages_and_lossless_card(tmp_path: Path) ->
         assert summary["properties"] == {"level": [str(index) for index in range(19)]}
         assert not {"states", "represented_state_ids", "state_behaviors", "variants"} & set(summary)
         assert summary["representative"]["state_id"] == block_id
+        # Collision equal to the outline shape is left out.
+        assert summary["representative"]["shape"] and "collision" not in summary["representative"]
         # Known support facts survive; unknown sides are omitted, never false.
         assert summary["representative"]["behavior"]["support"] == {"below": True}
         assert summary["representative"]["behavior"]["requires_support"] is False
@@ -454,6 +480,8 @@ def test_details_summary_budget_state_pages_and_lossless_card(tmp_path: Path) ->
         assert seen == expected
         level = next(item for page in pages for item in page["states"] if item["state_id"] == extra[1])
         assert (level["properties"], level["mapping_status"], level["is_default"]) == ({"level": "1"}, "skipped", False)
+        assert level["collision"] == [] and level["shape"]
+        assert all("collision" not in item for page in pages for item in page["states"] if item["state_id"] != extra[1])
         wide = call(send, 10, "get_block_details", {"block_id": block_id, "detail": "states", "offset": 4, "limit": 16})["structuredContent"]
         assert [item["state_id"] for item in wide["states"]] == expected[4:20] and wide["next_offset"] is None
         beyond = call(send, 11, "get_block_details", {"block_id": block_id, "detail": "states", "offset": 25})["structuredContent"]
@@ -484,7 +512,7 @@ def test_color_series_merge(tmp_path: Path, force_like: bool) -> None:
         merged = search(["wool"])
         assert [item["block_id"] for item in merged["candidates"]] == ["minecraft:white_wool"]
         assert merged["candidates"][0]["color_series"] == {"block_id_pattern": "minecraft:{color}_wool", "other_colors": list(DYES[1:])}
-        assert [tile["block_id"] for tile in merged["images"][0]["tiles"]] == ["minecraft:white_wool"]
+        assert merged["images"][0]["columns"] == 1
 
         tulips = search(["tulip"])
         assert sorted(item["block_id"] for item in tulips["candidates"]) == sorted(f"minecraft:{dye}_tulip" for dye in DYES[:4])
@@ -549,27 +577,30 @@ def test_face_colours_family_compare_and_similar_to(tmp_path: Path, force_like: 
         details = call(send, 2, "get_block_details", {"block_id": "minecraft:stone"})["structuredContent"]
         Draft202012Validator(load_schema(SCHEMAS["get_block_details"])).validate(details)
         colors = details["representative"]["colors"]
-        # Top is unshaded; side divides the north/east shading back out.
-        assert colors["top"] == {"hex": "#7d7d7d", "lightness": colors["top"]["lightness"], "lightness_std": 0, "dominant": [{"hex": "#7d7d7d", "share": 1}]}
-        assert abs(int(colors["side"]["hex"][1:3], 16) - 125) <= 1
+        # Top is unshaded; side divides the north/east shading back out, so
+        # the two faces match and are given once.
+        assert colors == {"top_and_side": {"hex": "#7d7d7d", "lightness": colors["top_and_side"]["lightness"], "lightness_std": 0, "dominant": [{"hex": "#7d7d7d", "share": 1}]}}
         assert details["representative"]["shape_class"] == "full_cube"
-        assert details["family"] == {"base_block": "minecraft:stone", "forms": {"stairs": "minecraft:stone_stairs", "slab": "minecraft:stone_slab"}}
+        assert details["family"] == {"base_block": "minecraft:stone", "forms": ["stairs", "slab"], "form_id_pattern": "minecraft:stone_{form}"}
         stairs = call(send, 3, "get_block_details", {"block_id": "minecraft:stone_stairs"})["structuredContent"]
         assert stairs["representative"]["shape_class"] == "stairs" and stairs["family"] == details["family"]
         assert "family" not in call(send, 4, "get_block_details", {"block_id": "minecraft:glass"})["structuredContent"]
         # Premultiplied translucent pixels are divided back to texture colour.
         glass = call(send, 12, "get_block_details", {"block_id": "minecraft:white_stained_glass"})["structuredContent"]
-        assert glass["representative"]["colors"]["top"]["hex"] == "#ffffff"
+        assert glass["representative"]["colors"]["top_and_side"]["hex"] == "#ffffff"
 
         compared = call(send, 5, "compare_blocks", {"block_ids": ["minecraft:stone", "minecraft:cobblestone", "minecraft:oak_planks", "minecraft:structure_void"]})
         data = compared["structuredContent"]
         Draft202012Validator(load_schema(SCHEMAS["compare_blocks"])).validate(data)
         assert [item.get("candidate_id") for item in data["blocks"]] == ["T01", "T02", "T03", None]
-        cobble = data["blocks"][1]["colors"]["top"]
+        cobble = data["blocks"][1]["colors"]["top_and_side"]
         assert sorted(item["hex"] for item in cobble["dominant"]) == ["#646464", "#969696"]
         assert [item["share"] for item in cobble["dominant"]] == [0.5, 0.5] and cobble["lightness_std"] > 9
         assert data["blocks"][3]["colors"] is None and data["blocks"][3]["semantics"] is None
         assert data["blocks"][0]["family"] == details["family"] and data["blocks"][1]["family"] is None
+        # One summary language side by side; details keep both.
+        assert "summary_zh" not in data["blocks"][0]["semantics"] and data["blocks"][0]["semantics"]["summary_en"]
+        assert data["images"][0]["columns"] == 3
         assert {"colors", "family", "semantics"} <= set(data["differing_fields"]) and "shape_class" in data["differing_fields"]
         assert len(result_images(compared)) == 1
 
@@ -587,10 +618,17 @@ def test_face_colours_family_compare_and_similar_to(tmp_path: Path, force_like: 
         # back to white it is out of range.
         assert [item["block_id"] for item in ranked] == ["minecraft:andesite", "minecraft:cobblestone", "minecraft:oak_planks", "minecraft:infested_stone"]
         by_id = {item["block_id"]: item for item in ranked}
-        assert by_id["minecraft:infested_stone"]["score"] == 0.25 and by_id["minecraft:infested_stone"]["color_delta_e"] == 0
-        assert by_id["minecraft:cobblestone"]["color_delta_e"] < by_id["minecraft:andesite"]["color_delta_e"]
-        assert all(item["score_breakdown"]["shape"] == 1 and "color_series" not in item for item in ranked)
-        assert "minecraft:stone" in ranked[0]["reason"]
+        delta_e = {key: float(re.match(r"ΔE ([0-9.]+), texture [0-9.]+\.", item["reason"]).group(1)) for key, item in by_id.items()}
+        assert by_id["minecraft:infested_stone"]["score"] == 0.25 and delta_e["minecraft:infested_stone"] == 0
+        assert delta_e["minecraft:cobblestone"] < delta_e["minecraft:andesite"]
+        assert all(set(item["score_breakdown"]) == {"color"} and "color_series" not in item for item in ranked)
+        # How ΔE and texture are measured is said once, not per candidate.
+        response = call(send, 13, "search_blocks", {"similar_to": "minecraft:stone"})["structuredContent"]
+        assert response["similarity"]["block_id"] == "minecraft:stone" and response["similarity"]["shape_class"] == "full_cube"
+        assert "Oklab" in response["similarity"]["basis"] and "Keywords" not in response["similarity"]["basis"]
+        keyworded = call(send, 14, "search_blocks", {"similar_to": "minecraft:stone", "keywords": ["andesite"]})["structuredContent"]
+        assert "Keywords only narrow the pool." in keyworded["similarity"]["basis"]
+        assert "similarity" not in call(send, 15, "search_blocks", {"keywords": ["stone"]})["structuredContent"]
         assert [item["block_id"] for item in similar(7, {"similar_to": "minecraft:stone_stairs"})] == []
         assert [item["block_id"] for item in similar(8, {"similar_to": "minecraft:stone", "keywords": ["andesite"]})] == ["minecraft:andesite"]
         assert len(similar(9, {"similar_to": "minecraft:stone", "limit": 1})) == 1
@@ -690,9 +728,10 @@ def test_non_building_blocks_oxidation_series_and_material_groups(tmp_path: Path
         assert exact[0]["block_id"] == "minecraft:waxed_cut_copper" and "oxidation_series" not in exact[0]
 
         # Log, wood, stripped log and planks are one material.
-        oak = ["minecraft:oak_log", "minecraft:oak_planks", "minecraft:oak_wood", "minecraft:stripped_oak_log"]
-        assert details(15, "minecraft:stripped_oak_log")["family"] == {"base_block": "minecraft:stripped_oak_log", "forms": {}, "material_blocks": oak}
-        assert details(16, "minecraft:oak_stairs")["family"] == {"base_block": "minecraft:oak_planks", "forms": {"stairs": "minecraft:oak_stairs"}, "material_blocks": oak}
+        # They are listed as templates, * standing for the material.
+        oak = ["*_log", "*_planks", "*_wood", "stripped_*_log"]
+        assert details(15, "minecraft:stripped_oak_log")["family"] == {"base_block": "minecraft:stripped_oak_log", "forms": [], "material": "oak", "material_blocks": oak}
+        assert details(16, "minecraft:oak_stairs")["family"] == {"base_block": "minecraft:oak_planks", "forms": ["stairs"], "form_id_pattern": "minecraft:oak_{form}", "material": "oak", "material_blocks": oak}
         # Wax and oxidation stay part of the material: cut copper has no copper block here.
         assert "family" not in details(17, "minecraft:cut_copper")
         compared = call(send, 18, "compare_blocks", {"block_ids": ["minecraft:oak_log", "minecraft:oak_wood"]})["structuredContent"]

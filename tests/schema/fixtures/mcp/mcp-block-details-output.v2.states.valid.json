@@ -40,32 +40,6 @@
           "min_z": 0.5
         }
       ],
-      "collision": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
       "behavior": {
         "emission_level": 0,
         "emissive": false,

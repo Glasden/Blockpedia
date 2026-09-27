@@ -203,7 +203,7 @@ B 阶段已在 Node MCP 实现，Schema 升为 `mcp-*-output.v2`／`mcp-error.v2
 | 资格与风险 | 技术名单、7 种蠹虫方块及 E2 特殊方块按第 2 节降权；重力、融化、火、生长提示按 E2 从 tags 推导；已有 conditional 警告保留。其他行为风险与名单分开，未知事实明确未知，不声称完成全量风险审核。 |
 | 建筑查询集 | 约 20 条中英真实需求，覆盖光滑石墙、深木屋顶、百叶/窗框、白色墙面、旧苔墙、木梁、栏杆、窗台线脚、暖光。每条列可接受的前三候选集合及反例；实施时定稿，作为本轮相关性回归门，不锁死唯一名次。 |
 | 比较字段 | 已实现（P1 第 5 项）：按方块分列全部字段并列出取值不同的字段；删除未使用的 `context`/`compare_states`。见第 5.2 节。 |
-| 图上名称、搜索输出精简 | P1 后续：名称标签需实际可读；输出先测量，保留可用的事实追溯方式。 |
+| 图上名称、搜索输出精简 | 搜索、比较、详情输出第二轮瘦身及搜索图片 `image` 参数已实现，见第 5.4 节；事实追溯仍经 `block_id`／`recommended_state_id` 调详情。 |
 | 分面颜色、多主色、相似色检索、系列形状、3×3 平铺 | 分面颜色、多主色、`similar_to`、系列形状已在 Node MCP 实现，见第 5.2 节；3×3 平铺仍暂缓。16 色归并见第 5.1 节。 |
 | 删减推荐状态属性 | 不采用；完整合法 canonical 状态 ID 保留。 |
 
@@ -258,6 +258,38 @@ Schema：详情 v2 与比较 v3 的 `family.forms` 允许为空并新增 `materi
 验证：建筑查询集由 25 条增至 32 条（新增 warm roof shingle、暖色瓦屋顶、glass 与 4 条 `similar_to`；`栏杆`/`railing` 新增 `require` 须含栅栏和栏杆，`red brick wall` 固定第 1 名 bricks），另加正式 release 上的材料组检查；新增条目在改前代码上 9 条失败，改后全部通过。`tests/r4/test_node_mcp.py` 新增夹具用例，FTS/LIKE 两路径覆盖降权与中心词点名、同类不降权、形状细分、氧化折叠（含带颜色时只折叠涂蜡、精确 ID 独立）与材料组。`python -m pytest tests -q` **376 passed、6 skipped**（Windows、GPU 与 PowerShell 相关）。
 
 未做：`dark_prismarine` 与 `prismarine`、`cobblestone` 与 `stone` 等命名不同源的材料不入同组；非建材类别只影响搜索排序，未写入详情或比较输出；中文单字按子串匹配的既有问题（`花` 命中花岗岩）未处理；中心词按名称末词判断，“Block of Raw Copper”这类英文名会被 `copper` 视为点名，粗铜块在 `copper` 中仍排第 7。
+
+### 5.4 MCP 输出第二轮瘦身（2026-09-27，未提交）
+
+按用户转来的五条建议实施，只改 Node MCP 输出与 Schema，不改排序、导出、标注或 release；当前正式 release 即可生效，无新依赖。Schema 沿用第 5.3 节做法原地更新（搜索 v2、详情 v2、比较 v3 均未升版），夹具同步改写。
+
+- 搜索图片：`search_blocks` 新增 `image`：`full`（默认，维持第 3.3 节已批准的 256 四视角卡片）、`compact`（每格 128×64，只放等轴与顶面两视角各 64px，nearest 取自原图对应象限，标签缩为 2 倍字形）、`none`（不附图，`images` 为空）。像素数：8 个候选由 1024×512 降到 512×128。比较与详情不变。
+- 联系表映射：搜索与比较的 `images[].tiles` 改为 `columns`；格子按候选顺序行优先排列，第 n 个在 (n−1) div columns 行、(n−1) mod columns 列，格宽 = width / columns。
+- 搜索候选：`score` 与 `score_breakdown` 输出保留 2 位小数（排序仍用全精度）；`score_breakdown` 只列非零项，全为零时省略；`candidate_qualification` 仅在 conditional 时出现；`recommended_state_id` 与 `block_id` 相同时省略（完整状态 ID 的决定不变，只是不重复）。
+- 相似色：`reason` 只写 `ΔE 1.4, texture 0.0`（另有降权时附说明）；ΔE、纹理项和分数公式在顶层 `similarity`（`block_id`、`shape_class`、`basis`）写一次，带关键词时注明只作筛选。删除与 reason 重复的 `color_delta_e`，`score_breakdown` 不再带恒为 1 的 `shape`。
+- 材料系列（详情与比较共用）：`family.forms` 由“形状→完整 ID”表改为形状名数组，另给 `form_id_pattern`（如 `minecraft:oak_{form}`），形态 ID 即替换 `{form}`；无形态时 `forms` 为空且不给模式。`material_blocks` 改为模板，另给 `material`（材料词）：`"material": "oak", "material_blocks": ["*_log", "*_planks", "*_wood", "stripped_*_log", "stripped_*_wood"]`，方块 ID = `minecraft:` + 模板中 `*` 换成 material。模板来自划分材料组的同一套前缀／后缀剥离，铜的涂蜡与氧化阶段留在模板里（`exposed_cut_*`）。正式 release 中 484 个带材料组的方块按模板还原后与原 ID 列表逐项一致（43 组）。
+- 分面颜色（详情与比较共用）：顶面与侧面 Oklab 距离 ≤0.02（ΔE×100 ≤2）且 L* 标准差相差 ≤2 时合为一项 `top_and_side`（取顶面数值）。正式 release 1,172 个有色摘要中 600 个合并；原木、草方块、书架、TNT、砂岩、干草块等顶侧不同的仍分列，南瓜、石英柱因均色与纹理离散度相近而合并。
+- 比较语义只保留 `summary_en`（与其余英文标注词一致）；详情仍保留中英两种摘要。
+- 详情：代表状态与状态页中，碰撞箱与外形相同时省略 `collision`；缺失即与 `shape` 相同。正式 release 中 314 个代表状态保留碰撞箱。
+
+实测（正式 release，真实 stdio 经服务端 Schema 校验，文本为 structuredContent 字节）：
+
+| 调用 | 改前 | 改后 |
+|---|---:|---:|
+| search `stone wall` | 3,289 B | 1,677 B（图片 compact 7,706 B / 512×128，full 19,812 B / 1024×512） |
+| search `white` | 3,332 B | 1,889 B |
+| similar_to `stone_bricks` | 4,629 B | 1,980 B |
+| similar_to `bricks` + `wall`，limit 12 | 7,154 B | 3,151 B |
+| compare 6 种木板 | 9,927 B | 6,381 B |
+| compare 6 种白色方块 | 6,359 B | 4,743 B |
+| compare stone/oak_planks | 3,041 B | 2,097 B |
+| details `oak_stairs` | 2,749 B | 2,179 B |
+| details `powder_snow_cauldron` | 3,999 B | 2,867 B |
+| states `oak_stairs` 第 1 页 | 6,184 B | 4,752 B |
+
+6 种木板比较中材料组由完整 ID 的 824 B 降到模板的 502 B；剩余为 family 约 1.9 KB（主要是 6 份相同的 11 个形状名）、语义约 1.7 KB、颜色约 1.0 KB。全 release 1,196 个详情摘要 Schema 全部通过，最大 3,175 B（改前 3,999 B），中位 1,940 B（改前 2,043 B）。人工查看 compact 联系表：12 格标签清晰，楼梯形态与砖纹可辨。
+
+验证：`tests/r4/test_node_mcp.py` 改写旧字段断言并新增：compact 两视角像素取自原图对应象限且标签在格内、`none` 不附图、非法 `image` 被拒、默认值省略、conditional 保留、2 位小数、similarity 顶层说明及关键词注明、形状名与 `form_id_pattern`、`top_and_side`、比较只含英文摘要、材料组模板、碰撞箱仅在不同时出现（摘要与状态页）；建筑查询集的材料组检查按模板还原 ID 后比对；FTS/LIKE 两路径执行。`python -m pytest tests -q` **376 passed、6 skipped**（Windows、GPU 与 PowerShell 相关）。本会话已连接的 blockpedia MCP 进程仍是旧代码，需重载后才生效。
 
 新 release 产出链：渲染定位及修正 → 完整导出 → 新 workspace 导入 → 特征与新标注 → 审核 → 构建 → 四工具集成验收 → 用户发布。无需迁移旧语义和审核；新的非 excluded 候选仍须满足构建的语义完整性要求。
 

@@ -5,13 +5,9 @@
       "block_id": "minecraft:oak_stairs",
       "display_name": "橡木楼梯",
       "recommended_state_id": "minecraft:oak_stairs[facing=north,half=bottom,shape=straight,waterlogged=false]",
-      "candidate_qualification": "eligible",
       "score": 1,
       "score_breakdown": {
-        "text": 1,
-        "color": 0,
-        "shape": 0,
-        "light": 0
+        "text": 1
       },
       "reason": "Matches 橡木楼梯 (name).",
       "warnings": []
@@ -21,13 +17,9 @@
       "block_id": "minecraft:acacia_stairs",
       "display_name": "金合欢木楼梯",
       "recommended_state_id": "minecraft:acacia_stairs[facing=north,half=bottom,shape=straight,waterlogged=false]",
-      "candidate_qualification": "eligible",
       "score": 1,
       "score_breakdown": {
-        "text": 1,
-        "color": 0,
-        "shape": 0,
-        "light": 0
+        "text": 1
       },
       "reason": "Matches 金合欢木楼梯 (name).",
       "warnings": []
@@ -39,20 +31,7 @@
       "mime_type": "image/webp",
       "width": 512,
       "height": 256,
-      "tiles": [
-        {
-          "candidate_id": "T01",
-          "block_id": "minecraft:oak_stairs",
-          "row": 0,
-          "column": 0
-        },
-        {
-          "candidate_id": "T02",
-          "block_id": "minecraft:acacia_stairs",
-          "row": 0,
-          "column": 1
-        }
-      ]
+      "columns": 2
     }
   ]
 }

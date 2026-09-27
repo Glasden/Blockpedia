@@ -269,7 +269,7 @@ const familyOfStem = (stem, blockIds) => {
     const id = `minecraft:${stem}_${form}`;
     if (blockIds.has(id)) forms[form] = id;
   }
-  return Object.keys(forms).length === 0 ? null : { base_block: familyBase(stem, blockIds), forms };
+  return Object.keys(forms).length === 0 ? null : { base_block: familyBase(stem, blockIds), stem, forms };
 };
 // { base_block, forms } for a block that is a material's full block or one of
 // its forms; null otherwise (bamboo_block is not the bamboo planks).
@@ -399,13 +399,17 @@ const oxidationSeries = (blockId, blockIds) => {
 // family; plants and recommendation-list blocks (infested_stone) join none.
 const FINISH_PREFIXES = ['stripped_', 'polished_', 'cut_', 'chiseled_', 'cracked_', 'mossy_', 'smooth_', 'cobbled_', 'packed_'];
 const KIND_SUFFIXES = ['_planks', '_log', '_wood', '_stem', '_hyphae', '_bricks', '_tiles', '_block', '_pillar', '_mosaic', '_grate'];
-const materialRoot = (blockId) => {
+// root keys the group; core is the material word (oak, tuff, copper) and
+// template the block's path with core as * (stripped_*_log, exposed_cut_*).
+const materialParts = (blockId) => {
   const [, waxed = '', stage = '', path] = OXIDATION_RE.exec(blockId.replace(/^minecraft:/, ''));
   let rest = path;
   let prefix;
   while ((prefix = FINISH_PREFIXES.find((value) => rest.startsWith(value))) !== undefined) rest = rest.slice(prefix.length);
-  const suffix = KIND_SUFFIXES.find((value) => rest.endsWith(value));
-  return `${waxed}${stage}${suffix === undefined ? rest : rest.slice(0, -suffix.length)}`;
+  const suffix = KIND_SUFFIXES.find((value) => rest.endsWith(value)) ?? '';
+  const core = rest.slice(0, rest.length - suffix.length);
+  const template = `${waxed}${stage}${path.slice(0, path.length - rest.length)}*${suffix}`;
+  return { root: `${waxed}${stage}${core}`, core, template };
 };
 // Root -> sorted full-block IDs, for roots shared by at least two blocks.
 const materialGroups = (blocks) => {
@@ -415,7 +419,7 @@ const materialGroups = (blocks) => {
     const family = materialFamily(blockId, blockIds);
     if (family !== null && family.base_block !== blockId) continue;
     if (policyWarning(blockId) !== null || blockCategory(blockId, block.tags ?? []) === 'plant') continue;
-    const root = materialRoot(blockId);
+    const { root } = materialParts(blockId);
     groups.set(root, [...(groups.get(root) ?? []), blockId]);
   }
   return new Map([...groups].filter(([, ids]) => ids.length > 1).map(([root, ids]) => [root, ids.sort(byUtf8)]));
@@ -1059,6 +1063,12 @@ const behaviorOutput = (value) => {
 };
 
 const boxes = (shape) => (Array.isArray(shape?.boxes) ? shape.boxes : []);
+// Collision is left out when it is the same boxes as the outline shape.
+const shapeOutput = (state) => {
+  const shape = boxes(state.shape);
+  const collision = boxes(state.collision);
+  return JSON.stringify(shape) === JSON.stringify(collision) ? { shape } : { shape, collision };
+};
 
 const variantsFor = (snapshot, blockId) =>
   Object.values(snapshot.variants)
@@ -1066,6 +1076,8 @@ const variantsFor = (snapshot, blockId) =>
     .sort((left, right) => byUtf8(String(left.variant_id), String(right.variant_id)));
 
 const DETAIL_MODES = new Set(['summary', 'states']);
+const SEARCH_IMAGES = new Set(['full', 'compact', 'none']);
+const round2 = (value) => Number(value.toFixed(2));
 const pageInteger = (args, key, fallback, min, max) => {
   const value = key in args ? args[key] : fallback;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
@@ -1181,7 +1193,7 @@ export class MCPQueryService {
   searchBlocks(argumentsValue) {
     const resources = { previewCache: new Map() };
     try {
-      const args = validateObject(argumentsValue, new Set(['minecraft_version', 'keywords', 'limit', 'similar_to']));
+      const args = validateObject(argumentsValue, new Set(['minecraft_version', 'keywords', 'limit', 'similar_to', 'image']));
       const version = validateVersionInput(args);
       const similarTo = 'similar_to' in args ? args.similar_to : null;
       if ('similar_to' in args && !fullMatch(BLOCK_ID_RE, similarTo)) throw new MCPInputError('similar_to has an invalid format');
@@ -1193,6 +1205,8 @@ export class MCPQueryService {
       if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 12) {
         throw new MCPInputError('limit must be an integer from 1 to 12');
       }
+      const image = 'image' in args ? args.image : 'full';
+      if (!SEARCH_IMAGES.has(image)) throw new MCPInputError('image must be "full", "compact" or "none"');
       const handle = this.resolver.resolve(version);
       try {
         const snapshot = this._snapshot(handle);
@@ -1205,6 +1219,7 @@ export class MCPQueryService {
           ranked = this._rankRows(recalled, snapshot, query, exactQuery);
         }
         let selected;
+        let similarity = null;
         if (similarTo === null) {
           // A waxed copper block always folds into its unwaxed twin; without a
           // colour in the query the 16 dye colours and the oxidation stages
@@ -1237,17 +1252,22 @@ export class MCPQueryService {
               [similarTo],
             );
           }
-          selected = foldSeries(similar, 'oxidationFolded', waxedKey, oxidationOrder).slice(0, limit);
+          selected = foldSeries(similar.ranked, 'oxidationFolded', waxedKey, oxidationOrder).slice(0, limit);
+          // How every candidate's "ΔE …, texture …" reason reads, said once.
+          similarity = {
+            block_id: similarTo,
+            shape_class: similar.shapeClass,
+            basis: 'Same shape class only. ΔE: Oklab ×100 distance of the mean top and side face colours; '
+              + `texture: 0.5 × difference in face L* spread; score = 1 − (ΔE + texture) / ${SIMILARITY_RANGE * 100}.`
+              + (keywords === null ? '' : ' Keywords only narrow the pool.'),
+          };
         }
         const candidates = this._candidateDicts(selected, snapshot);
-        if (candidates.length === 0) return toolResult({ candidates, images: [] });
-        const sheet = this._contactSheet(
-          handle,
-          candidates.map((candidate, index) => ({ candidateId: candidate.candidate_id, blockId: candidate.block_id, variantId: selected[index].row[0] })),
-          4,
-          resources,
-        );
-        return toolResult({ candidates, images: [sheet.image] }, [sheet.webp]);
+        const output = { candidates, ...(similarity === null ? {} : { similarity }), images: [] };
+        if (candidates.length === 0 || image === 'none') return toolResult(output);
+        const sheet = this._contactSheet(handle, selected.map((entry) => entry.row[0]), 4, resources, image);
+        output.images.push(sheet.image);
+        return toolResult(output, [sheet.webp]);
       } finally {
         handle.close();
       }
@@ -1516,7 +1536,7 @@ export class MCPQueryService {
     const targetShape = shapeKey(targetId, snapshot.blocks[targetId].tags ?? [], target.machine_facts?.geometry);
     const targetCategory = blockCategory(targetId, snapshot.blocks[targetId].tags ?? []);
     const { docs } = this._searchIndex(snapshot);
-    const pool = textRanked ?? this._eligibleRows(snapshot).map((row) => ({ row, breakdown: { text: 0, color: 0, shape: 0, light: 0 }, asked: false }));
+    const pool = textRanked ?? this._eligibleRows(snapshot).map((row) => ({ row, breakdown: { text: 0 }, asked: false }));
     const result = [];
     const targetOxidation = oxidationSeries(targetId, new Set(Object.keys(snapshot.blocks)));
     for (const { row, breakdown, asked } of pool) {
@@ -1534,28 +1554,26 @@ export class MCPQueryService {
       const demoted = category !== null && category !== targetCategory && !asked;
       let score = penalized ? pyRound8(similarity * 0.25) : similarity;
       if (demoted) score = pyRound8(score * NON_BUILDING_FACTOR);
-      const colorDeltaE = Number((distance.color * 100).toFixed(1));
       result.push({
         row,
         score,
-        breakdown: { text: breakdown.text, color: similarity, shape: 1, light: 0 },
+        // The shape class always matches, so shape is not a dimension here.
+        breakdown: { text: breakdown.text, color: similarity },
         exact: false,
         penalized,
         oxidation,
+        // The response's similarity.basis explains these terms once.
         notes: [
-          `palette similarity ${similarity.toFixed(2)} to ${targetId}: colour ΔE ${colorDeltaE} (Oklab ×100 over top and side faces), texture term ${(distance.texture * 100).toFixed(1)}`,
-          `same shape class ${targetShape}`,
+          `ΔE ${(distance.color * 100).toFixed(1)}, texture ${(distance.texture * 100).toFixed(1)}`,
           ...(demoted ? [`${category} ×${NON_BUILDING_FACTOR} (not a building material)`] : []),
-          ...(textRanked === null ? [] : ['keywords matched']),
         ],
-        colorDeltaE,
         distance: distance.distance,
       });
     }
     result.sort((left, right) => right.score - left.score
       || left.distance - right.distance
       || byUtf8(left.row[0], right.row[0]));
-    return result;
+    return { ranked: result, shapeClass: targetShape };
   }
 
   // Face colours of a variant, cached with the release snapshot.  A preview
@@ -1571,24 +1589,29 @@ export class MCPQueryService {
     return palette;
   }
 
+  // Scores are ranked at full precision and shown to 2 decimals.  Defaults are
+  // left out: a recommended state equal to the block ID (a block without
+  // properties), eligible qualification and breakdown dimensions at 0.
   _candidateDicts(ranked, snapshot) {
-    return ranked.map(({ row, score, breakdown, penalized, notes, series, colorFolded, oxidationFolded, colorDeltaE }, index) => {
+    return ranked.map(({ row, score, breakdown, penalized, notes, series, colorFolded, oxidationFolded }, index) => {
       const [variantId, variant, , block] = row;
+      const blockId = String(variant.block_id);
       const names = block.official_names ?? {};
       const reason = MCPQueryService._reason(notes, semantic(snapshot.annotations[variantId]));
+      const stateId = String(variant.canonical_state_id);
+      const shown = Object.entries(breakdown).map(([key, value]) => [key, round2(value)]).filter(([, value]) => value > 0);
       return {
         candidate_id: `T${String(index + 1).padStart(2, '0')}`,
-        block_id: String(variant.block_id),
+        block_id: blockId,
         // Python str(names.get("zh_cn") or names.get("en_us") or variant_id):
         // an empty string falls through, so the schema minLength 1 still holds.
         display_name: String(names.zh_cn || names.en_us || variantId),
-        recommended_state_id: String(variant.canonical_state_id),
-        candidate_qualification: String(variant.candidate_qualification),
-        score,
-        score_breakdown: breakdown,
+        ...(stateId === blockId ? {} : { recommended_state_id: stateId }),
+        ...(variant.candidate_qualification === 'eligible' ? {} : { candidate_qualification: String(variant.candidate_qualification) }),
+        score: round2(score),
+        ...(shown.length === 0 ? {} : { score_breakdown: Object.fromEntries(shown) }),
         reason: penalized ? `${reason.slice(0, 450)} Local recommendation rule: general-use score ×0.25.` : reason,
-        warnings: blockWarnings(variant, String(variant.block_id), block),
-        ...(colorDeltaE === undefined ? {} : { color_delta_e: colorDeltaE }),
+        warnings: blockWarnings(variant, blockId, block),
         ...(colorFolded === undefined ? {} : {
           color_series: {
             block_id_pattern: `minecraft:{color}_${series.key}`,
@@ -1615,23 +1638,17 @@ export class MCPQueryService {
     return typeof summary === 'string' && summary ? summary.slice(0, 500) : 'Deterministic release candidate.';
   }
 
-  // tiles: [{ candidateId, blockId, variantId }] in sheet order; the painted
-  // T01.. label of each card is its candidateId.
-  _contactSheet(handle, tiles, columns, resources) {
-    const previews = tiles.map((tile) => this._preview(handle, tile.variantId, resources).decoded);
-    const sheet = makeContactSheet(previews, columns);
-    const cols = Math.max(1, Math.min(columns, tiles.length));
+  // One tile per variant, row-major in candidate order: the tile labelled T01
+  // is the first candidate, so the column count locates every tile.
+  _contactSheet(handle, variantIds, columns, resources, layout = 'full') {
+    const previews = variantIds.map((variantId) => this._preview(handle, variantId, resources).decoded);
+    const sheet = makeContactSheet(previews, columns, layout);
     const image = {
       content_index: 1,
       mime_type: IMAGE_MIME_TYPE,
       width: sheet.width,
       height: sheet.height,
-      tiles: tiles.map((tile, index) => ({
-        candidate_id: tile.candidateId,
-        block_id: tile.blockId,
-        row: Math.floor(index / cols),
-        column: index % cols,
-      })),
+      columns: Math.max(1, Math.min(columns, variantIds.length)),
     };
     return { image, webp: sheet.webp };
   }
@@ -1683,8 +1700,7 @@ export class MCPQueryService {
         state_id: stateId,
         candidate_qualification: variant?.candidate_qualification ?? null,
         shape_class: shapeKey(blockId, block.tags ?? [], variant?.machine_facts?.geometry),
-        shape: boxes(state.shape),
-        collision: boxes(state.collision),
+        ...shapeOutput(state),
         geometry_classes: [...(geometry.geometry_classes ?? [])],
         machine_tags: [...(variant?.machine_facts?.machine_tags ?? [])],
         behavior: behaviorOutput(variant === undefined ? state.behavior : behavior(variant, state)),
@@ -1723,8 +1739,7 @@ export class MCPQueryService {
         state_id: state.state_id,
         is_default: state.is_default,
         properties: sortedObject(state.properties),
-        shape: boxes(state.shape),
-        collision: boxes(state.collision),
+        ...shapeOutput(state),
         behavior: behaviorOutput(state.behavior),
         variant_ids: [...state.variant_ids],
         mapping_status: state.mapping_status,
@@ -1741,13 +1756,22 @@ export class MCPQueryService {
     snapshot.materials ??= materialGroups(snapshot.blocks);
     const family = materialFamily(blockId, snapshot.blockIds);
     const base = family === null ? blockId : family.base_block;
-    const group = base === null ? undefined : snapshot.materials.get(materialRoot(base));
+    const group = base === null ? undefined : snapshot.materials.get(materialParts(base).root);
     const materials = group?.includes(base) ? group : undefined;
     if (family === null && materials === undefined) return null;
+    // Form IDs follow one pattern per material (oak_planks: minecraft:oak_{form}),
+    // so the forms are listed by name.
+    const forms = Object.keys(family?.forms ?? {});
     return {
       base_block: base,
-      forms: family?.forms ?? {},
-      ...(materials === undefined ? {} : { material_blocks: [...materials] }),
+      forms,
+      ...(forms.length === 0 ? {} : { form_id_pattern: `minecraft:${family.stem}_{form}` }),
+      // Full blocks by template: minecraft:stripped_oak_log is stripped_*_log
+      // with * = oak.
+      ...(materials === undefined ? {} : {
+        material: materialParts(base).core,
+        material_blocks: materials.map((id) => materialParts(id).template),
+      }),
     };
   }
 
@@ -1769,7 +1793,7 @@ export class MCPQueryService {
       const entry = { block_id: blockId, display_name: String(names.zh_cn || names.en_us || blockId) };
       if (variant !== undefined) {
         entry.candidate_id = `T${String(tiles.length + 1).padStart(2, '0')}`;
-        tiles.push({ candidateId: entry.candidate_id, blockId, variantId: String(variant.variant_id) });
+        tiles.push(String(variant.variant_id));
       }
       const state = snapshot.states[String(variant === undefined ? block.default_state_id : variant.canonical_state_id)] ?? {};
       const facts = variant === undefined ? (isMapping(state.behavior) ? state.behavior : {}) : behavior(variant, state);
@@ -1801,8 +1825,10 @@ export class MCPQueryService {
   }
 }
 
+// One summary language is enough side by side; English matches the other
+// annotation terms.  Details keep both.
 const COMPARE_SEMANTIC_KEYS = [
-  'summary_zh', 'summary_en', 'color_terms', 'material_impressions', 'style_tags', 'building_roles',
+  'summary_en', 'color_terms', 'material_impressions', 'style_tags', 'building_roles',
 ];
 const COMPARE_FIELDS = [
   'candidate_qualification', 'shape_class', 'geometry_classes', 'transparent', 'emission_level',

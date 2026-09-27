@@ -157,9 +157,18 @@ export function facePalette(image) {
   return Object.fromEntries(Object.entries(FACE_VIEWS).map(([face, views]) => [face, faceStats(image, views)]));
 }
 
-export const paletteOutput = (palette) => (palette.top === null && palette.side === null
-  ? null
-  : { top: palette.top?.output ?? null, side: palette.side?.output ?? null });
+// Top and side of most full blocks look alike; within these limits they are
+// reported once, as top_and_side (the top face's figures).
+const SAME_FACE_DISTANCE = 0.02;
+const SAME_FACE_SPREAD = 2;
+
+export const paletteOutput = (palette) => {
+  const { top, side } = palette;
+  if (top === null && side === null) return null;
+  if (top !== null && side !== null && oklabDistance(top.oklab, side.oklab) <= SAME_FACE_DISTANCE
+    && Math.abs(top.lightnessStd - side.lightnessStd) <= SAME_FACE_SPREAD) return { top_and_side: top.output };
+  return { top: top?.output ?? null, side: side?.output ?? null };
+};
 
 // Stone and cobblestone share a mean grey; their L* spread (4 vs 11) is what
 // tells them apart, so each point of spread difference adds this much to the

@@ -16,12 +16,38 @@
         "$ref": "#/$defs/candidate"
       }
     },
+    "similarity": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "similar_to only: what the candidates were compared with and how.",
+      "required": [
+        "block_id",
+        "shape_class",
+        "basis"
+      ],
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/block_id"
+        },
+        "shape_class": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
     "images": {
       "type": "array",
       "maxItems": 1,
       "items": {
         "$ref": "#/$defs/image"
-      }
+      },
+      "description": "Empty with image=\"none\" or no candidates."
     }
   },
   "$defs": {
@@ -53,10 +79,7 @@
         "candidate_id",
         "block_id",
         "display_name",
-        "recommended_state_id",
-        "candidate_qualification",
         "score",
-        "score_breakdown",
         "reason",
         "warnings"
       ],
@@ -73,29 +96,22 @@
           "maxLength": 200
         },
         "recommended_state_id": {
-          "$ref": "#/$defs/state_id"
+          "$ref": "#/$defs/state_id",
+          "description": "Canonical state to place; left out when it equals block_id (a block without properties)."
         },
         "candidate_qualification": {
-          "enum": [
-            "eligible",
-            "conditional"
-          ]
+          "const": "conditional",
+          "description": "Present only for a conditional candidate; absent means eligible."
         },
         "score": {
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "description": "Local deterministic relevance after the derived-shape factor and recommendation-list deprioritization. With similar_to it is the palette similarity alone (keywords then only filter the pool)."
+          "description": "Local deterministic relevance after the derived-shape factor and recommendation-list deprioritization. With similar_to it is the palette similarity alone (keywords then only filter the pool). Rounded to 2 decimals; ranking uses full precision."
         },
         "score_breakdown": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "text",
-            "color",
-            "shape",
-            "light"
-          ],
           "properties": {
             "text": {
               "type": "number",
@@ -118,20 +134,17 @@
               "maximum": 1
             }
           },
-          "description": "Dimensions the query asked for, each 0-1; a dimension the query did not ask for is 0 and not part of score. text: name/synonym/annotation word coverage; color: preview colour and stated colour; shape: registry-tag shape class; light: brightest emission level / 15. With similar_to: color is the palette similarity (1 identical, 0 at distance 0.25 or more), shape is 1 (same shape class required) and text is the keyword score when keywords were given."
+          "description": "Dimensions the query asked for, each 0-1 and rounded to 2 decimals; only non-zero ones are listed, and the whole object is left out when none is. text: name/synonym/annotation word coverage; color: preview colour and stated colour; shape: registry-tag shape class; light: brightest emission level / 15. With similar_to: color is the palette similarity (1 identical, 0 at distance 0.25 or more) and text is the keyword score when keywords were given.",
+          "minProperties": 1
         },
         "reason": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 500
+          "maxLength": 500,
+          "description": "With similar_to: \"ΔE <colour distance>, texture <texture term>\", explained once in similarity.basis."
         },
         "warnings": {
           "$ref": "#/$defs/warnings"
-        },
-        "color_delta_e": {
-          "type": "number",
-          "minimum": 0,
-          "description": "similar_to only: Oklab distance ×100 of the mean top and side face colours from the similar_to block."
         },
         "color_series": {
           "type": "object",
@@ -195,42 +208,16 @@
         }
       }
     },
-    "tile": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "candidate_id",
-        "block_id",
-        "row",
-        "column"
-      ],
-      "properties": {
-        "candidate_id": {
-          "$ref": "#/$defs/candidate_id"
-        },
-        "block_id": {
-          "$ref": "#/$defs/block_id"
-        },
-        "row": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "column": {
-          "type": "integer",
-          "minimum": 0
-        }
-      }
-    },
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Lossless WebP contact sheet; each 256x256 card is labelled with its candidate_id.",
+      "description": "Lossless WebP contact sheet, one tile per candidate labelled with its candidate_id. image=\"full\" (default): 256x256 cards of the four views; image=\"compact\": 128x64 tiles of the isometric and top views at 64px.",
       "required": [
         "content_index",
         "mime_type",
         "width",
         "height",
-        "tiles"
+        "columns"
       ],
       "properties": {
         "content_index": {
@@ -249,12 +236,10 @@
           "type": "integer",
           "minimum": 1
         },
-        "tiles": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/tile"
-          }
+        "columns": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Tiles per row. Tiles are row-major in candidate order: T01 is the first tile, so candidate n is at row (n-1) div columns, column (n-1) mod columns; tile width is width / columns."
         }
       }
     }

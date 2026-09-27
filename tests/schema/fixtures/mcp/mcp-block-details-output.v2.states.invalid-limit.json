@@ -40,7 +40,29 @@
           "min_z": 0.5
         }
       ],
-      "collision": [
+      "behavior": {
+        "emission_level": 0,
+        "emissive": false,
+        "passable": false,
+        "redstone_related": false,
+        "transparent": false,
+        "waterloggable": true
+      },
+      "variant_ids": [
+        "minecraft:oak_stairs"
+      ],
+      "mapping_status": "mapped"
+    },
+    {
+      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
+      "is_default": false,
+      "properties": {
+        "facing": "east",
+        "half": "bottom",
+        "shape": "inner_left",
+        "waterlogged": "false"
+      },
+      "shape": [
         {
           "max_x": 1,
           "max_y": 0.5,
@@ -114,7 +136,29 @@
           "min_z": 0.5
         }
       ],
-      "collision": [
+      "behavior": {
+        "emission_level": 0,
+        "emissive": false,
+        "passable": false,
+        "redstone_related": false,
+        "transparent": false,
+        "waterloggable": true
+      },
+      "variant_ids": [
+        "minecraft:oak_stairs"
+      ],
+      "mapping_status": "mapped"
+    },
+    {
+      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
+      "is_default": false,
+      "properties": {
+        "facing": "east",
+        "half": "bottom",
+        "shape": "inner_left",
+        "waterlogged": "false"
+      },
+      "shape": [
         {
           "max_x": 1,
           "max_y": 0.5,
@@ -188,7 +232,29 @@
           "min_z": 0.5
         }
       ],
-      "collision": [
+      "behavior": {
+        "emission_level": 0,
+        "emissive": false,
+        "passable": false,
+        "redstone_related": false,
+        "transparent": false,
+        "waterloggable": true
+      },
+      "variant_ids": [
+        "minecraft:oak_stairs"
+      ],
+      "mapping_status": "mapped"
+    },
+    {
+      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
+      "is_default": false,
+      "properties": {
+        "facing": "east",
+        "half": "bottom",
+        "shape": "inner_left",
+        "waterlogged": "false"
+      },
+      "shape": [
         {
           "max_x": 1,
           "max_y": 0.5,
@@ -262,7 +328,29 @@
           "min_z": 0.5
         }
       ],
-      "collision": [
+      "behavior": {
+        "emission_level": 0,
+        "emissive": false,
+        "passable": false,
+        "redstone_related": false,
+        "transparent": false,
+        "waterloggable": true
+      },
+      "variant_ids": [
+        "minecraft:oak_stairs"
+      ],
+      "mapping_status": "mapped"
+    },
+    {
+      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
+      "is_default": false,
+      "properties": {
+        "facing": "east",
+        "half": "bottom",
+        "shape": "inner_left",
+        "waterlogged": "false"
+      },
+      "shape": [
         {
           "max_x": 1,
           "max_y": 0.5,
@@ -336,7 +424,29 @@
           "min_z": 0.5
         }
       ],
-      "collision": [
+      "behavior": {
+        "emission_level": 0,
+        "emissive": false,
+        "passable": false,
+        "redstone_related": false,
+        "transparent": false,
+        "waterloggable": true
+      },
+      "variant_ids": [
+        "minecraft:oak_stairs"
+      ],
+      "mapping_status": "mapped"
+    },
+    {
+      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
+      "is_default": false,
+      "properties": {
+        "facing": "east",
+        "half": "bottom",
+        "shape": "inner_left",
+        "waterlogged": "false"
+      },
+      "shape": [
         {
           "max_x": 1,
           "max_y": 0.5,
@@ -410,7 +520,29 @@
           "min_z": 0.5
         }
       ],
-      "collision": [
+      "behavior": {
+        "emission_level": 0,
+        "emissive": false,
+        "passable": false,
+        "redstone_related": false,
+        "transparent": false,
+        "waterloggable": true
+      },
+      "variant_ids": [
+        "minecraft:oak_stairs"
+      ],
+      "mapping_status": "mapped"
+    },
+    {
+      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
+      "is_default": false,
+      "properties": {
+        "facing": "east",
+        "half": "bottom",
+        "shape": "inner_left",
+        "waterlogged": "false"
+      },
+      "shape": [
         {
           "max_x": 1,
           "max_y": 0.5,
@@ -484,7 +616,29 @@
           "min_z": 0.5
         }
       ],
-      "collision": [
+      "behavior": {
+        "emission_level": 0,
+        "emissive": false,
+        "passable": false,
+        "redstone_related": false,
+        "transparent": false,
+        "waterloggable": true
+      },
+      "variant_ids": [
+        "minecraft:oak_stairs"
+      ],
+      "mapping_status": "mapped"
+    },
+    {
+      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
+      "is_default": false,
+      "properties": {
+        "facing": "east",
+        "half": "bottom",
+        "shape": "inner_left",
+        "waterlogged": "false"
+      },
+      "shape": [
         {
           "max_x": 1,
           "max_y": 0.5,
@@ -558,32 +712,6 @@
           "min_z": 0.5
         }
       ],
-      "collision": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
       "behavior": {
         "emission_level": 0,
         "emissive": false,
@@ -632,32 +760,6 @@
           "min_z": 0.5
         }
       ],
-      "collision": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
       "behavior": {
         "emission_level": 0,
         "emissive": false,
@@ -681,550 +783,6 @@
         "waterlogged": "false"
       },
       "shape": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "collision": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "behavior": {
-        "emission_level": 0,
-        "emissive": false,
-        "passable": false,
-        "redstone_related": false,
-        "transparent": false,
-        "waterloggable": true
-      },
-      "variant_ids": [
-        "minecraft:oak_stairs"
-      ],
-      "mapping_status": "mapped"
-    },
-    {
-      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
-      "is_default": false,
-      "properties": {
-        "facing": "east",
-        "half": "bottom",
-        "shape": "inner_left",
-        "waterlogged": "false"
-      },
-      "shape": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "collision": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "behavior": {
-        "emission_level": 0,
-        "emissive": false,
-        "passable": false,
-        "redstone_related": false,
-        "transparent": false,
-        "waterloggable": true
-      },
-      "variant_ids": [
-        "minecraft:oak_stairs"
-      ],
-      "mapping_status": "mapped"
-    },
-    {
-      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
-      "is_default": false,
-      "properties": {
-        "facing": "east",
-        "half": "bottom",
-        "shape": "inner_left",
-        "waterlogged": "false"
-      },
-      "shape": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "collision": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "behavior": {
-        "emission_level": 0,
-        "emissive": false,
-        "passable": false,
-        "redstone_related": false,
-        "transparent": false,
-        "waterloggable": true
-      },
-      "variant_ids": [
-        "minecraft:oak_stairs"
-      ],
-      "mapping_status": "mapped"
-    },
-    {
-      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
-      "is_default": false,
-      "properties": {
-        "facing": "east",
-        "half": "bottom",
-        "shape": "inner_left",
-        "waterlogged": "false"
-      },
-      "shape": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "collision": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "behavior": {
-        "emission_level": 0,
-        "emissive": false,
-        "passable": false,
-        "redstone_related": false,
-        "transparent": false,
-        "waterloggable": true
-      },
-      "variant_ids": [
-        "minecraft:oak_stairs"
-      ],
-      "mapping_status": "mapped"
-    },
-    {
-      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
-      "is_default": false,
-      "properties": {
-        "facing": "east",
-        "half": "bottom",
-        "shape": "inner_left",
-        "waterlogged": "false"
-      },
-      "shape": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "collision": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "behavior": {
-        "emission_level": 0,
-        "emissive": false,
-        "passable": false,
-        "redstone_related": false,
-        "transparent": false,
-        "waterloggable": true
-      },
-      "variant_ids": [
-        "minecraft:oak_stairs"
-      ],
-      "mapping_status": "mapped"
-    },
-    {
-      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
-      "is_default": false,
-      "properties": {
-        "facing": "east",
-        "half": "bottom",
-        "shape": "inner_left",
-        "waterlogged": "false"
-      },
-      "shape": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "collision": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "behavior": {
-        "emission_level": 0,
-        "emissive": false,
-        "passable": false,
-        "redstone_related": false,
-        "transparent": false,
-        "waterloggable": true
-      },
-      "variant_ids": [
-        "minecraft:oak_stairs"
-      ],
-      "mapping_status": "mapped"
-    },
-    {
-      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
-      "is_default": false,
-      "properties": {
-        "facing": "east",
-        "half": "bottom",
-        "shape": "inner_left",
-        "waterlogged": "false"
-      },
-      "shape": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "collision": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "behavior": {
-        "emission_level": 0,
-        "emissive": false,
-        "passable": false,
-        "redstone_related": false,
-        "transparent": false,
-        "waterloggable": true
-      },
-      "variant_ids": [
-        "minecraft:oak_stairs"
-      ],
-      "mapping_status": "mapped"
-    },
-    {
-      "state_id": "minecraft:oak_stairs[facing=east,half=bottom,shape=inner_left,waterlogged=false]",
-      "is_default": false,
-      "properties": {
-        "facing": "east",
-        "half": "bottom",
-        "shape": "inner_left",
-        "waterlogged": "false"
-      },
-      "shape": [
-        {
-          "max_x": 1,
-          "max_y": 0.5,
-          "max_z": 1,
-          "min_x": 0,
-          "min_y": 0,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 0.5,
-          "min_x": 0,
-          "min_y": 0.5,
-          "min_z": 0
-        },
-        {
-          "max_x": 1,
-          "max_y": 1,
-          "max_z": 1,
-          "min_x": 0.5,
-          "min_y": 0.5,
-          "min_z": 0.5
-        }
-      ],
-      "collision": [
         {
           "max_x": 1,
           "max_y": 0.5,

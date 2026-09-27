@@ -150,13 +150,8 @@
             "null"
           ],
           "additionalProperties": false,
-          "description": "Published semantic fields of the representative visual variant; null when the block has no visual variant.",
+          "description": "Published semantic fields of the representative visual variant; null when the block has no visual variant. Only the English summary; get_block_details has both languages.",
           "properties": {
-            "summary_zh": {
-              "type": "string",
-              "minLength": 2,
-              "maxLength": 500
-            },
             "summary_en": {
               "type": "string",
               "minLength": 2,
@@ -278,19 +273,40 @@
     "colors": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "top",
-        "side"
-      ],
-      "description": "Texture colours of the top face and the side faces (north and east views), read from the preview with the renderer's fixed face shading divided back out. A face with too few visible pixels is null.",
+      "description": "Texture colours of the top face and the side faces (north and east views), read from the preview with the renderer's fixed face shading divided back out. A face with too few visible pixels is null. When top and side are within Oklab ΔE 2 (×100) and 2 L* spread of each other they are given once as top_and_side, with the top face's figures.",
       "properties": {
         "top": {
           "$ref": "#/$defs/face_colors"
         },
         "side": {
           "$ref": "#/$defs/face_colors"
+        },
+        "top_and_side": {
+          "$ref": "#/$defs/face_colors"
         }
-      }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "top",
+            "side"
+          ],
+          "not": {
+            "required": [
+              "top_and_side"
+            ]
+          }
+        },
+        {
+          "required": [
+            "top_and_side"
+          ],
+          "properties": {
+            "top": false,
+            "side": false
+          }
+        }
+      ]
     },
     "family": {
       "type": "object",
@@ -299,7 +315,7 @@
         "base_block",
         "forms"
       ],
-      "description": "Shapes this block's material comes in, from the registry naming rule (oak_planks: oak_stairs, oak_slab ...). base_block is the material's full block (the block itself when it has no forms, as spruce_log), null when there is none (petrified_oak_slab); forms is empty when the full block has no shaped forms. material_blocks, when present, lists every full block of the same material in other finishes, base_block included (spruce_log, spruce_planks, spruce_wood, stripped_spruce_log, stripped_spruce_wood; tuff, polished_tuff, tuff_bricks, chiseled_tuff ...); a copper block's wax and oxidation stage are part of its material.",
+      "description": "Shapes this block's material comes in, from the registry naming rule (oak_planks: oak_stairs, oak_slab ...). base_block is the material's full block (the block itself when it has no forms, as spruce_log), null when there is none (petrified_oak_slab); forms names the shapes, empty when the full block has none, and a form's block ID is form_id_pattern with {form} replaced (minecraft:oak_{form}: minecraft:oak_stairs). material_blocks, when present, lists every full block of the same material in other finishes, base_block included, as templates: a block ID is minecraft: plus the template with * replaced by material (material spruce: *_log, *_planks, *_wood, stripped_*_log, stripped_*_wood; material tuff: *, polished_*, *_bricks, chiseled_* ...); a copper block's wax and oxidation stage are part of its material and stay in the template (exposed_cut_*).",
       "properties": {
         "base_block": {
           "oneOf": [
@@ -312,103 +328,83 @@
           ]
         },
         "forms": {
-          "type": "object",
-          "minProperties": 0,
-          "additionalProperties": false,
-          "properties": {
-            "stairs": {
-              "$ref": "#/$defs/block_id"
-            },
-            "slab": {
-              "$ref": "#/$defs/block_id"
-            },
-            "wall": {
-              "$ref": "#/$defs/block_id"
-            },
-            "fence": {
-              "$ref": "#/$defs/block_id"
-            },
-            "fence_gate": {
-              "$ref": "#/$defs/block_id"
-            },
-            "door": {
-              "$ref": "#/$defs/block_id"
-            },
-            "trapdoor": {
-              "$ref": "#/$defs/block_id"
-            },
-            "button": {
-              "$ref": "#/$defs/block_id"
-            },
-            "pressure_plate": {
-              "$ref": "#/$defs/block_id"
-            },
-            "sign": {
-              "$ref": "#/$defs/block_id"
-            },
-            "hanging_sign": {
-              "$ref": "#/$defs/block_id"
-            },
-            "pane": {
-              "$ref": "#/$defs/block_id"
-            },
-            "bars": {
-              "$ref": "#/$defs/block_id"
-            },
-            "carpet": {
-              "$ref": "#/$defs/block_id"
-            },
-            "shelf": {
-              "$ref": "#/$defs/block_id"
-            }
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "stairs",
+              "slab",
+              "wall",
+              "fence",
+              "fence_gate",
+              "door",
+              "trapdoor",
+              "button",
+              "pressure_plate",
+              "sign",
+              "hanging_sign",
+              "pane",
+              "bars",
+              "carpet",
+              "shelf"
+            ]
           }
+        },
+        "form_id_pattern": {
+          "type": "string",
+          "pattern": "^minecraft:[a-z0-9_./-]+_\\{form\\}$"
+        },
+        "material": {
+          "type": "string",
+          "pattern": "^[a-z0-9_./-]+$",
+          "description": "Material word that replaces * in material_blocks."
         },
         "material_blocks": {
           "type": "array",
           "minItems": 2,
           "uniqueItems": true,
           "items": {
-            "$ref": "#/$defs/block_id"
+            "type": "string",
+            "pattern": "^[a-z0-9_./-]*\\*[a-z0-9_./-]*$"
           }
         }
-      }
-    },
-    "tile": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "candidate_id",
-        "block_id",
-        "row",
-        "column"
-      ],
-      "properties": {
-        "candidate_id": {
-          "$ref": "#/$defs/candidate_id"
-        },
-        "block_id": {
-          "$ref": "#/$defs/block_id"
-        },
-        "row": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "column": {
-          "type": "integer",
-          "minimum": 0
+      },
+      "if": {
+        "properties": {
+          "forms": {
+            "minItems": 1
+          }
         }
+      },
+      "then": {
+        "required": [
+          "form_id_pattern"
+        ]
+      },
+      "else": {
+        "properties": {
+          "form_id_pattern": false
+        }
+      },
+      "dependentRequired": {
+        "material_blocks": [
+          "material"
+        ],
+        "material": [
+          "material_blocks"
+        ]
       }
     },
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Lossless WebP contact sheet; each 256x256 card is labelled with its candidate_id.",
+      "description": "Lossless WebP contact sheet of 256x256 cards, one per block with a candidate_id, labelled with it.",
       "required": [
         "content_index",
         "mime_type",
         "width",
         "height",
-        "tiles"
+        "columns"
       ],
       "properties": {
         "content_index": {
@@ -427,12 +423,10 @@
           "type": "integer",
           "minimum": 1
         },
-        "tiles": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/tile"
-          }
+        "columns": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Tiles per row. Tiles are row-major in candidate order: T01 is the first tile, so candidate n is at row (n-1) div columns, column (n-1) mod columns; tile width is width / columns."
         }
       }
     }

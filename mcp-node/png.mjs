@@ -175,9 +175,7 @@ function resizeNearest(image, width = CARD_SIZE, height = CARD_SIZE) {
   return result;
 }
 
-function paintLabel(pixels, width, height, x, y, label) {
-  const scale = LABEL_SCALE;
-  const pad = LABEL_PAD;
+function paintLabel(pixels, width, height, x, y, label, scale = LABEL_SCALE, pad = LABEL_PAD) {
   const glyphWidth = label.split('').reduce((total, char) => total + glyphFor(char)[0].length + 1, 0) * scale;
   const glyphHeight = 5 * scale;
   const left = Math.min(Math.max(0, x), Math.max(0, width - glyphWidth - 2 * pad));
@@ -218,26 +216,52 @@ export function makeBlockCard(image) {
   return { webp: encodeLosslessWebp(CARD_SIZE, CARD_SIZE, resizeNearest(image)), width: CARD_SIZE, height: CARD_SIZE };
 }
 
-export function makeContactSheet(images, columns = 4) {
+// Contact-sheet tile layouts.  full: the whole 256px four-view card.
+// compact: only the isometric (top-left) and top (bottom-right) views at 64px
+// side by side, for choosing among candidates at a quarter of the pixels.
+export const SHEET_LAYOUTS = {
+  full: { width: CARD_SIZE, height: CARD_SIZE, views: [[0, 0]], view: CARD_SIZE, label: { scale: LABEL_SCALE, pad: LABEL_PAD, left: 6, bottom: 3 } },
+  compact: { width: 128, height: 64, views: [[0, 0], [1, 1]], view: 64, label: { scale: 2, pad: 2, left: 1, bottom: 1 } },
+};
+
+// One view of the 2x2 preview (or, with a single [0, 0] view, the whole
+// preview) nearest-resampled to size x size.
+function viewNearest(image, [column, row], size, whole) {
+  if (whole) return resizeNearest(image, size, size);
+  const half = { width: image.width / 2, height: image.height / 2 };
+  const result = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < size; y += 1) {
+    const sourceY = row * half.height + Math.min(half.height - 1, Math.floor((y * half.height) / size));
+    for (let x = 0; x < size; x += 1) {
+      const sourceX = column * half.width + Math.min(half.width - 1, Math.floor((x * half.width) / size));
+      const source = (sourceY * image.width + sourceX) * 4;
+      image.pixels.copy(result, (y * size + x) * 4, source, source + 4);
+    }
+  }
+  return result;
+}
+
+export function makeContactSheet(images, columns = 4, layoutName = 'full') {
   if (!(images.length >= 1 && images.length <= 16)) throw new Error('contact sheets contain 1-16 images');
+  const layout = SHEET_LAYOUTS[layoutName];
   const cols = Math.max(1, Math.min(columns, images.length));
   const rows = Math.ceil(images.length / cols);
-  const width = cols * CARD_SIZE;
-  const height = rows * CARD_SIZE;
-  const labelHeight = 5 * LABEL_SCALE + 2 * LABEL_PAD;
+  const width = cols * layout.width;
+  const height = rows * layout.height;
+  const { label } = layout;
+  const labelHeight = 5 * label.scale + 2 * label.pad;
   const pixels = Buffer.alloc(width * height * 4);
   for (let index = 0; index < images.length; index += 1) {
-    const card = resizeNearest(images[index]);
-    const column = index % cols;
-    const row = Math.floor(index / cols);
-    const x0 = column * CARD_SIZE;
-    const y0 = row * CARD_SIZE;
-    for (let y = 0; y < CARD_SIZE; y += 1) {
-      const target = ((y0 + y) * width + x0) * 4;
-      const source = y * CARD_SIZE * 4;
-      card.copy(pixels, target, source, source + CARD_SIZE * 4);
-    }
-    paintLabel(pixels, width, height, x0 + 6, y0 + CARD_SIZE - labelHeight - 3, tileId(index));
+    const x0 = (index % cols) * layout.width;
+    const y0 = Math.floor(index / cols) * layout.height;
+    layout.views.forEach((view, slot) => {
+      const tile = viewNearest(images[index], view, layout.view, layout.views.length === 1);
+      for (let y = 0; y < layout.view; y += 1) {
+        const target = ((y0 + y) * width + x0 + slot * layout.view) * 4;
+        tile.copy(pixels, target, y * layout.view * 4, (y + 1) * layout.view * 4);
+      }
+    });
+    paintLabel(pixels, width, height, x0 + label.left, y0 + layout.height - labelHeight - label.bottom, tileId(index), label.scale, label.pad);
   }
   // One encode for the finished sheet, not one per card.
   return { webp: encodeLosslessWebp(width, height, pixels), width, height };
