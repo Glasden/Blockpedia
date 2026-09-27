@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -212,7 +213,7 @@ def test_d040_plan_hash_fixed_vector_uses_recomputed_payload_signature() -> None
     ) == "sha256:2beeab98edf9abce6be5feceb68f6ed13df570d0db18db34804dbe6f68a22ded"
 
 
-def _service(tmp_path: Path, fake: _FakeProvider, *, adapter: str = "openai_responses", export_path: Path | None = None) -> tuple[StudioService, str, dict[str, str]]:
+def _service(tmp_path: Path, fake: _FakeProvider, *, adapter: str = "openai_responses", export_path: Path | None = None, feature_workers: int = 1) -> tuple[StudioService, str, dict[str, str]]:
     fixture = _r2_fixture_module()
     export = export_path or fixture.make_export(tmp_path)
     service = StudioService(
@@ -224,8 +225,17 @@ def _service(tmp_path: Path, fake: _FakeProvider, *, adapter: str = "openai_resp
     )
     imported = import_export(service, export)
     run_id = imported["run_id"]
+    if feature_workers != 1:
+        with service.worker.open_database(run_id) as database:
+            database.execute("UPDATE runs SET config_snapshot_json=? WHERE run_id=?", (json.dumps({"feature_workers": feature_workers}), run_id))
     for _ in range(6):
         service.tick(run_id)
+    if feature_workers != 1:
+        deadline = time.monotonic() + 15
+        while service.get_run(run_id)["boundary_event"] is None and time.monotonic() < deadline:
+            service.tick(run_id)
+            time.sleep(0.02)
+        assert service.get_run(run_id)["boundary_event"] == "R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING"
     profile = ProviderProfile(profile_id="default", model_id="fixture-model", adapter=adapter, base_url="http://127.0.0.1:8766/v1")
     service.save_profile(profile)
     service.profile_store.record_probe(
@@ -734,11 +744,18 @@ def test_retry_ai_creates_unapproved_new_signature(tmp_path: Path) -> None:
 
 
 def test_configure_run_is_idempotent_before_r3_starts(tmp_path: Path) -> None:
-    service, run_id, imported = _service(tmp_path, _FakeProvider())
+    service, run_id, imported = _service(tmp_path, _FakeProvider(), feature_workers=2)
     first = service.configure_run(imported["import_id"], "26.2", profile_id="default")
     second = service.configure_run(imported["import_id"], "26.2", profile_id="default")
     assert first["run_id"] == second["run_id"] == run_id
     assert first["effective_config_hash"] == second["effective_config_hash"]
+    with service.worker.open_database(run_id) as database:
+        stored = database.fetchone("SELECT config_snapshot_json FROM runs WHERE run_id=?", (run_id,))
+        config = json.loads(stored["config_snapshot_json"])
+    assert config["feature_workers"] == 2
+    from blockpedia.r3 import sha256_json
+    assert sha256_json({key: value for key, value in config.items() if key != "effective_config_hash"}) == first["effective_config_hash"]
+    assert sha256_json({**{key: value for key, value in config.items() if key != "effective_config_hash"}, "feature_workers": 1}) != first["effective_config_hash"]
     assert first["batches"] == second["batches"]
     assert second["idempotent"] is True
     with service.worker.open_database(run_id) as database:

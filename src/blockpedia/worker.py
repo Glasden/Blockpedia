@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import hashlib
 import json
+import multiprocessing
 import os
 import re
 import sqlite3
@@ -12,14 +13,15 @@ import sys
 import threading
 import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .features import axis_aligned_union, build_visual_variant_record, extract_features
+from .features import axis_aligned_union, build_visual_variant_record, compute_visual_variant, extract_features
 from .paths import DataRoot, safe_relative_posix_ref
 from .local_files import safe_path
 from .schema import RecordSchemaError, validate_record
@@ -113,14 +115,35 @@ class _RegisteredAITask:
         return (self.root_key, self.run_id, self.job_id)
 
 
+@dataclass(slots=True)
+class _RegisteredFeatureTask:
+    root_key: str
+    run_id: str
+    job_id: str
+    owner_worker_id: str
+    logical_key: str
+    future: Future[Any] | None = None
+    executor: ProcessPoolExecutor | None = None
+
+    @property
+    def task_key(self) -> TaskKey:
+        return (self.root_key, self.run_id, self.job_id)
+
+
 class _ProcessCoordinator:
-    """The single process-wide AI executor, registry, and coordination lane."""
+    """Process-wide AI and feature executors with independent five-slot limits."""
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.changed = threading.Condition(self.lock)
         self.executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="blockpedia-ai")
         self.registry: dict[TaskKey, _RegisteredAITask] = {}
+        self.feature_registry: dict[TaskKey, _RegisteredFeatureTask] = {}
+        self.serial_feature_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="blockpedia-feature")
+        self.feature_executor: ProcessPoolExecutor | None = None
+        self.feature_users: set[str] = set()
+        self.feature_shutdown: threading.Thread | None = None
+        self.feature_shutdown_error: BaseException | None = None
         self.run_locks: dict[RunScope, threading.RLock] = {}
         self.owner_stops: dict[str, threading.Event] = {}
         self.process_stopping = False
@@ -132,6 +155,45 @@ class _ProcessCoordinator:
             self.process_stopping = True
             self.changed.notify_all()
         self.executor.shutdown(wait=True, cancel_futures=False)
+        self.serial_feature_executor.shutdown(wait=True, cancel_futures=False)
+        if self.feature_shutdown is not None:
+            self.feature_shutdown.join()
+        if self.feature_executor is not None:
+            self.feature_executor.shutdown(wait=True, cancel_futures=False)
+
+    def release_feature_user(self, worker_id: str, timeout: float | None) -> bool:
+        with self.lock:
+            self.feature_users.discard(worker_id)
+            if not self.feature_users and self.feature_executor is not None and self.feature_shutdown is None:
+                self._retire_feature_executor_locked(self.feature_executor)
+            shutdown = self.feature_shutdown
+        if shutdown is not None:
+            shutdown.join(timeout=timeout)
+            if shutdown.is_alive():
+                return False
+        with self.lock:
+            return self.feature_shutdown_error is None
+
+    def _retire_feature_executor_locked(self, executor: ProcessPoolExecutor) -> None:
+        """Retire the current pool; callers hold lock, so replacement waits for join."""
+        if self.feature_executor is not executor:
+            return
+        self.feature_executor = None
+        self.feature_shutdown_error = None
+
+        def finish() -> None:
+            try:
+                executor.shutdown(wait=True, cancel_futures=False)
+            except BaseException as exc:
+                with self.lock:
+                    self.feature_shutdown_error = exc
+            finally:
+                with self.lock:
+                    self.feature_shutdown = None
+                    self.changed.notify_all()
+
+        self.feature_shutdown = threading.Thread(target=finish, name="blockpedia-feature-shutdown", daemon=True)
+        self.feature_shutdown.start()
 
 
 _PROCESS_COORDINATOR = _ProcessCoordinator()
@@ -279,7 +341,21 @@ class WorkerService:
         return _PROCESS_COORDINATOR.executor
 
     def _owner_has_live_entries_locked(self) -> bool:
-        return any(entry.owner_worker_id == self.worker_id for entry in _PROCESS_COORDINATOR.registry.values())
+        return any(entry.owner_worker_id == self.worker_id for entry in (*_PROCESS_COORDINATOR.registry.values(), *_PROCESS_COORDINATOR.feature_registry.values()))
+
+    def has_live_feature_futures(self, run_id: str) -> bool:
+        with _PROCESS_COORDINATOR.lock:
+            return any(key[:2] == self._scope(run_id) for key in _PROCESS_COORDINATOR.feature_registry)
+
+    def _feature_counts(self, run_id: str) -> tuple[int, int]:
+        with _PROCESS_COORDINATOR.lock:
+            entries = _PROCESS_COORDINATOR.feature_registry
+            return len(entries), sum(key[:2] == self._scope(run_id) for key in entries)
+
+    def _wait_for_feature_scope_empty(self, run_id: str) -> None:
+        with _PROCESS_COORDINATOR.changed:
+            while self.has_live_feature_futures(run_id):
+                _PROCESS_COORDINATOR.changed.wait()
 
     def _scope_entries_locked(self, scope: RunScope, *, exclude_entry_key: TaskKey | None = None) -> tuple[_RegisteredAITask, ...]:
         return tuple(
@@ -453,11 +529,15 @@ class WorkerService:
         raise KeyError(run_id)
 
     def close(self, *, timeout: float | None = 2.0) -> bool:
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         with self._lifecycle_lock:
             if self._closed:
                 return True
             self._closing = True
         stopped = self.stop(timeout=timeout)
+        if stopped:
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            stopped = _PROCESS_COORDINATOR.release_feature_user(self.worker_id, remaining)
         with self._lifecycle_lock:
             if stopped:
                 self._closed = True
@@ -474,7 +554,8 @@ class WorkerService:
                 # A naturally exited thread is no longer an ownership barrier.
                 self._thread = None
             with _PROCESS_COORDINATOR.lock:
-                if _PROCESS_COORDINATOR.process_stopping or self._owner_has_live_entries_locked():
+                live_ai = any(entry.owner_worker_id == self.worker_id for entry in _PROCESS_COORDINATOR.registry.values())
+                if _PROCESS_COORDINATOR.process_stopping or live_ai or (self._stop.is_set() and self._owner_has_live_entries_locked()):
                     return False
                 self._stop.clear()
             thread = threading.Thread(target=self._loop, args=(interval_seconds,), name="blockpedia-worker", daemon=True)
@@ -512,15 +593,30 @@ class WorkerService:
         if thread is not None:
             thread.join(timeout=remaining)
         thread_dead = thread is None or not thread.is_alive()
+        if owner_empty and thread_dead:
+            self._release_feature_stages()
         with self._lifecycle_lock:
             if thread_dead and thread is not None and self._thread is thread:
                 self._thread = None
             self._stopping = False
         return owner_empty and thread_dead
 
+    def _release_feature_stages(self) -> None:
+        """Leave undispached feature jobs resumable after a graceful stop."""
+        for path in self._run_database_paths():
+            with WorkspaceDatabase.open(path, force_normalized_like=self.force_normalized_like) as database:
+                with database.transaction() as connection:
+                    rows = connection.execute("SELECT run_id FROM stage_runs WHERE stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (self.worker_id,)).fetchall()
+                    for row in rows:
+                        run_id = row["run_id"]
+                        if self.has_live_feature_futures(run_id):
+                            continue
+                        connection.execute("UPDATE stage_runs SET status='pending',worker_id=NULL,pause_after_item=0,heartbeat_at=NULL WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (run_id, self.worker_id))
+                        connection.execute("UPDATE runs SET status='pending' WHERE run_id=? AND status='running' AND current_stage='EXTRACT_FEATURES'", (run_id,))
+
     def _wait_for_owner_entries(self, deadline: float | None) -> bool:
         with _PROCESS_COORDINATOR.changed:
-            while any(entry.owner_worker_id == self.worker_id for entry in _PROCESS_COORDINATOR.registry.values()):
+            while self._owner_has_live_entries_locked():
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
                     return False
@@ -590,6 +686,8 @@ class WorkerService:
 
     def tick(self, run_id: str, minecraft_version: str | None = None) -> dict[str, Any]:
         serial_wait = False
+        feature_serial_wait = False
+        serial_slot_wait = False
         with self.open_database(run_id, minecraft_version) as database:
             run = database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,))
             if run is None:
@@ -610,7 +708,17 @@ class WorkerService:
             if not self._begin_stage(database, run_id, stage):
                 return _row_dict(database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,)))
             if stage == "EXTRACT_FEATURES":
-                self._extract_one(database, run_id)
+                config = json.loads(run["config_snapshot_json"])
+                workers = config.get("feature_workers", 1)
+                if type(workers) is not int or not 1 <= workers <= 5:
+                    self._persist_stage_failure(database, run_id, stage, StageFailure("FEATURE_WORKERS_INVALID", "invalid frozen feature worker count"))
+                elif workers == 1:
+                    dispatched = self._extract_serial(database, run_id)
+                    direct = threading.current_thread() is not self._thread
+                    feature_serial_wait = direct and dispatched
+                    serial_slot_wait = direct and not dispatched
+                else:
+                    self._extract_parallel(database, run_id, workers)
             elif stage == "AI_ANNOTATE":
                 # Serialize only the bounded claim/submission section.  The
                 # task body and its final send gate run after this lock is
@@ -638,6 +746,28 @@ class WorkerService:
             else:
                 self._finish_simple_stage(database, run_id, stage)
             result = _row_dict(database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,)))
+        while serial_slot_wait and not feature_serial_wait and not self._owner_is_stopping():
+            with _PROCESS_COORDINATOR.changed:
+                if _PROCESS_COORDINATOR.feature_shutdown_error is not None:
+                    break
+                _PROCESS_COORDINATOR.changed.wait(timeout=0.05)
+            with self.open_database(run_id, minecraft_version) as database:
+                run = database.fetchone("SELECT status FROM runs WHERE run_id=?", (run_id,))
+                stage = database.fetchone("SELECT status FROM stage_runs WHERE run_id=? AND stage='EXTRACT_FEATURES'", (run_id,))
+                if run is None or run["status"] != "running" or stage is None or stage["status"] != "running":
+                    break
+                feature_serial_wait = self._extract_serial(database, run_id)
+        if feature_serial_wait:
+            self._wait_for_feature_scope_empty(run_id)
+            with self.open_database(run_id, minecraft_version) as database:
+                refreshed = database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,))
+                if refreshed is not None:
+                    result = _row_dict(refreshed)
+        elif serial_slot_wait:
+            with self.open_database(run_id, minecraft_version) as database:
+                refreshed = database.fetchone("SELECT * FROM runs WHERE run_id = ?", (run_id,))
+                if refreshed is not None:
+                    result = _row_dict(refreshed)
         if serial_wait:
             self._wait_for_scope_empty(run_id)
             with self.open_database(run_id, minecraft_version) as database:
@@ -647,7 +777,7 @@ class WorkerService:
         return result
 
     def _run_is_stale(self, database: WorkspaceDatabase, run_id: str) -> bool:
-        if self.has_live_ai_futures(run_id):
+        if self.has_live_ai_futures(run_id) or self.has_live_feature_futures(run_id):
             return False
         row = database.fetchone(
             "SELECT heartbeat_at FROM stage_runs WHERE run_id=? AND status='running' ORDER BY ordinal LIMIT 1", (run_id,)
@@ -737,9 +867,57 @@ class WorkerService:
                 connection.execute("UPDATE runs SET status='failed',finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
                 connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,details_json,created_at) VALUES (?,?,?,?,?)", (_id("audit"), "STAGE_FAILED", run_id, _json(evidence), now))
 
+    def _extract_serial(self, database: WorkspaceDatabase, run_id: str) -> bool:
+        """Run one default-mode item on a shared thread without blocking the coordinator."""
+        with self.run_lock(run_id):
+            now = utc_now()
+            with database.transaction() as connection:
+                connection.execute("UPDATE stage_runs SET heartbeat_at=? WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
+                connection.execute("UPDATE jobs SET heartbeat_at=? WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
+            stage = database.fetchone("SELECT status FROM stage_runs WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (run_id, self.worker_id))
+            if stage is None:
+                return False
+            with _PROCESS_COORDINATOR.lock:
+                total, per_run = self._feature_counts(run_id)
+                if per_run:
+                    return True
+                if total >= 5 or _PROCESS_COORDINATOR.feature_shutdown is not None or _PROCESS_COORDINATOR.feature_shutdown_error is not None or self._owner_is_stopping():
+                    return False
+                entry = _RegisteredFeatureTask(self._root_key, run_id, "__serial__", self.worker_id, "")
+                _PROCESS_COORDINATOR.feature_registry[entry.task_key] = entry
+                try:
+                    future = _PROCESS_COORDINATOR.serial_feature_executor.submit(self._run_serial_feature, run_id, database.path.parent.parent.name)
+                except Exception:
+                    _PROCESS_COORDINATOR.feature_registry.pop(entry.task_key, None)
+                    _PROCESS_COORDINATOR.changed.notify_all()
+                    raise
+                entry.future = future
+                _PROCESS_COORDINATOR.changed.notify_all()
+        future.add_done_callback(lambda completed: self._serial_feature_done(entry, completed, database.path))
+        return True
+
+    def _run_serial_feature(self, run_id: str, minecraft_version: str) -> None:
+        with self.open_database(run_id, minecraft_version) as database:
+            self._extract_one(database, run_id)
+
+    def _serial_feature_done(self, entry: _RegisteredFeatureTask, future: Future[Any], path: Path) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            self._record_infrastructure_failure(path, entry.run_id, path.parent.parent.name, exc)
+        finally:
+            with _PROCESS_COORDINATOR.lock:
+                if _PROCESS_COORDINATOR.feature_registry.get(entry.task_key) is entry:
+                    _PROCESS_COORDINATOR.feature_registry.pop(entry.task_key)
+                _PROCESS_COORDINATOR.changed.notify_all()
+
     def _extract_one(self, database: WorkspaceDatabase, run_id: str) -> None:
         workspace_dir = database.path.parent
         with self.run_lock(run_id):
+            stage = database.fetchone("SELECT 1 FROM stage_runs WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (run_id, self.worker_id))
+            run = database.fetchone("SELECT 1 FROM runs WHERE run_id=? AND status='running'", (run_id,))
+            if stage is None or run is None or self._owner_is_stopping():
+                return
             running = database.fetchone("SELECT 1 FROM jobs WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running'", (run_id,))
             if running is not None:
                 job = database.fetchone(
@@ -768,6 +946,8 @@ class WorkerService:
             mask_ref = safe_relative_posix_ref(render["mask_path"])
             preview_path = workspace_dir / preview_ref
             mask_path = workspace_dir / mask_ref
+            safe_path(preview_path, workspace_dir, directory=False)
+            safe_path(mask_path, workspace_dir, directory=False)
             geometry = _geometry_from_source(source)
             features = extract_features(preview_path, mask_path, geometry=geometry, machine_tags=_source_machine_tags(source))
             record = build_visual_variant_record(source, features)
@@ -824,11 +1004,152 @@ class WorkerService:
             return
         self._finish_extract_stage(database, run_id)
 
-    def _claim_pending_job(self, database: WorkspaceDatabase, run_id: str):
+    def _extract_parallel(self, database: WorkspaceDatabase, run_id: str, workers: int) -> None:
+        """Dispatch only free slots; completion callbacks own the short write transaction."""
+        callbacks: list[tuple[_RegisteredFeatureTask, Future[Any]]] = []
+        try:
+            self._dispatch_parallel_jobs(database, run_id, workers, callbacks)
+        except Exception as exc:
+            self._record_infrastructure_failure(database.path, run_id, database.path.parent.parent.name, exc)
+        finally:
+            for entry, future in callbacks:
+                future.add_done_callback(lambda completed, owned=entry: self._feature_done(owned, completed))
+        self._finish_extract_stage(database, run_id)
+
+    def _dispatch_parallel_jobs(self, database: WorkspaceDatabase, run_id: str, workers: int, callbacks: list[tuple[_RegisteredFeatureTask, Future[Any]]]) -> None:
+        with self.run_lock(run_id):
+            now = utc_now()
+            with database.transaction() as connection:
+                connection.execute("UPDATE stage_runs SET heartbeat_at=? WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
+                connection.execute("UPDATE jobs SET heartbeat_at=? WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
+            stage = database.fetchone("SELECT pause_after_item FROM stage_runs WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (run_id, self.worker_id))
+            if stage is None:
+                return
+            if not stage["pause_after_item"]:
+                with _PROCESS_COORDINATOR.lock:
+                    while _PROCESS_COORDINATOR.feature_shutdown is None and _PROCESS_COORDINATOR.feature_shutdown_error is None and not self._owner_is_stopping():
+                        total, own_run = self._feature_counts(run_id)
+                        if total >= 5 or own_run >= workers:
+                            break
+                        job = self._claim_pending_job(database, run_id, allow_parallel=True)
+                        if job is None:
+                            break
+                        entry = _RegisteredFeatureTask(self._root_key, run_id, job["job_id"], self.worker_id, job["logical_key"])
+                        if entry.task_key in _PROCESS_COORDINATOR.feature_registry:
+                            with database.transaction() as connection:
+                                connection.execute("UPDATE jobs SET status='pending',worker_id=NULL,heartbeat_at=NULL WHERE job_id=? AND status='running' AND worker_id=?", (job["job_id"], self.worker_id))
+                            break
+                        _PROCESS_COORDINATOR.feature_registry[entry.task_key] = entry
+                        _PROCESS_COORDINATOR.feature_users.add(self.worker_id)
+                        try:
+                            variant = database.fetchone("SELECT source_json FROM variants WHERE variant_id=?", (job["logical_key"],))
+                            if variant is None:
+                                raise ValueError("selected variant missing")
+                            source = json.loads(variant["source_json"])
+                            render = source["render"]
+                            workspace_dir = database.path.parent
+                            preview_path = workspace_dir / safe_relative_posix_ref(render["preview_path"])
+                            mask_path = workspace_dir / safe_relative_posix_ref(render["mask_path"])
+                            safe_path(preview_path, workspace_dir, directory=False)
+                            safe_path(mask_path, workspace_dir, directory=False)
+                            args = (source, preview_path.read_bytes(), mask_path.read_bytes(), _geometry_from_source(source), list(_source_machine_tags(source)))
+                            if _PROCESS_COORDINATOR.feature_executor is None:
+                                _PROCESS_COORDINATOR.feature_executor = ProcessPoolExecutor(max_workers=5, mp_context=multiprocessing.get_context("spawn"))
+                            entry.executor = _PROCESS_COORDINATOR.feature_executor
+                            future = entry.executor.submit(compute_visual_variant, *args)
+                            entry.future = future
+                            callbacks.append((entry, future))
+                        except Exception as exc:
+                            if isinstance(exc, BrokenProcessPool) and entry.executor is not None:
+                                _PROCESS_COORDINATOR._retire_feature_executor_locked(entry.executor)
+                            try:
+                                self._fail_feature_job(database, run_id, entry, exc)
+                            finally:
+                                _PROCESS_COORDINATOR.feature_registry.pop(entry.task_key, None)
+                            break
+                    _PROCESS_COORDINATOR.changed.notify_all()
+
+    def _feature_done(self, entry: _RegisteredFeatureTask, future: Future[Any]) -> None:
+        try:
+            features, record = future.result()
+            validate_record("visual-variant-record.v1", record, repo_root=self.repo_root)
+            with self.run_lock(entry.run_id):
+                with _PROCESS_COORDINATOR.lock:
+                    if _PROCESS_COORDINATOR.feature_registry.get(entry.task_key) is not entry:
+                        return
+                with self.open_database(entry.run_id) as database:
+                    now = utc_now()
+                    output_hash = _hash(_json({"record": record, "features": features}))
+                    with database.transaction() as connection:
+                        run = connection.execute("SELECT status FROM runs WHERE run_id=?", (entry.run_id,)).fetchone()
+                        stage = connection.execute("SELECT status,worker_id,pause_after_item FROM stage_runs WHERE run_id=? AND stage='EXTRACT_FEATURES'", (entry.run_id,)).fetchone()
+                        if run is None or run["status"] != "running" or stage is None or stage["status"] != "running" or stage["worker_id"] != self.worker_id:
+                            return
+                        updated = connection.execute("UPDATE jobs SET status='succeeded',heartbeat_at=?,finished_at=?,cursor_json=?,output_hash=? WHERE job_id=? AND status='running' AND worker_id=?", (now, now, _json({"last_logical_key": entry.logical_key}), output_hash, entry.job_id, self.worker_id))
+                        if updated.rowcount != 1:
+                            return
+                        connection.execute("INSERT OR REPLACE INTO features(variant_id,input_sha256,feature_extractor_version,feature_json,output_hash) VALUES (?,?,?,?,?)", (entry.logical_key, features["input_sha256"], features["feature_extractor_version"], _json(features), output_hash))
+                        connection.execute("UPDATE variants SET record_json=? WHERE variant_id=?", (_json(record), entry.logical_key))
+                        remaining_running = connection.execute("SELECT 1 FROM jobs WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' LIMIT 1", (entry.run_id,)).fetchone()
+                        if stage["pause_after_item"] and remaining_running is None:
+                            connection.execute("UPDATE stage_runs SET status='paused',worker_id=NULL,pause_after_item=0,heartbeat_at=?,finished_at=? WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (now, now, entry.run_id, self.worker_id))
+                            connection.execute("UPDATE runs SET status='paused' WHERE run_id=? AND status='running'", (entry.run_id,))
+                            event = "RUN_PAUSED_AFTER_ITEM"
+                        else:
+                            event = "FEATURE_ITEM_SUCCEEDED"
+                        connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)", (_id("audit"), event, entry.run_id, entry.job_id, _json({"variant_id": entry.logical_key}), now))
+        except Exception as exc:
+            try:
+                with self.run_lock(entry.run_id):
+                    with self.open_database(entry.run_id) as database:
+                        self._fail_feature_job(database, entry.run_id, entry, exc)
+            except Exception as persist_exc:
+                print(f"blockpedia worker diagnostic: {_safe_diagnostic(persist_exc)}", file=sys.stderr)
+            if isinstance(exc, BrokenProcessPool):
+                with _PROCESS_COORDINATOR.lock:
+                    if entry.executor is not None:
+                        _PROCESS_COORDINATOR._retire_feature_executor_locked(entry.executor)
+        finally:
+            try:
+                with self.open_database(entry.run_id) as database:
+                    self._finish_extract_stage(database, entry.run_id)
+            except Exception as exc:
+                try:
+                    version = self._find_run_version(entry.run_id)
+                    path = self.data_root.workspace_dir(version, entry.run_id) / "work.sqlite3"
+                    self._record_infrastructure_failure(path, entry.run_id, version, exc)
+                except Exception:
+                    print(f"blockpedia worker diagnostic: {_safe_diagnostic(exc)}", file=sys.stderr)
+            finally:
+                with _PROCESS_COORDINATOR.lock:
+                    if _PROCESS_COORDINATOR.feature_registry.get(entry.task_key) is entry:
+                        _PROCESS_COORDINATOR.feature_registry.pop(entry.task_key)
+                    _PROCESS_COORDINATOR.changed.notify_all()
+
+    def _fail_feature_job(self, database: WorkspaceDatabase, run_id: str, entry: _RegisteredFeatureTask, exc: Exception) -> None:
+        with _PROCESS_COORDINATOR.lock:
+            if _PROCESS_COORDINATOR.feature_registry.get(entry.task_key) is not entry:
+                return
+        now = utc_now()
+        diagnostic = _safe_diagnostic(exc, database.path.parent, error_code="FEATURE_EXTRACTION_FAILED")
+        with database.transaction() as connection:
+            run = connection.execute("SELECT status FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            stage = connection.execute("SELECT status,worker_id FROM stage_runs WHERE run_id=? AND stage='EXTRACT_FEATURES'", (run_id,)).fetchone()
+            if run is None or run["status"] != "running" or stage is None or stage["status"] != "running" or stage["worker_id"] != self.worker_id:
+                return
+            updated = connection.execute("UPDATE jobs SET status='failed',error_code='FEATURE_EXTRACTION_FAILED',error_message=?,finished_at=?,heartbeat_at=? WHERE job_id=? AND status='running' AND worker_id=?", (diagnostic, now, now, entry.job_id, self.worker_id))
+            if updated.rowcount != 1:
+                return
+            connection.execute("UPDATE jobs SET status='failed',error_code='FEATURE_STAGE_FAILED',error_message='another feature task failed',finished_at=? WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
+            connection.execute("UPDATE stage_runs SET status='failed',worker_id=NULL,finished_at=? WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='running' AND worker_id=?", (now, run_id, self.worker_id))
+            connection.execute("UPDATE runs SET status='failed',finished_at=? WHERE run_id=? AND status='running'", (now, run_id))
+            connection.execute("INSERT INTO audit_events(event_id,event_type,run_id,job_id,details_json,created_at) VALUES (?,?,?,?,?,?)", (_id("audit"), "FEATURE_ITEM_FAILED", run_id, entry.job_id, _json({"error_code": "FEATURE_EXTRACTION_FAILED"}), now))
+
+    def _claim_pending_job(self, database: WorkspaceDatabase, run_id: str, *, allow_parallel: bool = False):
         now = utc_now()
         with database.transaction() as connection:
             row = connection.execute(
-                "SELECT * FROM jobs WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='pending' AND NOT EXISTS (SELECT 1 FROM jobs AS running_jobs WHERE running_jobs.run_id=jobs.run_id AND running_jobs.stage=jobs.stage AND running_jobs.status='running') ORDER BY logical_key LIMIT 1",
+                "SELECT * FROM jobs WHERE run_id=? AND stage='EXTRACT_FEATURES' AND status='pending' " + ("" if allow_parallel else "AND NOT EXISTS (SELECT 1 FROM jobs AS running_jobs WHERE running_jobs.run_id=jobs.run_id AND running_jobs.stage=jobs.stage AND running_jobs.status='running') ") + "ORDER BY logical_key LIMIT 1",
                 (run_id,),
             ).fetchone()
             if row is None:
@@ -2086,14 +2407,14 @@ class WorkerService:
         markers: list[StaleMarker] = []
         paths = self._run_database_paths()
         if run_id:
-            if self.has_live_ai_futures(run_id):
+            if self.has_live_ai_futures(run_id) or self.has_live_feature_futures(run_id):
                 return []
             version = self._find_run_version(run_id)
             paths = [self.data_root.workspace_dir(version, run_id) / "work.sqlite3"]
         for path in paths:
             with WorkspaceDatabase.open(path, force_normalized_like=self.force_normalized_like, read_only=True) as database:
                 identity = database.fetchone("SELECT run_id FROM runs LIMIT 1")
-                if identity is not None and self.has_live_ai_futures(str(identity["run_id"])):
+                if identity is not None and (self.has_live_ai_futures(str(identity["run_id"])) or self.has_live_feature_futures(str(identity["run_id"]))):
                     continue
                 query = "SELECT job_id,run_id,stage,logical_key,heartbeat_at FROM jobs WHERE status='running'"
                 params: tuple[Any, ...] = ()
@@ -2117,8 +2438,8 @@ class WorkerService:
         """Recover one stale job, a stale stage-only lease, or the run target."""
 
         with self.run_lock(run_id):
-            if self.has_live_ai_futures(run_id):
-                raise RunStateConflict("live AI work cannot be recovered")
+            if self.has_live_ai_futures(run_id) or self.has_live_feature_futures(run_id):
+                raise RunStateConflict("live work cannot be recovered")
             with self.open_database(run_id) as database:
                 now = utc_now()
                 cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.stale_after_seconds)

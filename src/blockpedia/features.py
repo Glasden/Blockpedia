@@ -196,6 +196,16 @@ def extract_features(
     }
 
 
+def compute_visual_variant(source: dict[str, Any], preview: bytes, mask: bytes,
+                           geometry: dict[str, Any], machine_tags: list[str]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Picklable, database-free entry point for spawned feature processes."""
+
+    # The parent validates and reads both paths before dispatch. Children see
+    # only immutable image bytes and exporter facts, never workspace handles.
+    features = extract_features(preview, mask, geometry=geometry, machine_tags=machine_tags)
+    return features, build_visual_variant_record(source, features)
+
+
 def _geometry_classes(geometry: Mapping[str, Any]) -> list[str]:
     classes: set[str] = set()
     if geometry.get("is_full_cube") is True and geometry.get("_union_proven") is True:

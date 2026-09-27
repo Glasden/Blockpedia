@@ -138,8 +138,8 @@ class StudioService:
 
     # ---- Provider/profile application service ---------------------------------
 
-    def start_import(self, run_id: str, source_directory_ref: str, minecraft_version: str) -> dict[str, Any]:
-        return self.imports.start(run_id, source_directory_ref, minecraft_version)
+    def start_import(self, run_id: str, source_directory_ref: str, minecraft_version: str, *, feature_workers: int = 1) -> dict[str, Any]:
+        return self.imports.start(run_id, source_directory_ref, minecraft_version, feature_workers=feature_workers)
 
     def get_import(self, run_id: str) -> dict[str, Any]:
         return self.imports.get(run_id)
@@ -557,6 +557,7 @@ class StudioService:
                     "profile": profile.to_dict(),
                 }
                 config = {
+                    "feature_workers": _load_object(run["config_snapshot_json"]).get("feature_workers", 1),
                     "schema_version": "workspace.v1",
                     "minecraft_version": minecraft_version,
                     "provider_snapshot": provider_snapshot,
@@ -1484,6 +1485,8 @@ class StudioService:
             if not version_dir.is_dir():
                 continue
             for run_dir in sorted(version_dir.iterdir(), key=lambda path: path.name):
+                if run_dir.name.startswith("."):
+                    continue
                 db_path = run_dir / "work.sqlite3"
                 if not db_path.is_file():
                     continue
@@ -1533,6 +1536,8 @@ class StudioService:
 
     def retry_failed(self, run_id: str) -> dict[str, Any]:
         with self.worker.run_lock(run_id):
+            if self.worker.has_live_feature_futures(run_id):
+                raise RunStateConflict("live feature work cannot be retried")
             with self.worker.open_database(run_id) as database:
                 now = utc_now()
                 with database.transaction() as connection:

@@ -24,6 +24,113 @@ from blockpedia.web import (
 )
 
 
+@pytest.mark.parametrize("workers", [1, 2, 5])
+def test_feature_workers_frozen_at_import_and_exposed_after_restart(tmp_path, export_fixture, workers):
+    from blockpedia.web import create_app
+    from blockpedia.importer import ImportConflict
+
+    service = StudioService(DataRoot(tmp_path))
+    run_id = "run_" + "a" * 32
+    try:
+        with TestClient(create_app(service=service, start_worker=False)) as client:
+            assert 'name="feature_workers"' in client.get('/').text
+            ref = service.directory_chooser.register_path(export_fixture, "26.2")
+            body = dict(run_id=run_id, source_directory_ref=ref, minecraft_version="26.2", feature_workers=workers)
+            assert client.post('/api/imports', json=body).status_code == 202
+            assert service.imports.wait(run_id)["status"] == "succeeded"
+            assert client.post('/api/imports', json=body).status_code == 200
+            snapshot = client.get('/api/runs/' + run_id).json()['data']
+            assert snapshot['config_snapshot']['feature_workers'] == workers
+            assert f'{workers} 个特征计算进程' in client.get('/runs/' + run_id).text
+            assert client.post('/api/imports', json={**body, 'feature_workers': 3}).status_code == 409
+    finally:
+        service.close()
+    reopened = StudioService(DataRoot(tmp_path))
+    try:
+        assert reopened.get_import(run_id)['feature_workers'] == workers
+        assert reopened.get_run(run_id)['config_snapshot']['feature_workers'] == workers
+        with pytest.raises(ImportConflict):
+            reopened.start_import(run_id, 'unused', '26.2', feature_workers=3)
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("workers", [0, 6, True, 2.0, "2", None])
+def test_feature_workers_rejects_non_integer_or_out_of_range(tmp_path, workers):
+    from blockpedia.web import create_app
+    from blockpedia.importer import ImportNotAllowed
+
+    service = StudioService(DataRoot(tmp_path))
+    try:
+        with TestClient(create_app(service=service, start_worker=False)) as client:
+            body = dict(run_id="run_" + "b" * 32, source_directory_ref="unused", minecraft_version="26.2", feature_workers=workers)
+            assert client.post('/api/imports', json=body).status_code == 422
+            with pytest.raises(ImportNotAllowed):
+                service.start_import(body['run_id'], 'unused', '26.2', feature_workers=workers)
+    finally:
+        service.close()
+
+
+def test_feature_workers_default_is_serial(tmp_path, export_fixture):
+    service = StudioService(DataRoot(tmp_path))
+    try:
+        imported = import_export(service, export_fixture)
+        assert service.get_run(imported['run_id'])['config_snapshot']['feature_workers'] == 1
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("failure_point", ["copy", "rename"])
+def test_feature_workers_frozen_before_import_survives_restart(tmp_path, export_fixture, monkeypatch, failure_point):
+    from blockpedia import importer
+    from tools.validate_r1_export import Validator
+    from blockpedia.web import create_app
+
+    target, attribute = (Validator, "run") if failure_point == "copy" else (importer, "commit_directory")
+    original = getattr(target, attribute)
+    def fail(*args, **kwargs):
+        raise OSError("interrupted import")
+    monkeypatch.setattr(target, attribute, fail)
+    run_id = "run_" + "f" * 32
+    service = StudioService(DataRoot(tmp_path))
+    try:
+        ref = service.directory_chooser.register_path(export_fixture, "26.2")
+        service.start_import(run_id, ref, "26.2", feature_workers=5)
+        assert service.imports.wait(run_id)["status"] == "failed"
+        assert service.list_runs() == []
+    finally:
+        service.close()
+    monkeypatch.setattr(target, attribute, original)
+    reopened = StudioService(DataRoot(tmp_path))
+    try:
+        interrupted = reopened.get_import(run_id)
+        assert interrupted["status"] == "interrupted"
+        assert interrupted["feature_workers"] == 5
+        assert reopened.list_runs() == []
+        with TestClient(create_app(service=reopened, start_worker=False)) as client:
+            ref = reopened.directory_chooser.register_path(export_fixture, "26.2")
+            body = dict(run_id=run_id, source_directory_ref=ref, minecraft_version="26.2")
+            assert client.post('/api/imports', json={**body, "feature_workers": 1}).status_code == 409
+            assert client.post('/api/imports', json={**body, "feature_workers": 5}).status_code == 202
+            assert reopened.imports.wait(run_id)["status"] == "succeeded"
+            assert reopened.get_run(run_id)["config_snapshot"]["feature_workers"] == 5
+    finally:
+        reopened.close()
+
+
+def test_interrupted_import_with_unknown_config_rejects_new_value(tmp_path):
+    from blockpedia.importer import ImportConflict
+
+    run_id = "run_" + "e" * 32
+    (tmp_path / "workspace" / "26.2" / ("." + run_id + ".staging")).mkdir(parents=True)
+    service = StudioService(DataRoot(tmp_path))
+    try:
+        assert service.get_import(run_id)["feature_workers"] is None
+        with pytest.raises(ImportConflict):
+            service.start_import(run_id, "unused", "26.2", feature_workers=1)
+    finally:
+        service.close()
+
 
 
 

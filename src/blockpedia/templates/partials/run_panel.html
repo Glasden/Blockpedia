@@ -12,6 +12,7 @@
 {% set stale_items = run_view.get('stale', []) or [] %}
 {% set run_identifier = run_view.get('run_id', run_id|default('unavailable')) %}
 {% set frozen_offline_concurrency = run_view.get('offline_annotation_concurrency') %}
+{% set feature_workers = run_view.get('config_snapshot', {}).get('feature_workers', 1) %}
 
 {% set timeline = namespace(current_index=1, current_status='pending', current_heartbeat=None, pause_after_item=false) %}
 {% for stage_name in stage_order %}
@@ -66,6 +67,7 @@
         <span class="status-badge status-badge--{{ run_status }}">{{ run_status }}</span>
       </div>
       <p>当前阶段 <code>{{ current_stage }}</code></p>
+      <p class="run-frozen-config"><b>{{ feature_workers }} 个特征计算进程</b><small>创建运行时固定</small></p>
       {% if frozen_offline_concurrency %}<p class="run-frozen-config"><span aria-hidden="true">◆</span><b>{{ frozen_offline_concurrency }} 个并发 AI 批次</b><small>已为此运行冻结 · active profile 后续变化不会改写</small></p>{% endif %}
       {% if boundary_event == 'R3_BOUNDARY_REACHED_AI_ANNOTATE_PENDING' %}<p class="pipeline-summary__note">R2 已完成；请在下方配置并预览 R3 AI 批次。</p>{% elif boundary_event == 'R3_BOUNDARY_REACHED_BUILD_RELEASE_PENDING' %}<p class="pipeline-summary__note">R3 标注与审核已完成；请在当前运行页执行候选检查。</p>{% endif %}
       <span class="stream-state" data-stream-status data-state="connecting"><i aria-hidden="true"></i><span>正在连接实时状态</span></span>
@@ -123,7 +125,7 @@
       <div class="live-work__actions" aria-label="运行操作">
         {% if run_status == 'running' %}
           <form action="/ui/runs/{{ run_view.get('run_id', 'unavailable') }}/pause" method="post" data-run-command data-command-label="暂停" data-focus-key="pause-command">
-            <button class="button button--quiet" type="submit" {% if timeline.pause_after_item %}disabled{% endif %}>{% if timeline.pause_after_item %}当前条目后暂停{% else %}暂停{% endif %}</button>
+            <button class="button button--quiet" type="submit" {% if timeline.pause_after_item %}disabled{% endif %}>{% if timeline.pause_after_item %}已派发任务完成后暂停{% else %}暂停{% endif %}</button>
           </form>
           <form action="/ui/runs/{{ run_view.get('run_id', 'unavailable') }}/cancel" method="post" data-run-command data-command-label="取消" data-confirm="取消后不能恢复此运行。确认取消吗？" data-focus-key="cancel-command">
             <button class="button button--danger" type="submit">取消运行</button>

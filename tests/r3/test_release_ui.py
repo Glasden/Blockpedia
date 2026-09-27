@@ -28,7 +28,7 @@ const context = {
   },
   postJsonEnvelope: async (url, body) => {
     requests.push(['POST', body]);
-    runs.set(body.run_id, {run_id:body.run_id, minecraft_version:body.minecraft_version, export_id:'export_A', status:'running'});
+    runs.set(body.run_id, {run_id:body.run_id, minecraft_version:body.minecraft_version, feature_workers:body.feature_workers, export_id:'export_A', status:'running'});
     throw new Error('server accepted; response lost');
   },
 };
@@ -36,10 +36,11 @@ vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('  const storedOperation'), source.indexOf('  const initializeDirectoryChooser')) +
   source.slice(source.indexOf('  const performSelectedAction'), source.indexOf('  const submitRunCommand')) +
   '\nthis.submit = performSelectedAction;', context);
-const form = (ref, version='26.2', exportId='export_A', retryId=null) => {
+const form = (ref, version='26.2', exportId='export_A', retryId=null, workers=1) => {
   const feedback = {textContent:''};
   const fields = {'[data-directory-ref]':{value:ref}, '[data-directory-version]':{value:version}};
   return {dataset:{selectedExportId:exportId, ...(retryId?{retryRunId:retryId}:{})}, feedback,
+    elements:{feature_workers:{value:String(workers)}},
     reportValidity:()=>true, setAttribute:()=>{}, removeAttribute:()=>{},
     querySelector:selector=>fields[selector], querySelectorAll:()=>[],
     closest:()=>({querySelector:()=>feedback})};
@@ -85,6 +86,14 @@ const form = (ref, version='26.2', exportId='export_A', retryId=null) => {
   await context.submit(form('dir_return','26.2','export_A',explicitId));
   assert.equal(redirect, '/imports/'+explicitId);
   assert.equal(JSON.parse(storage.get('blockpedia.import')).id, explicitId);
+  storage.delete('blockpedia.import');
+  await context.submit(form('dir_parallel','26.2','export_A',null,5));
+  assert.equal(requests.at(-1)[1].feature_workers, 5);
+  const posts = requests.filter(x=>x[0]==='POST').length;
+  const changedWorkers = form('dir_parallel_reload');
+  await context.submit(changedWorkers);
+  assert.match(changedWorkers.feedback.textContent, /IMPORT_CONFLICT/);
+  assert.equal(requests.filter(x=>x[0]==='POST').length, posts);
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''
     subprocess.run(['node', '-', str(STATIC / 'studio.js')], input=script, text=True, check=True)

@@ -2,7 +2,7 @@
 
 更新：2026-09-27。代码调查基线：`44233c2`。本文件是当前决定、实施顺序和进度的唯一维护入口；旧文档已归档，不再与本文并行维护。
 
-**用户已于 2026-09-27 授权开始实施，当前先完成 D1 exporter 颜色修复。** 其余接口和参数仍是后续实施目标，并非当前已有能力。技术方块名单与 256×256 无损 WebP 决定已获用户批准；本阶段不执行真实标注或发布。
+**用户已于 2026-09-27 授权开始实施，D1 exporter 颜色修复与 C 特征多 worker 已实现。** 其余接口和参数仍是后续实施目标，并非当前已有能力。技术方块名单与 256×256 无损 WebP 决定已获用户批准；本阶段不执行真实标注或发布。
 
 ## 1. 已确认决定与范围
 
@@ -111,15 +111,15 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 
 ## 4. Studio 可选多 worker
 
-新增 run 配置 `feature_workers`，默认 `1`，允许整数 `1–5`，在 Studio 配置表单/API、run 配置快照和公开进度中接通。创建 run 时固定，运行途中不热改。沿用已有配置身份计算，不增加第二套配置账本。
+已新增 run 配置 `feature_workers`，默认 `1`，允许整数 `1–5`，在 Studio 导入表单、`POST /api/imports`、run 配置快照和公开进度中接通。接受导入前在 staging 的原 SQLite run 快照中固定，复制或最终重命名中断后也能恢复；同一 run 的重试拒绝改值，缺失原值时拒绝猜测。后续 AI 配置保留该值，纳入已有 `effective_config_hash`，不增加第二套配置账本。
 
 该参数控制同一个 run 的 `EXTRACT_FEATURES` 中独立 variant 计算，不是 Uvicorn worker 数，也不是同时跑多个 Studio。已有 `offline_annotation.concurrency` 继续负责 AI 批次并发，默认 1、上限 5，并继续受进程级共享 5 个请求槽约束；不新增同义 AI workers 参数，不将两个参数相乘。
 
-最小实现方案：
+实现与生命周期约束：
 
-- `feature_workers=1` 走串行路径；大于 1 时用标准库 `ProcessPoolExecutor`，避免把纯 Python 像素计算简单搬进线程后宣称提速。采用可跨 Windows/Linux 的 spawn 入口。
+- `feature_workers=1` 在主进程的计算线程中每 run 串行处理，不阻塞协调线程；它与并行 run 共用五槽额度，不创建子进程或宣称线程加速。大于 1 时用标准库 `ProcessPoolExecutor` 和可跨 Windows/Linux 的 spawn 入口。
 - 一个 Studio 共享有界特征计算池，总上限 5；每个 run 在途特征任务不超过其 `feature_workers`。只保留实际可派发的任务，不一次提交整个数据集，不引入队列服务或第二套 job 表。
-- 主 worker 原子认领现有 jobs，校验路径并准备可序列化的计算输入；子进程只读图片、执行纯计算、返回结果，不接收 SQLite 连接、不写库、不读取 provider 凭据。
+- 主 worker 原子认领现有 jobs，校验路径、读取图片并准备可序列化的计算输入；子进程仅接收图片字节与机器事实、执行纯计算、返回结果，不接收 SQLite 连接、不写库、不读取 provider 凭据。
 - 主 worker 在短事务内复核任务所有权和 run 状态，将结果与 job 完成状态一起提交。等待计算时不持有 SQLite 写事务或长时间占住 run lock；协调线程继续处理 heartbeat 和暂停请求。
 - 暂停：停止派发，排空并提交已派发任务后进入暂停。取消：停止派发，丢弃尚未提交结果并收束任务状态。关闭：停止派发并等待子任务，未退出不能声称关闭成功。崩溃后的纯计算任务可按现有 stale 恢复重算；AI 的未知发送结果仍转人工处理，不自动重发。
 - 阶段依赖保持顺序，首先只并行有独立输入的特征任务。导入、校验、数据库写入、构建与发布不盲目并行；有测量证据后再扩范围。
@@ -127,6 +127,22 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 验收由该阶段实现者负责：1 与 2/5 workers 的同一输入产生相同规范化特征结果；确有同一 run 的计算进程重叠；任务不重复提交；暂停、取消、关闭、子进程失败和 stale 恢复正确；AI 并发上限不变。用代表性真实导出比较串行/并行墙钟时间并报告资源消耗，不预设加速倍数。默认 1 不因“可并行”自动上调。
 
 源码依据：[特征计算](src/blockpedia/features.py)、[任务协调](src/blockpedia/worker.py)、[Studio 配置](src/blockpedia/services.py)、[Web 接线](src/blockpedia/web.py)、[run 投影](src/blockpedia/run_snapshots.py)。优先扩展现有 `tests/r2/test_phase1_core.py` 与 `tests/r3/test_pipeline_review.py` 的相关检查，不新建通用调度框架。
+
+### 4.1 实施与实测（2026-09-27）
+
+原串行点是 `_claim_pending_job` 的单个 running job 限制与 `_extract_one` 内同步 PNG 解码、逐像素颜色/边缘计算。真实 `stone` 的 cProfile 样本总耗时 2.12 秒，其中解码约 0.89 秒、颜色转换约 0.86 秒（含 profiler 开销，仅定位热点）。现改为有界共享 spawn 池，主进程保留路径检查、认领和事务提交；不改变特征算法、导入/校验/发布顺序或 AI 独立五槽上限。异常退出的池通过后台 shutdown 等待实际回收，回收前不能报告关闭成功或创建替代池。暂停以事务内剩余 running jobs 判定排空；失败后旧任务未排空时禁止重试，完成回写核对登记身份；派发中途失败也保留已提交任务的完成回调。
+
+真实数据来自本机已有 `rel_d0204fb090764c94b4a868a29ec50894` 的 1,172 对原始 512×512 preview/mask，固定选取第 3.5 节 12 类常见方块及按 variant ID 均匀抽取的其余 36 项。每组在独立解释器和临时 workspace 中执行实际 `WorkerService.tick`，仅构造特征阶段输入；release 原图与记录保持不变。计时包含解释器/进程池冷启动、计算、事务提交、关闭和结果摘要，不包含导入校验或准备工作区。
+
+| feature_workers | 墙钟时间 | CPU 时间（主进程与子进程合计） | 采样峰值进程树 RSS |
+|---:|---:|---:|---:|
+| 1 | 43.625 秒 | 41.450 秒 | 52,660 KiB |
+| 2 | 24.459 秒 | 45.520 秒 | 126,256 KiB |
+| 5 | 16.016 秒 | 45.020 秒 | 219,252 KiB |
+
+三组均完成 48 个 jobs，规范化特征与最终 variant record 摘要完全相同；样本墙钟加速约 1.78× / 2.72×，默认仍为 1。环境为 Linux ARM64、CPython 3.14.7、4 个逻辑 CPU、约 23.4 GiB 内存；RSS 为每 20ms 采样的进程树内存和，可能漏过短峰值。此次是代表性抽样单次测量，不是全库、Windows 或整条流水线加速承诺，也不以历史 feature_json 为本轮正确性基准。
+
+复现：`PYTHONPATH=src python tools/benchmark_feature_workers.py --release <release目录> --workers 1 2 5 --samples 48`。脚本与本轮规范化输出比较检查已保留；本地明细在忽略目录 `build/feature-workers-evidence/benchmark-20260927T104832Z.json`，含样本、输入/输出摘要、源码版本摘要及资源口径。生命周期回归在 `tests/r2/test_feature_parallel.py`，配置/API 与 R3 冻结回归在 `tests/r2/test_live_progress.py`、`tests/r3/test_pipeline_review.py`；最终 `python -m pytest tests/r2 tests/r3 -q` 为 **305 passed、1 skipped**（Windows junction 平台检查）。浏览器冒烟验证表单提交、冻结值展示、同 run 改值拒绝与输入范围，未出现 JS 异常。Oracle 审核结论与 commit 见本次会话。
 
 ## 5. 搜索、渲染与剩余建议的取舍
 
@@ -153,7 +169,7 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 |---|---|---|---|
 | A 文档收敛 | 本文件、旧文档归档、必要引用接线 | 主代理：归档完整性、有效链接、原稿和 evidence 保留、候选提交审核 | 文档已整理；18 项名单已获用户批准；提交状态见会话 |
 | B 详情与 MCP 图片输出 | summary/states、分页；三种带图工具最终响应采用256卡片/无损WebP，处理过程使用原图 | 实现者：两个摘要尺寸断言、全 release 大小扫描、分页集合一致、Schema/MIME、图片元数据、无损解码、客户端及视觉检查 | 未实施；图片方案已批准 |
-| C 特征多 worker | 第 4 节配置与进程池；可与 B/D 独立开发 | 实现者：串并行结果一致、生命周期/故障检查、同 run 并行证据及真实计时 | 未实施；本次计划内必做 |
+| C 特征多 worker | 第 4 节配置与进程池；可与 B/D 独立开发 | 实现者：串并行结果一致、生命周期/故障检查、同 run 并行证据及真实计时 | 已实现；默认 1，Linux spawn 与真实样本计时见第 4.1 节；Windows 实机待验 |
 | D 渲染与形状事实 | D1 颜色修复先独立交付；形状分类、新完整导出继续待办 | 实现者：Java 构建、真实 GPU 样本、分类来源检查；主代理核对完整导出验证 | D1 代码及定向 GPU 验证完成，见第 8 节；阶段整体未完成 |
 | E 搜索与名单 | 相关性、中文映射、技术降权；名单已获用户批准，最终颜色/形状验收依赖 D | 实现者：约20条查询、FTS/LIKE、精确与泛用途查询对照、稳定排序 | 未实施；名单已批准 |
 | F 新 release | 整合 B–E，新 workspace 完整处理并构建 | 主代理：构建通过，真实产物 summary 扫描、查询集、四工具 stdio 和状态引用一致；provider 结果独立取证 | 未执行；无新 release ID |

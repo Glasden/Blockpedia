@@ -307,6 +307,7 @@ def _safe_config(raw: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     allowed = {
+        "feature_workers",
         "effective_config_hash",
         "feature_extractor_version",
         "force_normalized_like",

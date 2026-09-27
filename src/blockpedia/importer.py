@@ -74,9 +74,11 @@ class ImportService:
             self._closed = True
         self._executor.shutdown(wait=True)
 
-    def start(self, run_id, source_directory_ref, minecraft_version):
+    def start(self, run_id, source_directory_ref, minecraft_version, *, feature_workers=1):
         _run_id(run_id)
         validate_minecraft_version(minecraft_version)
+        if type(feature_workers) is not int or not 1 <= feature_workers <= 5:
+            raise ImportNotAllowed("feature_workers must be an integer from 1 to 5")
         with self._lock:
             if self._closed:
                 raise ImportNotAllowed("importer is closed")
@@ -87,13 +89,31 @@ class ImportService:
             if existing is not None:
                 if existing["minecraft_version"] != minecraft_version:
                     raise ImportConflict("run belongs to a different version")
+                if existing.get("feature_workers") != feature_workers:
+                    raise ImportConflict("feature_workers is frozen for this run")
                 if existing["status"] in {"pending", "running", "succeeded"}:
                     return existing
             source = self.chooser.consume(source_directory_ref, minecraft_version)
             if run_id in self._sources and self._sources[run_id] != source:
                 raise ImportConflict("retry must use the same source")
+            if existing and existing.get("export_id") and existing["export_id"] != source.name:
+                raise ImportConflict("retry must use the same export")
             now = utc_now()
+            if existing is None:
+                staging = self.data_root.workspace_dir(minecraft_version, run_id).with_name("." + run_id + ".staging")
+                safe_path(staging, self.data_root.root, missing=True)
+                staging.mkdir(parents=True)
+                # Persist the run's one config snapshot before acknowledging the
+                # operation, including crashes before validation or projection.
+                with WorkspaceDatabase.open(staging / "work.sqlite3", force_normalized_like=self.force_normalized_like) as database:
+                    with database.transaction() as connection:
+                        import_id = _id("import")
+                        connection.execute("INSERT INTO imports(import_id,minecraft_version,export_id,source_directory_ref,manifest_sha256,checksum_sha256,expected_files_json,report_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (import_id, minecraft_version, source.name, "not-persisted", "", "", "[]", "{}", "failed", now))
+                        connection.execute("INSERT INTO runs(run_id,import_id,minecraft_version,status,current_stage,config_snapshot_json,created_at) VALUES (?,?,?,?,?,?,?)", (run_id, import_id, minecraft_version, "pending", "IMPORT_EXPORT", _json({"feature_workers": feature_workers}), now))
+                sync_directory(staging)
+                sync_directory(staging.parent)
             state = {"run_id": run_id, "minecraft_version": minecraft_version, "export_id": source.name,
+                     "feature_workers": feature_workers,
                      "import_id": None, "status": "pending", "phase": "IMPORT_EXPORT",
                      "progress": {"completed": 0, "total": 0, "unit": "files"}, "error_code": None,
                      "created_at": existing["created_at"] if existing else now, "updated_at": now}
@@ -122,17 +142,24 @@ class ImportService:
             raise ImportNotFound(run_id)
         path, interrupted = matches[0]
         safe_path(path, self.data_root.root, directory=True)
-        if interrupted:
+        if interrupted and not (path / "work.sqlite3").is_file():
             return {"run_id": run_id, "minecraft_version": path.parent.name, "export_id": "",
+                    "feature_workers": None,
                     "import_id": None, "status": "interrupted", "phase": "IMPORT_EXPORT",
                     "progress": {"completed": 0, "total": 0, "unit": "files"},
                     "error_code": "IMPORT_INTERRUPTED", "created_at": "", "updated_at": ""}
         safe_path(path / "work.sqlite3", self.data_root.root, directory=False)
         with WorkspaceDatabase.open(path / "work.sqlite3", read_only=True) as database:
-            row = database.fetchone("SELECT runs.run_id,runs.minecraft_version,imports.import_id,imports.export_id,imports.created_at FROM runs JOIN imports ON runs.import_id=imports.import_id WHERE runs.run_id=?", (run_id,))
+            row = database.fetchone("SELECT runs.run_id,runs.minecraft_version,runs.config_snapshot_json,imports.import_id,imports.export_id,imports.created_at FROM runs JOIN imports ON runs.import_id=imports.import_id WHERE runs.run_id=?", (run_id,))
             if row is None or row["minecraft_version"] != path.parent.name:
                 raise ImportConflict("workspace identity is invalid")
-            return {**dict(row), "status": "succeeded", "phase": "FINALIZE",
+            public = dict(row)
+            public["feature_workers"] = json.loads(public.pop("config_snapshot_json")).get("feature_workers", None if interrupted else 1)
+            if interrupted:
+                return {**public, "status": "interrupted", "phase": "IMPORT_EXPORT",
+                        "progress": {"completed": 0, "total": 0, "unit": "files"},
+                        "error_code": "IMPORT_INTERRUPTED", "updated_at": row["created_at"]}
+            return {**public, "status": "succeeded", "phase": "FINALIZE",
                     "progress": {"completed": 1, "total": 1, "unit": "imports"},
                     "error_code": None, "updated_at": row["created_at"]}
 
@@ -184,10 +211,30 @@ class ImportService:
         try:
             safe_path(final.parent, self.data_root.root, missing=True)
             final.parent.mkdir(parents=True, exist_ok=True)
-            if staging.exists():
-                safe_path(staging, self.data_root.root, directory=True)
-                shutil.rmtree(staging)
-            staging.mkdir()
+            safe_path(staging, self.data_root.root, directory=True)
+            with WorkspaceDatabase.open(staging / "work.sqlite3", read_only=True) as database:
+                frozen = database.fetchone("SELECT import_id,current_stage FROM runs WHERE run_id=?", (run_id,))
+                if frozen is None:
+                    raise ImportConflict("staging run config is missing")
+                import_id = frozen["import_id"]
+                projected = frozen["current_stage"] == "EXTRACT_FEATURES"
+            if projected:
+                sync_tree(staging)
+                commit_directory(staging, final)
+                committed = True
+                sync_directory(final.parent)
+                self._update(run_id, status="succeeded", phase="FINALIZE", import_id=import_id, progress={"completed": 1, "total": 1, "unit": "imports"})
+                return
+            # Retain the sole SQLite config snapshot while clearing an
+            # interrupted copy. Projection itself is a single transaction.
+            for item in staging.iterdir():
+                if item.name in {"work.sqlite3", "work.sqlite3-wal", "work.sqlite3-shm"}:
+                    continue
+                safe_path(item, self.data_root.root)
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
             self._update(run_id, status="running")
             def progress(phase, completed, total, unit):
                 self._update(run_id, phase="VALIDATE_EXPORT", progress={"completed": completed, "total": total or 0, "unit": unit})
@@ -198,9 +245,8 @@ class ImportService:
                 raise ImportNotAllowed(code=code)
             if validator.manifest["toolchain"]["minecraft_version"] != version:
                 raise ImportNotAllowed(code="IMPORT_VERSION_MISMATCH")
-            import_id = _id("import")
             with WorkspaceDatabase.open(staging / "work.sqlite3", force_normalized_like=self.force_normalized_like) as database:
-                _project_to_workspace(database, staging, validator.manifest, validator.records, import_id=import_id, run_id=run_id, repo_root=self.repo_root)
+                _project_to_workspace(database, staging, validator.manifest, validator.records, import_id=import_id, run_id=run_id, repo_root=self.repo_root, feature_workers=state["feature_workers"])
             sync_tree(staging)
             commit_directory(staging, final)
             committed = True
@@ -226,6 +272,7 @@ def _project_to_workspace(
     import_id: str,
     run_id: str,
     repo_root: Path,
+    feature_workers: int = 1,
 ) -> None:
     version, export_id = manifest["toolchain"]["minecraft_version"], manifest["export_id"]
     blocks, states, variants, failures = (records[name] for name in ("blocks.jsonl", "states.jsonl", "variants.jsonl", "failures.jsonl"))
@@ -236,15 +283,15 @@ def _project_to_workspace(
     now = utc_now()
     with database.transaction() as connection:
         connection.execute(
-            "INSERT INTO imports(import_id,minecraft_version,export_id,source_directory_ref,manifest_sha256,checksum_sha256,expected_files_json,report_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO imports(import_id,minecraft_version,export_id,source_directory_ref,manifest_sha256,checksum_sha256,expected_files_json,report_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(import_id) DO UPDATE SET report_json=excluded.report_json,status=excluded.status",
             # Chooser refs are process-local and are never written to the
             # workspace database.  The frozen column remains populated with a
             # non-reference marker for the existing schema.
             (import_id, version, export_id, "not-persisted", "", "", "[]", _json({"status": "passed", "source_summary": {"export_id": export_id, "minecraft_version": version, "registry_blocks": manifest["counts"]["registry_blocks"], "policies": manifest.get("policies", {}), "toolchain": manifest.get("toolchain", {})}}), "passed", now),
         )
         connection.execute(
-            "INSERT INTO runs(run_id,import_id,minecraft_version,status,current_stage,boundary_event,config_snapshot_json,created_at) VALUES (?,?,?,?,?,?,?,?)",
-            (run_id, import_id, version, "pending", "EXTRACT_FEATURES", None, "{}", now),
+            "INSERT INTO runs(run_id,import_id,minecraft_version,status,current_stage,boundary_event,config_snapshot_json,created_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET current_stage=excluded.current_stage",
+            (run_id, import_id, version, "pending", "EXTRACT_FEATURES", None, _json({"feature_workers": feature_workers}), now),
         )
         for ordinal, stage in enumerate(STUDIO_STAGES):
             connection.execute(

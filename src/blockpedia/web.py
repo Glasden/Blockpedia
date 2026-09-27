@@ -118,6 +118,7 @@ class StrictRequest(BaseModel):
 
 
 class ImportRequest(StrictRequest):
+    feature_workers: int = Field(default=1, ge=1, le=5)
     run_id: str = Field(pattern=r"^run_[0-9a-f]{32}$")
     source_directory_ref: str = Field(min_length=1, max_length=4096)
     minecraft_version: str = Field(min_length=3, max_length=32)
@@ -463,7 +464,7 @@ def create_app(
     @app.post("/api/imports")
     def api_import(payload: ImportRequest, request: Request):
         _allow_query_keys(request, set())
-        imported = studio.start_import(payload.run_id, payload.source_directory_ref, payload.minecraft_version)
+        imported = studio.start_import(payload.run_id, payload.source_directory_ref, payload.minecraft_version, feature_workers=payload.feature_workers)
         return _success_response(request, imported, status_code=200 if imported["status"] == "succeeded" else 202)
 
     @app.get("/api/imports")
@@ -2166,6 +2167,7 @@ def _safe_config(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     allowed = {
+        "feature_workers",
         "effective_config_hash",
         "feature_extractor_version",
         "force_normalized_like",

@@ -425,6 +425,7 @@
     if (form.dataset.busy === "true" || !form.reportValidity()) return;
     const source_directory_ref = form.querySelector("[data-directory-ref]").value;
     const minecraft_version = form.querySelector("[data-directory-version]").value;
+    const feature_workers = Number(form.elements.feature_workers.value);
     if (!source_directory_ref) return;
     const feedback = form.closest(".work-card").querySelector("[data-import-start-feedback]");
     form.dataset.busy = "true";
@@ -434,7 +435,7 @@
     controls.forEach((control) => { control.disabled = true; });
     setText(feedback, "正在提交导入…");
     try {
-      const inputs = { minecraft_version, export_id: form.dataset.selectedExportId || null, source_directory_ref };
+      const inputs = { minecraft_version, export_id: form.dataset.selectedExportId || null, source_directory_ref, feature_workers };
       const saved = storedOperation("blockpedia.import");
       const retryId = form.dataset.retryRunId;
       const previous = retryId && retryId !== saved?.id ? { id: retryId } : saved;
@@ -452,6 +453,10 @@
         try { original = JSON.parse(previous.signature || "{}"); } catch (_) { /* Legacy identity: use the server snapshot. */ }
         const originalVersion = existing?.minecraft_version || original.minecraft_version;
         const originalExport = existing?.export_id || original.export_id;
+        const originalWorkers = existing?.feature_workers ?? original.feature_workers ?? 1;
+        if (originalWorkers !== feature_workers) {
+          throw { code: "IMPORT_CONFLICT", message: `此运行已固定为 ${originalWorkers} 个特征计算进程。请恢复该值，或点击“开始新的导入操作”。` };
+        }
         const sameSource = inputs.export_id && originalExport
           ? inputs.export_id === originalExport
           : source_directory_ref === original.source_directory_ref;
@@ -466,7 +471,7 @@
         }
       }
       sessionStorage.setItem("blockpedia.import", JSON.stringify({ signature: JSON.stringify(inputs), id: run_id }));
-      const data = await postJsonEnvelope("/api/imports", { run_id, source_directory_ref, minecraft_version });
+      const data = await postJsonEnvelope("/api/imports", { run_id, source_directory_ref, minecraft_version, feature_workers });
       if (data.run_id !== run_id) throw { code: "IMPORT_RESULT_INVALID" };
       window.location.assign(`/imports/${encodeURIComponent(run_id)}`);
     } catch (error) {
