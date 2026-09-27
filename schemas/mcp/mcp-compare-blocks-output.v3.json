@@ -426,7 +426,7 @@
         "columns": {
           "type": "integer",
           "minimum": 1,
-          "description": "Tiles per row. Tiles are row-major in candidate order: T01 is the first tile, so candidate n is at row (n-1) div columns, column (n-1) mod columns; tile width is width / columns."
+          "description": "Tiles per row. Tiles are row-major in candidate order: T01 is the first tile, so candidate n is at row (n-1) div columns, column (n-1) mod columns; tile width is width / columns and tile height is height / rows; each tile is labelled with its candidate_id and block_id (\"T01 stone\")."
         }
       }
     }

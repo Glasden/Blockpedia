@@ -211,7 +211,7 @@
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Lossless WebP contact sheet, one tile per candidate labelled with its candidate_id. image=\"full\" (default): 256x256 cards of the four views; image=\"compact\": 128x64 tiles of the isometric and top views at 64px.",
+      "description": "Lossless WebP contact sheet, one tile per candidate labelled with its candidate_id and block_id without the minecraft: namespace (\"T03 snow_block\", wrapped after underscores when long). image=\"full\" (default): 256x256 cards of the four views, label over the bottom margin; image=\"compact\": the isometric and top views at 64px side by side (128 wide) above a label strip as tall as the longest label needs.",
       "required": [
         "content_index",
         "mime_type",
@@ -239,7 +239,7 @@
         "columns": {
           "type": "integer",
           "minimum": 1,
-          "description": "Tiles per row. Tiles are row-major in candidate order: T01 is the first tile, so candidate n is at row (n-1) div columns, column (n-1) mod columns; tile width is width / columns."
+          "description": "Tiles per row. Tiles are row-major in candidate order: T01 is the first tile, so candidate n is at row (n-1) div columns, column (n-1) mod columns; tile width is width / columns and tile height is height / rows."
         }
       }
     }

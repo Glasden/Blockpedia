@@ -291,6 +291,17 @@ Schema：详情 v2 与比较 v3 的 `family.forms` 允许为空并新增 `materi
 
 验证：`tests/r4/test_node_mcp.py` 改写旧字段断言并新增：compact 两视角像素取自原图对应象限且标签在格内、`none` 不附图、非法 `image` 被拒、默认值省略、conditional 保留、2 位小数、similarity 顶层说明及关键词注明、形状名与 `form_id_pattern`、`top_and_side`、比较只含英文摘要、材料组模板、碰撞箱仅在不同时出现（摘要与状态页）；建筑查询集的材料组检查按模板还原 ID 后比对；FTS/LIKE 两路径执行。`python -m pytest tests -q` **376 passed、6 skipped**（Windows、GPU 与 PowerShell 相关）。本会话已连接的 blockpedia MCP 进程仍是旧代码，需重载后才生效。
 
+### 5.5 联系表标签带方块 ID（2026-09-27，未提交）
+
+格子标签由 `T03` 改为 `T03 snow_block`（去掉 `minecraft:` 命名空间），模型看图即可认出每格，不必对照结构化输出。只改 Node MCP 图片合成与说明文字，排序、字段与 release 不变；搜索与比较两处联系表都生效，详情单卡不加标签。
+
+- 字形：原 3×5 数字与 T 之外补小写 a–z、`_`、`-`、`:`、`.`；m、w 为 5 列宽，i、l 更窄。首版 5 行把 g/p/q/y 的下伸部挤进同一行，g 读成 9；改为第 6 行专放下伸部后，`glass`、`mangrove_wood`、`light_gray_carpet` 等逐一目视可读。标签统一 2 倍字形（原 full 为 3 倍）。
+- 换行：超出格宽时优先在 `_` 后断行，单词本身超宽才在词中截断，不丢字符。
+- full：仍为 256×256，标签画在卡片底部空白处（预览四视角下方约 32px 无物体），单行 16px、两行 30px；最长的 `T05 waxed_weathered_cut_copper_stairs` 两行。
+- compact：64px 高没有空白，标签放在两视角下方的标签条，条高按本张最长标签的行数统一（1 行 16px，至多 3 行 44px），格高 = height / rows；Schema 与工具说明同步写明。search `stone wall` compact 由 512×128／7,706 B 变为 512×188／8,384 B，full 仍 1024×512（19,812 → 20,182 B）。
+
+验证：`tests/r4/test_node_png.py` 新增标签文本、换行与超长单词、不同方块标签像素不同、full 保持方形、compact 条高随行数变化；`tests/r4/test_node_mcp.py` 的 compact 断言改为 384×94（`T01 yellow_carpet` 两行）并检查标签条不遮挡视角。正式 release 上实际查看了搜索 compact 与比较 full 联系表。
+
 新 release 产出链：渲染定位及修正 → 完整导出 → 新 workspace 导入 → 特征与新标注 → 审核 → 构建 → 四工具集成验收 → 用户发布。无需迁移旧语义和审核；新的非 excluded 候选仍须满足构建的语义完整性要求。
 
 ## 6. 实施阶段与当前状态

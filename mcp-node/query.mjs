@@ -1265,7 +1265,7 @@ export class MCPQueryService {
         const candidates = this._candidateDicts(selected, snapshot);
         const output = { candidates, ...(similarity === null ? {} : { similarity }), images: [] };
         if (candidates.length === 0 || image === 'none') return toolResult(output);
-        const sheet = this._contactSheet(handle, selected.map((entry) => entry.row[0]), 4, resources, image);
+        const sheet = this._contactSheet(handle, selected.map((entry) => entry.row[0]), candidates.map((item) => item.block_id), 4, resources, image);
         output.images.push(sheet.image);
         return toolResult(output, [sheet.webp]);
       } finally {
@@ -1638,11 +1638,12 @@ export class MCPQueryService {
     return typeof summary === 'string' && summary ? summary.slice(0, 500) : 'Deterministic release candidate.';
   }
 
-  // One tile per variant, row-major in candidate order: the tile labelled T01
-  // is the first candidate, so the column count locates every tile.
-  _contactSheet(handle, variantIds, columns, resources, layout = 'full') {
+  // One tile per variant, row-major in candidate order.  Each tile is labelled
+  // with its candidate ID and block ID ("T03 snow_block", minecraft namespace
+  // dropped), so the image reads without the structured output beside it.
+  _contactSheet(handle, variantIds, blockIds, columns, resources, layout = 'full') {
     const previews = variantIds.map((variantId) => this._preview(handle, variantId, resources).decoded);
-    const sheet = makeContactSheet(previews, columns, layout);
+    const sheet = makeContactSheet(previews, columns, layout, blockIds);
     const image = {
       content_index: 1,
       mime_type: IMAGE_MIME_TYPE,
@@ -1786,6 +1787,7 @@ export class MCPQueryService {
   // differing_fields names the fields whose values are not all equal.
   _compareData(handle, snapshot, blockIds, resources) {
     const tiles = [];
+    const tileBlocks = [];
     const blocks = blockIds.map((blockId) => {
       const block = snapshot.blocks[blockId];
       const names = block.official_names ?? {};
@@ -1794,6 +1796,7 @@ export class MCPQueryService {
       if (variant !== undefined) {
         entry.candidate_id = `T${String(tiles.length + 1).padStart(2, '0')}`;
         tiles.push(String(variant.variant_id));
+        tileBlocks.push(blockId);
       }
       const state = snapshot.states[String(variant === undefined ? block.default_state_id : variant.canonical_state_id)] ?? {};
       const facts = variant === undefined ? (isMapping(state.behavior) ? state.behavior : {}) : behavior(variant, state);
@@ -1820,7 +1823,7 @@ export class MCPQueryService {
     });
     const differing = COMPARE_FIELDS.filter((field) => new Set(blocks.map((item) => JSON.stringify(item[field]))).size > 1);
     if (tiles.length === 0) return [{ blocks, differing_fields: differing, images: [] }, []];
-    const sheet = this._contactSheet(handle, tiles, tiles.length, resources);
+    const sheet = this._contactSheet(handle, tiles, tileBlocks, tiles.length, resources);
     return [{ blocks, differing_fields: differing, images: [sheet.image] }, [sheet.webp]];
   }
 }

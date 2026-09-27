@@ -1,6 +1,6 @@
 // Minimal Node port of the restricted RGBA PNG decoder from
 // src/blockpedia/png.py, plus the MCP image composition: nearest resampling to
-// 256px block cards, T01-style labels and one lossless WebP per response.
+// 256px block cards, "T03 snow_block" tile labels and one lossless WebP per response.
 //
 // Only non-interlaced 8-bit RGBA is accepted.  Chunk framing, CRC and scanline
 // length are still enforced exactly as in Python; this is not a general PNG
@@ -137,6 +137,9 @@ export function decodeRgbaPng(source) {
   return { width, height, pixels };
 }
 
+// 3x5 bitmap font (m and w are 5 wide) for tile labels such as
+// "T03 snow_block".  Digits and T fill rows 0-4; lowercase letters use rows 1-4
+// as the x-height, row 0 for ascenders and a sixth row for descenders.
 const GLYPHS = {
   0: ['111', '101', '101', '101', '111'],
   1: ['010', '110', '010', '010', '111'],
@@ -149,17 +152,51 @@ const GLYPHS = {
   8: ['111', '101', '111', '101', '111'],
   9: ['111', '101', '111', '001', '111'],
   T: ['111', '010', '010', '010', '010'],
+  a: ['000', '011', '101', '101', '011'],
+  b: ['100', '100', '110', '101', '110'],
+  c: ['000', '011', '100', '100', '011'],
+  d: ['001', '001', '011', '101', '011'],
+  e: ['000', '011', '111', '100', '011'],
+  f: ['011', '010', '111', '010', '010'],
+  g: ['000', '011', '101', '011', '001', '110'],
+  h: ['100', '100', '110', '101', '101'],
+  i: ['1', '0', '1', '1', '1'],
+  j: ['001', '000', '001', '001', '001', '110'],
+  k: ['100', '101', '110', '110', '101'],
+  l: ['10', '10', '10', '10', '11'],
+  m: ['00000', '11110', '10101', '10101', '10101'],
+  n: ['000', '110', '101', '101', '101'],
+  o: ['000', '010', '101', '101', '010'],
+  p: ['000', '110', '101', '101', '110', '100'],
+  q: ['000', '011', '101', '101', '011', '001'],
+  r: ['000', '101', '110', '100', '100'],
+  s: ['000', '011', '100', '001', '110'],
+  t: ['010', '111', '010', '010', '011'],
+  u: ['000', '101', '101', '101', '011'],
+  v: ['000', '101', '101', '101', '010'],
+  w: ['00000', '10101', '10101', '10101', '01010'],
+  x: ['000', '101', '010', '010', '101'],
+  y: ['000', '101', '101', '101', '011', '110'],
+  z: ['000', '111', '001', '010', '111'],
+  _: ['000', '000', '000', '000', '111'],
+  '-': ['000', '000', '111', '000', '000'],
+  ':': ['0', '1', '0', '1', '0'],
+  '.': ['0', '0', '0', '0', '1'],
+  ' ': ['00', '00', '00', '00', '00'],
 };
 
-const glyphFor = (char) => GLYPHS[char] ?? GLYPHS['0'];
+const GLYPH_ROWS = 6;
+const LINE_GAP = 1;
+const glyphFor = (char) => GLYPHS[char] ?? GLYPHS['_'];
 const tileId = (index) => `T${String(index + 1).padStart(2, '0')}`;
+// Tile label: "T03 snow_block"; only the minecraft namespace is dropped.
+export const tileLabel = (index, blockId) => (blockId ? `${tileId(index)} ${String(blockId).replace(/^minecraft:/, '')}` : tileId(index));
+export const textWidth = (text, scale) => [...text].reduce((total, char) => total + glyphFor(char)[0].length + 1, 0) * scale - scale;
 
 // Each block card is 256x256: the 512px four-view preview becomes four 128px
 // views.  Contact sheets place one card per block instead of shrinking the
 // whole sheet to 256px.
 export const CARD_SIZE = 256;
-const LABEL_SCALE = 3;
-const LABEL_PAD = 4;
 
 function resizeNearest(image, width = CARD_SIZE, height = CARD_SIZE) {
   if (image.width === width && image.height === height) return image.pixels;
@@ -175,53 +212,74 @@ function resizeNearest(image, width = CARD_SIZE, height = CARD_SIZE) {
   return result;
 }
 
-function paintLabel(pixels, width, height, x, y, label, scale = LABEL_SCALE, pad = LABEL_PAD) {
-  const glyphWidth = label.split('').reduce((total, char) => total + glyphFor(char)[0].length + 1, 0) * scale;
-  const glyphHeight = 5 * scale;
-  const left = Math.min(Math.max(0, x), Math.max(0, width - glyphWidth - 2 * pad));
-  const top = Math.max(0, y);
-  // Opaque backing keeps the identifier readable without a font asset; it is
-  // part of the deterministic contact-sheet image.
-  for (let row = 0; row < glyphHeight + 2 * pad; row += 1) {
-    for (let column = 0; column < glyphWidth + 2 * pad; column += 1) {
-      const px = left + column;
-      const py = top + row;
-      if (px >= 0 && px < width && py >= 0 && py < height) {
-        pixels.set([0x18, 0x18, 0x18, 0xff], (py * width + px) * 4);
-      }
+// Splits a label into lines no wider than maxWidth, breaking after "_" or " "
+// where possible and mid-word only when one word alone is too wide.
+export function wrapLabel(label, maxWidth, scale) {
+  const words = label.match(/[^_ ]+[_ ]?|[_ ]/g) ?? [''];
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    if (line && textWidth(line + word.trimEnd(), scale) > maxWidth) {
+      lines.push(line.trimEnd());
+      line = '';
     }
+    let rest = word;
+    while (textWidth(rest.trimEnd(), scale) > maxWidth) {
+      let cut = rest.length - 1;
+      while (cut > 1 && textWidth(rest.slice(0, cut), scale) > maxWidth) cut -= 1;
+      lines.push(rest.slice(0, cut));
+      rest = rest.slice(cut);
+    }
+    line += rest;
   }
-  let cursor = left + pad;
-  for (const char of label) {
-    const glyph = glyphFor(char);
-    for (let gy = 0; gy < glyph.length; gy += 1) {
-      for (let gx = 0; gx < glyph[gy].length; gx += 1) {
-        if (glyph[gy][gx] !== '1') continue;
-        for (let dy = 0; dy < scale; dy += 1) {
-          for (let dx = 0; dx < scale; dx += 1) {
-            const px = cursor + gx * scale + dx;
-            const py = top + pad + gy * scale + dy;
-            if (px >= 0 && px < width && py >= 0 && py < height) {
-              pixels.set([0xff, 0xff, 0xff, 0xff], (py * width + px) * 4);
-            }
+  if (line.trimEnd() || lines.length === 0) lines.push(line.trimEnd());
+  return lines;
+}
+
+const labelBlockHeight = (lineCount, { scale, pad }) => lineCount * (GLYPH_ROWS + LINE_GAP) * scale - LINE_GAP * scale + 2 * pad;
+
+// Paints the lines on one opaque dark backing sized to the widest line; the
+// backing keeps the text readable without a font asset and is part of the
+// deterministic contact-sheet image.
+function paintLabel(pixels, width, height, x, y, lines, { scale, pad }) {
+  const boxWidth = Math.max(...lines.map((line) => textWidth(line, scale))) + 2 * pad;
+  const boxHeight = labelBlockHeight(lines.length, { scale, pad });
+  const put = (px, py, rgba) => {
+    if (px >= 0 && px < width && py >= 0 && py < height) pixels.set(rgba, (py * width + px) * 4);
+  };
+  for (let row = 0; row < boxHeight; row += 1) {
+    for (let column = 0; column < boxWidth; column += 1) put(x + column, y + row, [0x18, 0x18, 0x18, 0xff]);
+  }
+  lines.forEach((line, lineIndex) => {
+    let cursor = x + pad;
+    const top = y + pad + lineIndex * (GLYPH_ROWS + LINE_GAP) * scale;
+    for (const char of line) {
+      const glyph = glyphFor(char);
+      for (let gy = 0; gy < glyph.length; gy += 1) {
+        for (let gx = 0; gx < glyph[gy].length; gx += 1) {
+          if (glyph[gy][gx] !== '1') continue;
+          for (let dy = 0; dy < scale; dy += 1) {
+            for (let dx = 0; dx < scale; dx += 1) put(cursor + gx * scale + dx, top + gy * scale + dy, [0xff, 0xff, 0xff, 0xff]);
           }
         }
       }
+      cursor += (glyph[0].length + 1) * scale;
     }
-    cursor += (glyph[0].length + 1) * scale;
-  }
+  });
 }
 
 export function makeBlockCard(image) {
   return { webp: encodeLosslessWebp(CARD_SIZE, CARD_SIZE, resizeNearest(image)), width: CARD_SIZE, height: CARD_SIZE };
 }
 
-// Contact-sheet tile layouts.  full: the whole 256px four-view card.
-// compact: only the isometric (top-left) and top (bottom-right) views at 64px
-// side by side, for choosing among candidates at a quarter of the pixels.
+// Contact-sheet tile layouts.  full: the whole 256px four-view card, the label
+// painted over its empty bottom margin.  compact: only the isometric (top-left)
+// and top (bottom-right) views at 64px side by side, for choosing among
+// candidates at a quarter of the pixels; 64px leaves no margin, so the label
+// goes in a strip below the views, as tall as the sheet's longest label needs.
 export const SHEET_LAYOUTS = {
-  full: { width: CARD_SIZE, height: CARD_SIZE, views: [[0, 0]], view: CARD_SIZE, label: { scale: LABEL_SCALE, pad: LABEL_PAD, left: 6, bottom: 3 } },
-  compact: { width: 128, height: 64, views: [[0, 0], [1, 1]], view: 64, label: { scale: 2, pad: 2, left: 1, bottom: 1 } },
+  full: { width: CARD_SIZE, height: CARD_SIZE, views: [[0, 0]], view: CARD_SIZE, label: { scale: 2, pad: 2, inset: 2, strip: false } },
+  compact: { width: 128, height: 64, views: [[0, 0], [1, 1]], view: 64, label: { scale: 2, pad: 2, inset: 0, strip: true } },
 };
 
 // One view of the 2x2 preview (or, with a single [0, 0] view, the whole
@@ -241,19 +299,23 @@ function viewNearest(image, [column, row], size, whole) {
   return result;
 }
 
-export function makeContactSheet(images, columns = 4, layoutName = 'full') {
+// labels[i] names tile i (a block ID gives "T03 snow_block"; omitted, "T03").
+export function makeContactSheet(images, columns = 4, layoutName = 'full', labels = []) {
   if (!(images.length >= 1 && images.length <= 16)) throw new Error('contact sheets contain 1-16 images');
   const layout = SHEET_LAYOUTS[layoutName];
+  const { label } = layout;
   const cols = Math.max(1, Math.min(columns, images.length));
   const rows = Math.ceil(images.length / cols);
+  const maxTextWidth = layout.width - 2 * label.inset - 2 * label.pad;
+  const lines = images.map((_, index) => wrapLabel(tileLabel(index, labels[index]), maxTextWidth, label.scale));
+  const strip = label.strip ? labelBlockHeight(Math.max(...lines.map((item) => item.length)), label) : 0;
+  const tileHeight = layout.height + strip;
   const width = cols * layout.width;
-  const height = rows * layout.height;
-  const { label } = layout;
-  const labelHeight = 5 * label.scale + 2 * label.pad;
+  const height = rows * tileHeight;
   const pixels = Buffer.alloc(width * height * 4);
   for (let index = 0; index < images.length; index += 1) {
     const x0 = (index % cols) * layout.width;
-    const y0 = Math.floor(index / cols) * layout.height;
+    const y0 = Math.floor(index / cols) * tileHeight;
     layout.views.forEach((view, slot) => {
       const tile = viewNearest(images[index], view, layout.view, layout.views.length === 1);
       for (let y = 0; y < layout.view; y += 1) {
@@ -261,7 +323,8 @@ export function makeContactSheet(images, columns = 4, layoutName = 'full') {
         tile.copy(pixels, target, y * layout.view * 4, (y + 1) * layout.view * 4);
       }
     });
-    paintLabel(pixels, width, height, x0 + label.left, y0 + layout.height - labelHeight - label.bottom, tileId(index), label.scale, label.pad);
+    const labelTop = label.strip ? y0 + layout.height : y0 + layout.height - labelBlockHeight(lines[index].length, label) - label.inset;
+    paintLabel(pixels, width, height, x0 + label.inset, labelTop, lines[index], label);
   }
   // One encode for the finished sheet, not one per card.
   return { webp: encodeLosslessWebp(width, height, pixels), width, height };

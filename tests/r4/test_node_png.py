@@ -60,3 +60,51 @@ process.stdout.write(JSON.stringify(inputs.map((item) => decodeRgbaPng(Buffer.fr
     decoded = [base64.b64decode(item) for item in json.loads(result.stdout)]
     for payload, pixels_out in zip(images, decoded, strict=True):
         assert decode_rgba_png(payload).pixels == pixels_out == pixels
+
+
+def _run_png_module(body: str) -> object:
+    script = f"import * as png from {json.dumps((ROOT / 'mcp-node/png.mjs').as_uri())};\n{body}"
+    result = subprocess.run([str(NODE), "--input-type=module", "-e", script], capture_output=True, check=True)
+    return json.loads(result.stdout)
+
+
+def test_tile_labels_name_the_block_and_wrap_after_underscores() -> None:
+    if not NODE.is_file():
+        pytest.skip("Node 24 is unavailable")
+    labels = _run_png_module("""process.stdout.write(JSON.stringify({
+  plain: png.tileLabel(2, 'minecraft:snow_block'),
+  bare: png.tileLabel(0),
+  other: png.tileLabel(0, 'other:thing'),
+  wide: png.wrapLabel(png.tileLabel(4, 'minecraft:waxed_weathered_cut_copper_stairs'), 248, 2),
+  narrow: png.wrapLabel(png.tileLabel(1, 'minecraft:polished_blackstone_pressure_plate'), 124, 2),
+  unbroken: png.wrapLabel('T01 abcdefghijklmnopqrstuvwxyz', 60, 2),
+  unbrokenWidths: png.wrapLabel('T01 abcdefghijklmnopqrstuvwxyz', 60, 2).map((line) => png.textWidth(line, 2)),
+}));""")
+    assert labels["plain"] == "T03 snow_block"
+    assert labels["bare"] == "T01"
+    assert labels["other"] == "T01 other:thing"
+    assert labels["wide"] == ["T05 waxed_weathered_cut_", "copper_stairs"]
+    assert labels["narrow"] == ["T02 polished_", "blackstone_", "pressure_plate"]
+    # A word wider than the line is split mid-word; no text is dropped.
+    assert "".join(labels["unbroken"]).replace(" ", "") == "T01abcdefghijklmnopqrstuvwxyz"
+    assert len(labels["unbroken"]) > 2 and max(labels["unbrokenWidths"]) <= 60
+
+
+def test_contact_sheet_labels_differ_by_block_and_keep_full_cards_square() -> None:
+    if not NODE.is_file():
+        pytest.skip("Node 24 is unavailable")
+    sheets = _run_png_module("""const image = { width: 512, height: 512, pixels: Buffer.alloc(512 * 512 * 4, 0x80) };
+const size = (sheet) => [sheet.width, sheet.height];
+const bytes = (sheet) => Buffer.from(sheet.webp).toString('base64');
+process.stdout.write(JSON.stringify({
+  full: size(png.makeContactSheet([image, image], 4, 'full', ['minecraft:waxed_weathered_cut_copper_stairs', 'minecraft:stone'])),
+  compactShort: size(png.makeContactSheet([image, image], 4, 'compact', ['minecraft:stone', 'minecraft:glass'])),
+  compactLong: size(png.makeContactSheet([image, image], 4, 'compact', ['minecraft:stone', 'minecraft:polished_blackstone_pressure_plate'])),
+  stone: bytes(png.makeContactSheet([image], 4, 'full', ['minecraft:stone'])),
+  glass: bytes(png.makeContactSheet([image], 4, 'full', ['minecraft:glass'])),
+}));""")
+    assert sheets["full"] == [512, 256]
+    # One 14px line (12px text + 2px padding each side) vs three wrapped lines.
+    assert sheets["compactShort"] == [256, 64 + 16]
+    assert sheets["compactLong"] == [256, 64 + 44]
+    assert sheets["stone"] != sheets["glass"]

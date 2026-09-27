@@ -326,18 +326,20 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
             assert _pixel(sheet, index * CARD + 128, 128) == _pixel(preview, 256, 256)
             label = _pixel(sheet, index * CARD + 7, CARD - 5)
             assert label == bytes([0x18, 0x18, 0x18, 0xFF]), "T-label backing must be drawn inside its 256px card"
-        # compact: isometric and top views at 64px side by side per 128x64 tile.
+        # compact: isometric and top views at 64px side by side per 128x64 tile,
+        # labels in a strip below; "T01 yellow_carpet" wraps to two lines (30px).
         compact = call(send, 29, "search_blocks", {"keywords": ["yellow", "stone", "glass"], "image": "compact"})
         Draft202012Validator(load_schema(SCHEMAS["search_blocks"])).validate(compact["structuredContent"])
         assert compact["structuredContent"]["candidates"] == ranked_data["candidates"]
-        assert compact["structuredContent"]["images"] == [{"content_index": 1, "mime_type": "image/webp", "width": 384, "height": 64, "columns": 3}]
+        assert compact["structuredContent"]["images"] == [{"content_index": 1, "mime_type": "image/webp", "width": 384, "height": 94, "columns": 3}]
         [small] = result_images(compact)
-        assert (small.width, small.height) == (384, 64)
+        assert (small.width, small.height) == (384, 94)
         for index, candidate in enumerate(ranked_data["candidates"]):
             preview = decode_rgba_png((fixture.release / f"previews/minecraft/{candidate['block_id'].removeprefix('minecraft:')}/preview.png").read_bytes())
             assert _pixel(small, index * 128 + 40, 20) == _pixel(preview, 160, 80)
             assert _pixel(small, index * 128 + 64 + 40, 20) == _pixel(preview, 256 + 160, 256 + 80)
-            assert _pixel(small, index * 128 + 2, 64 - 3) == bytes([0x18, 0x18, 0x18, 0xFF])
+            assert _pixel(small, index * 128 + 63, 63) == _pixel(preview, 255, 255), "the label strip must not cover the views"
+            assert _pixel(small, index * 128 + 1, 64 + 1) == bytes([0x18, 0x18, 0x18, 0xFF])
         # none: the same candidates and no image content.
         bare = call(send, 30, "search_blocks", {"keywords": ["yellow", "stone", "glass"], "image": "none"})
         assert bare["structuredContent"] == {"candidates": ranked_data["candidates"], "images": []}
