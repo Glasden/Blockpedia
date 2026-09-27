@@ -29,7 +29,6 @@ EXPECTED_PROJECT_DEPS = {
     "jsonschema==4.26.0",
     "httpx==0.28.1",
     "keyring==25.7.0",
-    "mcp==2.0.0",
 }
 EXPECTED_PACKAGE_DATA = {
     "sql/*.sql",
@@ -207,7 +206,7 @@ def _check_cli(root: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
                     continue
             host_port_rejected = False
         source = __import__("inspect").getsource(cli._run_web)
-        passed = choices == {"web", "mcp"} and host_port_rejected and cli.WEB_HOST == "127.0.0.1" and cli.WEB_PORT == 8765 and "access_log=False" in source
+        passed = choices == {"web"} and host_port_rejected and cli.WEB_HOST == "127.0.0.1" and cli.WEB_PORT == 8765 and "access_log=False" in source
         if not passed:
             issues.append(_issue("CLI_CONTRACT_INVALID", "CLI command or loopback contract is invalid."))
         return _check("passed" if passed else "failed"), issues

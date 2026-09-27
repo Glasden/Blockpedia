@@ -1,4 +1,4 @@
-"""The two supported Blockpedia product commands."""
+"""The local Blockpedia Studio command."""
 
 from __future__ import annotations
 
@@ -27,9 +27,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     web_parser.set_defaults(handler=_run_web)
 
-    mcp_parser = subparsers.add_parser("mcp", help="start the read-only MCP stdio server")
-    mcp_parser.add_argument("--data-root", default=None, help="override the local data root")
-    mcp_parser.set_defaults(handler=_run_mcp)
     return parser
 
 
@@ -38,13 +35,6 @@ def _run_web(args: argparse.Namespace) -> int:
 
     app = create_app(data_root=args.data_root)
     uvicorn.run(app, host=WEB_HOST, port=WEB_PORT, log_level=args.log_level, access_log=False)
-    return 0
-
-
-def _run_mcp(args: argparse.Namespace) -> int:
-    from .mcp_server import run_stdio
-
-    run_stdio(args.data_root)
     return 0
 
 

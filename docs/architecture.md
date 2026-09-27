@@ -27,11 +27,11 @@ release 构建后独立于 workspace。发布只改变 current，回滚指向另
 
 ## 技术与运行边界
 
-现有 Minecraft Java 26.2、Java 25、Fabric Loader 0.19.3、Fabric API 0.157.0+26.2、Loom 1.17.19、Gradle 9.5.1、CPython 3.14.7 基线保留。26.2 使用 native Mojang names；Python 栈继续使用 FastAPI/Jinja2/HTMX、SQLite、本地文件和进程内 Worker。不增加服务、队列、迁移框架或依赖。
+现有 Minecraft Java 26.2、Java 25、Fabric Loader 0.19.3、Fabric API 0.157.0+26.2、Loom 1.17.19、Gradle 9.5.1、CPython 3.14.7 基线保留。26.2 使用 native Mojang names；Python 栈继续使用 FastAPI/Jinja2/HTMX、SQLite、本地文件和进程内 Worker。MCP 使用单独锁定的 Node SDK 和内置 SQLite；不增加常驻服务、队列或迁移框架。
 
-产品 CLI 只有 block-index web 和 block-index mcp。Web 只绑定 127.0.0.1:8765，写操作由 WebUI 发起；MCP 只有 stdio 和既有四工具。一个 data-root 仅允许一个可写 Studio；其他进程可以只读 MCP。
+Python 产品 CLI 只有 `block-index web`。Web 只绑定 127.0.0.1:8765，写操作由 WebUI 发起；Node MCP 由客户端以 stdio 启动并保留既有四工具。一个 data-root 仅允许一个可写 Studio；其他进程可以只读 MCP。
 
-正式支持目标仍为 Windows 11 x86_64 和 Linux x86_64。开发机上的其他平台验证不扩大支持范围，也不替代缺失的平台实测。
+产品既有正式目标仍为 Windows 11 x86_64 和 Linux x86_64；本次 Node MCP 交付范围按 D-055 限于 Windows AMD64 与 Linux ARM64。其他平台的兼容性须单独验证。
 
 ## 数据与提交点
 

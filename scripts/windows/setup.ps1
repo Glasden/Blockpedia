@@ -655,7 +655,7 @@ function Invoke-RepoPythonSmoke {
     try {
         Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
         Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-        $code = "import sys; sys.path.insert(0,sys.argv[1]); sys.path.insert(0,sys.argv[2]); from blockpedia.cli import build_parser; p=build_parser(); assert set(next(a for a in p._actions if a.__class__.__name__ == '_SubParsersAction').choices) == {'web', 'mcp'}"
+        $code = "import sys; sys.path.insert(0,sys.argv[1]); sys.path.insert(0,sys.argv[2]); from blockpedia.cli import build_parser; p=build_parser(); assert set(next(a for a in p._actions if a.__class__.__name__ == '_SubParsersAction').choices) == {'web'}"
         Invoke-Checked -FilePath $script:VenvPython -Arguments @("-I", "-c", $code, (Join-Path $script:RepoRoot "src"), $script:RepoRoot) -Description "import/CLI parser smoke"
     }
     finally {

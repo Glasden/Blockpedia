@@ -25,6 +25,6 @@ API Key 使用 OS Keyring 或读取环境变量，Keyring 优先。Keyring 服�
 
 取消本地业务数据的篡改检测不等于取消下载依赖的精确锁。继续按 requirements.lock 和 Gradle 依赖配置验证下载输入；开发机所需平台产物的新增记录须明确说明来源与验证范围，不把开发机验证说成正式跨平台发布验收。
 
-依赖锁按消费边界分开：Studio/WebUI 使用 `requirements.lock`；[从源码构建的 MCP 启动器](mcp-api.md) 使用 `requirements-mcp.lock`，只含 MCP 进程实际导入的依赖，不含 `keyring`/`SecretStorage`/`jeepney` 等凭据存储包，因为 MCP 运行时不初始化 provider、不读取 Keyring。两个 lock 都是精确 hash 锁，各自使用 `pip install --require-hashes` 安装，不合并、不互相回退。
+依赖锁按消费边界分开：Studio/WebUI 使用 `requirements.lock` 和 `pip install --require-hashes`；[Node MCP](mcp-api.md) 使用 `mcp-node/package-lock.json` 和 `npm ci --ignore-scripts`。MCP 运行时不初始化 provider、不读取 Keyring，Node 包不安装 Python Studio 的凭据依赖。
 
 MCP stdout 只输出协议，诊断写 stderr，不写数据根或本地日志。发布审计是 WebUI 的职责，位于 logs 下的单个追加文件，不能写回 release。

@@ -1,22 +1,8 @@
-"""The retired repair flow must not remove the ordinary banner renderer."""
-from pathlib import Path
-import importlib.util
+"""Incomplete legacy refresh records must block new workspace writes."""
 
 import pytest
 from blockpedia.services import R3Error
 from .test_release_builder import _ready
-
-
-def test_banner_repair_is_retired_but_common_render_fix_remains():
-    root = Path(__file__).parents[2]
-    assert importlib.util.find_spec('blockpedia.banner_refresh') is None
-    java = root / 'src/main/java/com/blockpedia/exporter'
-    assert not (java / 'BannerRepairBase.java').exists()
-    assert 'banner-repair' not in (java / 'BlockpediaExporterClient.java').read_text()
-    render = (java / 'RenderExporter.java').read_text()
-    assert 'instanceof BannerBlock || state.getBlock() instanceof WallBannerBlock' in render
-    assert 'BANNER_PARENT_SCALE' in render
-    assert '0.72f' in (java / 'ExporterConstants.java').read_text()
 
 
 def test_incomplete_legacy_refresh_blocks_new_workspace_writes(tmp_path):

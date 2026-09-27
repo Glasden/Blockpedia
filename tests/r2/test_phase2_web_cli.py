@@ -30,12 +30,16 @@ def _subparsers(parser: argparse.ArgumentParser) -> argparse._SubParsersAction:
     return action
 
 
-def test_cli_exposes_only_web_and_mcp() -> None:
+def test_python_cli_is_web_only(capsys: pytest.CaptureFixture[str]) -> None:
     parser = cli.build_parser()
-    assert set(_subparsers(parser).choices) == {"web", "mcp"}
+    assert set(_subparsers(parser).choices) == {"web"}
     for command in FORBIDDEN_COMMANDS:
         with pytest.raises(SystemExit):
             parser.parse_args([command])
+    with pytest.raises(SystemExit) as error:
+        cli.main(["mcp"])
+    assert error.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_cli_rejects_frozen_host_and_port_options() -> None:
@@ -64,21 +68,6 @@ def test_cli_web_uses_fixed_loopback_even_with_host_port_environment(monkeypatch
     assert created == {"data_root": str(tmp_path)}
     assert len(uvicorn_calls) == 1
     assert uvicorn_calls[0][1] == {"host": "127.0.0.1", "port": 8765, "log_level": "debug", "access_log": False}
-
-
-def test_cli_mcp_runs_stdio_without_cli_output(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from blockpedia import mcp_server
-
-    calls: list[str | None] = []
-    monkeypatch.setattr(mcp_server, "run_stdio", lambda data_root: calls.append(data_root))
-
-    assert cli.main(["mcp", "--data-root", str(tmp_path)]) == 0
-    assert calls == [str(tmp_path)]
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == ""
 
 
 def test_pyproject_declares_script_and_local_assets() -> None:

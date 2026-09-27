@@ -35,4 +35,4 @@ MCP 仍只有 stdio 的 index_info、search_blocks、get_block_details、compare
 
 不增加服务、队列、向量数据库、provider 类型、通用迁移、公开部署、账号、CORS/CSRF、安装包、容器或自动更新。不记录 Token usage、费用或预算；黄金查询与相关性调优不作为本轮完成门。
 
-WebUI 只绑定 127.0.0.1:8765；Python 产品 CLI 只有 web 与 mcp。真实导出、原版资产、索引、预览、人工本地数据和秘密不进入公共仓库。既有 provider 的授权、协议和重试预算保持。
+WebUI 只绑定 127.0.0.1:8765；Python 产品 CLI 只有 web，MCP 由客户端以 Node stdio 子进程启动。真实导出、原版资产、索引、预览、人工本地数据和秘密不进入公共仓库。既有 provider 的授权、协议和重试预算保持。

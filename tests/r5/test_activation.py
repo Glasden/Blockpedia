@@ -1,5 +1,4 @@
 from __future__ import annotations
-import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -26,7 +25,14 @@ def test_real_http_build_publish_without_workspace_and_rollback(tmp_path):
             response = client.post('/api/releases/build', json=first_body)
             assert response.status_code == 201, response.text
             first = response.json()['data']
+            run_page = client.get('/runs/' + run_id)
+            assert run_page.status_code == 200
+            assert 'data-release-candidate data-build-complete="true"' in run_page.text
+            assert 'data-new-build' in run_page.text
             assert client.post('/api/releases/build', json=first_body).status_code == 200
+            assert not service.data_root.current.exists()
+            invalid = client.post('/api/releases/publish', json={**_body(first['release_id']), 'confirm': False})
+            assert invalid.status_code == 422
             assert not service.data_root.current.exists()
             published = client.post('/api/releases/publish', json=_body(first['release_id']))
             assert published.status_code == 200, published.text
@@ -49,6 +55,20 @@ def test_real_http_build_publish_without_workspace_and_rollback(tmp_path):
             assert rolled.status_code == 200, rolled.text
             assert rolled.json()['data']['current']['versions']['26.2']['release_id'] == first['release_id']
             assert before == {p.relative_to(release): p.read_bytes() for p in release.rglob('*') if p.is_file()}
+    finally:
+        service.close()
+
+
+def test_invalid_build_receipt_fails_closed_without_leaking_path(tmp_path, monkeypatch):
+    service, run_id = _ready(tmp_path)
+    try:
+        build_id = 'build_' + 'a' * 32
+        built = service.build_candidate_release(run_id, '26.2', build_id)
+        monkeypatch.setattr(service, 'build_candidate_release', lambda *_args: {**built, 'relative_path': '/private/path'})
+        with TestClient(create_app(service=service, start_worker=False)) as client:
+            response = client.post('/api/releases/build', json={'run_id': run_id, 'minecraft_version': '26.2', 'release_build_id': build_id})
+            assert response.status_code == 500
+            assert '/private/path' not in response.text
     finally:
         service.close()
 
@@ -90,8 +110,7 @@ def test_publication_commit_point_and_audit_recovery(tmp_path, point):
 
 
 def test_mcp_stdio_reads_new_build_and_observes_next_pointer(tmp_path):
-    from tests.r4.test_mcp_stdio import _session, _initialize
-    from blockpedia.mcp_query import MCPQueryService
+    from tests.r4.test_node_mcp import call, node_session
     export = make_two_visual_export(tmp_path, _r2_fixture_module())
     service, run_id = _ready(tmp_path, export_path=export)
     try:
@@ -100,17 +119,15 @@ def test_mcp_stdio_reads_new_build_and_observes_next_pointer(tmp_path):
         before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
         calls = [('index_info', {}), ('search_blocks', {'keywords': ['stone']}),
                  ('get_block_details', {'block_id': 'minecraft:stone'}), ('compare_blocks', {'block_ids': ['minecraft:stone', 'minecraft:glass']})]
-        messages = _initialize() + [{'jsonrpc':'2.0','id':index + 2,'method':'tools/call','params':{'name': name,'arguments':arguments}} for index,(name,arguments) in enumerate(calls)]
-        responses, stderr, code = asyncio.run(_session(tmp_path, messages))
-        assert code == 0, stderr
-        assert all(not response.get('error') and not response.get('result', {}).get('isError') for response in responses)
-        assert before == {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
-        query = MCPQueryService(service.data_root)
-        assert query.index_info()['resolved_release_id'] == first['release_id']
-        second = service.build_candidate_release(run_id, '26.2', 'build_' + 'b' * 32)
-        _, token = service.activation.current()
-        service.publish_release(**_body(second['release_id'], token))
-        assert query.index_info()['resolved_release_id'] == second['release_id']
+        with node_session(tmp_path) as send:
+            for index, (name, arguments) in enumerate(calls, start=2):
+                assert call(send, index, name, arguments)['isError'] is False
+            assert before == {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+            assert call(send, 6, 'index_info', {})['structuredContent']['resolved_release_id'] == first['release_id']
+            second = service.build_candidate_release(run_id, '26.2', 'build_' + 'b' * 32)
+            _, token = service.activation.current()
+            service.publish_release(**_body(second['release_id'], token))
+            assert call(send, 7, 'index_info', {})['structuredContent']['resolved_release_id'] == second['release_id']
     finally:
         service.close()
 

@@ -2,7 +2,7 @@
 
 ## 文档状态、优先级与关联规范
 
-本文定义 `block-index mcp` 的 stdio 进程、release 解析、四个且仅四个工具、只读边界和说明性响应示例。精确 input/output 字段形状唯一由 `schemas/mcp/` 下的真实 Schema 文件拥有；本文示例不构成重复的穷举规范。正文使用简体中文；MCP 方法、字段名、Schema 标识、状态、错误码和命令保持英文。MCP 当前输出 Schema ID 固定为 `mcp-index-info-output.v1`、`mcp-search-blocks-output.v1`、`mcp-block-details-output.v1`、`mcp-compare-blocks-output.v1`，错误可共享 `mcp-error.v1`。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 为规范性关键字。
+本文定义 `mcp-node/server.mjs` 的 stdio 进程、release 解析、四个且仅四个工具、只读边界和说明性响应示例。精确 input/output 字段形状唯一由 `schemas/mcp/` 下的真实 Schema 文件拥有；本文示例不构成重复的穷举规范。正文使用简体中文；MCP 方法、字段名、Schema 标识、状态、错误码和命令保持英文。MCP 当前输出 Schema ID 固定为 `mcp-index-info-output.v1`、`mcp-search-blocks-output.v1`、`mcp-block-details-output.v1`、`mcp-compare-blocks-output.v1`，错误可共享 `mcp-error.v1`。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 为规范性关键字。
 
 本文服从 [`../AGENTS.md`](../AGENTS.md)、[`roadmap.md`](roadmap.md)、[`decisions.md`](decisions.md) 和 [`architecture.md`](architecture.md)，并与 [`product-scope.md`](product-scope.md) 保持一致。原始稿 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 仅作历史背景和最低优先级参考，不与本契约一起执行；冲突内容禁止实现。检索语义见 [`search-and-ranking.md`](search-and-ranking.md)，provider 规则见 [`openai-provider.md`](openai-provider.md)，数据和发布边界见 [`data-and-schemas.md`](data-and-schemas.md)、[`export-contract.md`](export-contract.md) 与 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)，发布门见 [`quality-and-testing.md`](quality-and-testing.md)，WebUI 写边界见 [`webui-and-operations.md`](webui-and-operations.md)，安全边界见 [`security-and-distribution.md`](security-and-distribution.md)。
 
@@ -10,28 +10,15 @@
 
 ### 1.1 唯一传输和命令
 
-MVP 的 MCP 只能由以下 Python 命令启动：
+MCP 客户端启动 Node 24.14.0 或更新的 24.x 进程：
 
 ```text
-block-index mcp [--data-root <path>]
+node mcp-node/server.mjs [--data-root <path>]
 ```
 
-以下是非特定客户端的说明性配置形状；`<local-data-root>` 只是用户本地数据根占位符：
+仓库根目录的 `mcp-node` 使用 `package-lock.json` 通过 `npm ci` 安装依赖。当前迁移只覆盖 Windows AMD64 与 Linux ARM64；Studio 的 Python WebUI 与构建/发布流程继续独立运行。省略 `--data-root` 时使用现有平台默认数据根，亦可通过 `BLOCKPEDIA_DATA_ROOT` 指定。
 
-```json
-{
-  "mcpServers": {
-    "blockpedia": {
-      "command": "block-index",
-      "args": ["mcp", "--data-root", "<local-data-root>"]
-    }
-  }
-}
-```
-
-使用现有默认数据根时，可省略 `--data-root` 及其参数。该示例不引入额外命令、host/port、HTTP 或 transport selector。
-
-进程 **MUST** 只使用 `stdio` JSON-RPC/MCP transport。MVP **MUST NOT** 提供 Streamable HTTP、HTTP endpoint、MCP `resources`、MCP `prompts`、任意 SQL、任意文件读取、写入工具、索引修改工具或 provider 配置工具。Python 产品命令完整边界见 [`webui-and-operations.md`](webui-and-operations.md)；不得新增 `block-index search`、`block-index publish` 等命令。
+进程 **MUST** 只使用 `stdio` JSON-RPC/MCP transport，只提供四个只读工具。客户端通过配置的 `command` 和 `args` 启动子进程，不需要人工先启动脚本。没有 HTTP endpoint、resources、prompts、任意 SQL、文件读取、写入工具、索引修改工具或 provider 配置工具。
 
 stdout 从首字节开始 **MUST** 只输出 MCP 协议 JSON-RPC 消息；日志、诊断、堆栈、启动提示和调试信息 **MUST** 只输出 stderr，**MUST NOT** 写 data-root `logs/`、cache、临时文件或其他本地持久化位置。进程不能把图片 base64 直接写成独立 stdout 行，图片只能作为协议响应 content。
 
@@ -411,7 +398,7 @@ JSON-RPC/MCP 协议错误表示请求没有正确调用工具，使用标准 `er
 
 ## 9. 只读和 stdout 验收
 
-必须以子进程执行 `block-index mcp` 和原创 fixture 检查：
+必须以子进程执行 `node mcp-node/server.mjs` 和原创 fixture 检查：
 
 1. `tools/list` 严格只有四个工具；不存在 HTTP、resources、任意 SQL/文件写入接口；每个 advertised `outputSchema` 是成功 Schema 与 `mcp-error.v1` 的 strict `oneOf`，不新增 Schema ID。
 2. 每行 stdout 可独立解析为 JSON-RPC/MCP 消息；stderr 可有诊断但不进入 stdout。
@@ -421,53 +408,22 @@ JSON-RPC/MCP 协议错误表示请求没有正确调用工具，使用标准 `er
 6. `search_blocks`/`compare_blocks` 返回稳定编号 PNG 联系表 ImageContent；`get_block_details` 返回四视角 PNG；`index_info` 无图片；PNG 只在实际响应需要时按需读取。
 7. 图片 metadata 含 ID、MIME、尺寸、hash、purpose、content index 和映射，不含绝对路径；mapping 与 PNG 联系表、结构候选 100% 一致。
 8. MCP 不初始化/调用 provider，不读取 Keyring、active profile 或 provider snapshot；candidate 始终为 local，`reranked_by_llm=false`。
-9. focused fixture 只验证 pointer/default/显式版本切换、路径逃逸/明显链接或 reparse 拒绝、指定 index/按需 PNG 的读取失败 fail closed、keywords strict input、outputSchema strict `oneOf`、parity、snapshot refresh、event-loop isolation 和 zero writes；不以 fixture 声称 MCP 运行时验证 v2/index format、manifest/checksum/schema/quality/PNG 全量完整性。缺少真实本地 release 只能报告 `SKIPPED_LOCAL_RELEASE_MISSING`，不得伪造通过。
+9. focused fixture 验证 pointer/default/显式版本切换、路径逃逸/明显链接或 reparse 拒绝、指定 index/按需 PNG 的读取失败 fail closed、keywords strict input、outputSchema strict `oneOf`、四工具结果、snapshot refresh 和 zero writes；不以 fixture 声称 MCP 运行时验证 v2/index format、manifest/checksum/schema/quality/PNG 全量完整性。缺少真实本地 release 只能报告 `SKIPPED_LOCAL_RELEASE_MISSING`，不得伪造通过。
 
-## 10. 从源码构建 MCP
+## 10. Node MCP 安装与客户端启动
 
-[build_mcp.py](../tools/build_mcp.py) 从**已提交的 HEAD** 构建平台本地 MCP 入口。构建机需要 Git 和 CPython `3.14.7`；脚本只打包 `src/blockpedia`、`schemas`、`requirements-mcp.lock`，新建 venv，以 `--require-hashes --only-binary` 安装，并实际完成 stdio `initialize`/`tools/list` 冒烟。构建不使用 Node、wheel 构建后端或服务进程。
+在 `mcp-node/` 运行 `npm ci --ignore-scripts`，使用 Node 24.14.0 或更新的 24.x，并将仓库保持在稳定的绝对路径。`package-lock.json` 固定 MCP SDK 及其传递依赖；Node 运行时使用内置 `node:sqlite` 以只读方式打开发布索引。Studio 使用原有 `requirements.lock`。当前支持 Windows AMD64 和 Linux ARM64。Windows Node 24.14.0 会在 stderr 提示 SQLite 为实验性模块，stdout 仍只含 MCP 协议。
 
-从仓库根目录执行（`--data-root` 可省略；提供时必须是已存在的数据根）：
-
-```powershell
-# Windows AMD64
-python tools\build_mcp.py --python "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe" --data-root "D:\Code\blockpedia\run\blockpedia-data"
-```
-
-```bash
-# 分别在 Linux x86_64 与 Linux aarch64 机器上执行
-python3.14 tools/build_mcp.py --data-root /path/to/blockpedia-data
-```
-
-产物位于 `build/mcp/<commit前12位>-<平台>/`，其中有独立的 `venv/`、源码与 Schema 快照 `source/`、`bootstrap.py`、`revision.json`；Linux 另有 `blockpedia-mcp.sh`。已有同名产物不会被覆盖；需要重建时使用另一输出根 `--out-root`，或自行处理旧构建目录。venv 不能跨操作系统、CPU 架构或机器复制。
-
-当前 ARM64 宿主机若没有 CPython 3.14.7，可在同架构 Docker 容器中构建并运行，保持产物在容器内使用：
-
-```bash
-mkdir -p build/mcp
-docker run --rm --platform linux/arm64 --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -v "$PWD:/src:ro" -v "$PWD/build/mcp:/out" -w /src python:3.14.7 \
-  python tools/build_mcp.py --python /usr/local/bin/python --out-root /out
-docker run --rm -i --platform linux/arm64 \
-  -v "$PWD/build/mcp/<commit前12位>-linux-aarch64:/artifact:ro" \
-  -v "/absolute/blockpedia-data:/data:ro" \
-  python:3.14.7 /artifact/blockpedia-mcp.sh --data-root /data
-```
-
-若当前提交的产物已构建，直接运行第二条命令。将它拆为 MCP 客户端的 `command=docker` 与 `args` 即可按客户端连接启动。保留 `-i`，不要使用分配终端的 `-t`；`--rm` 在连接结束后清理容器。宿主机必须能访问所选数据根；Windows 显卡机的本地路径不会自动出现在 ARM64 主机。
-
-把产物启动器配置为 MCP 客户端的 stdio 命令，传入已发布数据所在的 `--data-root`。例如 Linux 客户端：
+客户端配置把 Node 可执行文件作为 `command`，把 `server.mjs`、`--data-root` 和绝对数据根路径作为 `args`。Windows AMD64 示例：
 
 ```json
-{"mcpServers":{"blockpedia":{"command":"/absolute/build/mcp/<版本>-linux-aarch64/blockpedia-mcp.sh","args":["--data-root","/absolute/blockpedia-data"]}}}
+{"mcpServers":{"blockpedia":{"command":"C:\\Program Files\\nodejs\\node.exe","args":["D:\\Code\\Blockpedia\\mcp-node\\server.mjs","--data-root","D:\\Code\\Blockpedia\\run\\blockpedia-data"]}}}
 ```
 
-Windows 客户端直接启动产物中的 `venv\Scripts\python.exe`，参数依次为 `-I`、`bootstrap.py` 的绝对路径、`--data-root`、数据根绝对路径。例如：
+Linux ARM64 示例：
 
 ```json
-{"mcpServers":{"blockpedia":{"command":"D:\\Code\\blockpedia\\build\\mcp\\<版本>-windows-x86_64\\venv\\Scripts\\python.exe","args":["-I","D:\\Code\\blockpedia\\build\\mcp\\<版本>-windows-x86_64\\bootstrap.py","--data-root","D:\\Code\\blockpedia\\run\\blockpedia-data"]}}}
+{"mcpServers":{"blockpedia":{"command":"/absolute/node-v24/bin/node","args":["/absolute/Blockpedia/mcp-node/server.mjs","--data-root","/absolute/blockpedia-data"]}}}
 ```
 
-直接传递 argv，不经 `cmd.exe` 或批处理展开路径。客户端负责启动并在连接结束时关闭 stdio 子进程。
-
-`revision.json` 标识**程序源码提交**，`current.json` 标识**已发布的数据 release**。两者独立：切换数据 release 无需重建程序，MCP 下一请求读取新指针。MCP 专属锁不含 Keyring、`SecretStorage` 或 `jeepney`；Studio 离线 AI 仍使用原有 `requirements.lock`。构建冒烟只证明协议启动与四工具声明，真实查询应在目标平台对已发布数据或测试 fixture 验证。本轮已实测 Windows AMD64 和 Linux aarch64；Linux x86_64 运行验收按用户要求暂缓。
+路径应替换为本机实际位置。配置完成后由 MCP 客户端自动启动和关闭进程；直接在普通终端运行会等待 stdio 输入。切换 `current.json` 后，MCP 下一次查询读取新指针，不需要重启或重建 Node 程序。Node 不读取工作区、provider 凭据或可变审核状态。运行时路径检查和必要的 PNG 解码保留；已取消的本地篡改检测不会在 Node 实现中恢复。

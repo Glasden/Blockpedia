@@ -1,5 +1,9 @@
 # 冻结决策记录
 
+## D-055：MCP 独立 Node 运行时（2026-09-27 owner-approved）
+
+MCP 只读查询与 stdio 入口迁移到 Node，Python Studio 继续构建、发布和回滚同一份 release。客户端直接启动 `mcp-node/server.mjs`；本轮限定 Windows AMD64 与 Linux ARM64。四工具、Schema、只读边界和 release 数据格式保持。D-021 的 Python MCP 命令和 Python MCP 专属依赖已由本决定替代；历史证据仍按原日期理解。Windows 实机验收须单独记录。
+
 ## D-054：导出到构建事实闭环重构（2026-09-26 owner-approved）
 
 用户已批准实施 [重构规格](export-build-refactor-spec.md)，要求阶段性提交，并明确取消本地数据篡改检测、移除 banner 专用 repair/refresh，保留普通导出的公共 banner 渲染修复。该规格是本轮目标规则；下文及其他设计文档与其冲突的 checksum/快照证明、阶段副本、check 许可证、双 release 发布门和日常 MCP smoke 要求成为历史记录，不再作为实施前置条件。历史实测和人工数据不改写，也不据此宣称重构已经完成。
@@ -39,7 +43,7 @@
 | D-018 | candidate-build gate 与 activation gate 分离 | candidate-build gate 只检查内容完整性，不含 MCP smoke、`TWO_INDEPENDENT_RELEASES` 或 current 切换；R3 可构建至少一个未激活 candidate 供 R4 临时测试；R4 不激活生产 current；R5 先建至少两个独立 candidate，再以四工具 smoke、两个 release、原子 current 执行 activation gate，最后人工激活 |
 | D-019 | `current-pointer.v1` 严格顶层字段为 `schema_version`、`versions` map、`default_minecraft_version` 和 WebUI 激活/回滚时更新的 `updated_at` | MCP 省略版本时使用 default 对应 current，显式版本使用该版本 current；未知/未发布精确版本失败且不回退；MCP 不支持显式历史 `release_id` selector，历史切换只能由 WebUI rollback 完成 |
 | D-020 | `current.json` 是唯一当前指针，发布和回滚只能原子切换指针 | 只有 WebUI publish/rollback 写指针；回滚不修改历史 release 内容或删除审计证据 |
-| D-021 | Python 只提供 `block-index web` 和 `block-index mcp` | 导入、恢复、审核、发布、回滚不能新增 CLI 子命令，全部从 WebUI 操作 |
+| D-021 | Python 原提供 `block-index web` 和 `block-index mcp`（MCP 入口已由 D-055 supersede） | Python 保留 Web 入口；导入、恢复、审核、发布、回滚仍由 WebUI 操作 |
 | D-022 | WebUI 只绑定 `127.0.0.1:8765` | 不允许 `--host`、`--port` 或环境变量覆盖 host/port；启动 CLI 只能覆盖 data root、日志等级等非冻结项；不做账号、CORS、CSRF |
 | D-023 | stale 恢复必须由 WebUI 显式触发 | 启动只检测并展示 stale，不写回任务状态；`recover` 操作才可改变状态；成功任务不得重跑 |
 | D-024 | MCP 只使用 stdio 和四个工具 | 只允许 `index_info`、`search_blocks`、`get_block_details`、`compare_blocks`；无 Streamable HTTP、`resources`、任意 SQL 或写入 |

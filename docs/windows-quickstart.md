@@ -6,6 +6,8 @@
 2. setup 完成后双击 `scripts\windows\run.cmd`。
 3. 浏览器打开 `http://127.0.0.1:8765/`；run 会保留控制台日志，使用 `Ctrl+C` 停止。
 
+MCP 使用独立的 Node 入口，由 MCP 客户端按 [`mcp-api.md`](mcp-api.md#10-node-mcp-安装与客户端启动) 中的 Windows AMD64 配置自动启动；Studio 的 `setup.cmd` 只安装 Python WebUI 环境。Node MCP 首次使用前需安装 Node 24.14.0 或更新的 24.x，并在 `mcp-node` 目录运行一次 `npm ci --ignore-scripts`。
+
 脚本只支持 Windows AMD64，不请求管理员权限、不修改 `PATH`、文件关联、launcher 或系统服务，不生成 `block-index.exe`。官方 per-user installer 可能写入当前用户的安装/卸载元数据；脚本不会自行写注册表配置。默认 managed runtime、Python、venv、下载缓存和数据根彼此分离：
 
 ```text

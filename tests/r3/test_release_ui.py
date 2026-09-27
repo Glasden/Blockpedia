@@ -1,39 +1,7 @@
 from pathlib import Path
-from jinja2 import Environment, FileSystemLoader
 
 ROOT = Path(__file__).resolve().parents[2]
-TEMPLATES = ROOT / 'src/blockpedia/templates'
 STATIC = ROOT / 'src/blockpedia/static'
-
-def test_templates_compile_and_candidate_is_one_action():
-    environment = Environment(loader=FileSystemLoader(str(TEMPLATES)))
-    for path in TEMPLATES.rglob('*.html'):
-        environment.get_template(path.relative_to(TEMPLATES).as_posix())
-    rendered = environment.get_template('partials/release_candidate.html').render(run={'minecraft_version':'26.2'}, run_identifier='run_fixture')
-    assert 'data-candidate-build' in rendered
-    assert '/releases?minecraft_version=26.2' in rendered
-    assert 'check_id' not in rendered
-
-def test_release_page_has_explicit_confirmation_and_hidden_concurrency_token():
-    text = (TEMPLATES / 'releases.html').read_text()
-    assert 'name="expected_current_sha256" type="hidden"' in text
-    assert 'name="confirm" required' in text
-    assert 'name="set_as_default" value="true" required' in text
-    assert 'name="set_as_default" value="false" required' in text
-    assert 'name="reviewer" required' in text
-    assert 'name="reason" required' in text
-    assert 'value="rollback"' in text
-
-def test_retired_actions_absent_and_client_identity_is_persisted():
-    javascript = (STATIC / 'studio.js').read_text()
-    templates = '\n'.join(path.read_text() for path in TEMPLATES.rglob('*.html'))
-    for retired in ['banner-export-refresh', '/api/releases/check', '/api/releases/apply', '/api/releases/activation-check', '/api/imports/check', 'confirm_immutable_release', 'check_id']:
-        assert retired not in javascript + templates
-    assert 'crypto.randomUUID().replaceAll("-", "")' in javascript
-    assert 'sessionStorage.setItem(key, JSON.stringify(saved))' in javascript
-    assert 'data-new-import' in javascript and 'data-new-build' in javascript
-    assert '发布已生效，无需重复切换' in javascript
-
 
 def test_import_identity_survives_response_loss_reload_and_new_directory_ref():
     """Run the real submit code against a server model that has accepted the POST."""

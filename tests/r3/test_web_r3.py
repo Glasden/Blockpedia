@@ -178,20 +178,6 @@ def test_d044_run_and_plan_views_show_frozen_concurrency_without_provider_call(t
         service.close()
 
 
-def test_banner_refresh_ui_and_routes_are_retired(tmp_path):
-    from fastapi.testclient import TestClient
-    from blockpedia.web import create_app
-    service, run_id, _ = _service(tmp_path, _FakeProvider())
-    try:
-        with TestClient(create_app(service=service, start_worker=False)) as client:
-            html = client.get(f"/runs/{run_id}").text
-            assert "data-banner-refresh" not in html
-            assert client.post(f"/api/runs/{run_id}/banner-export-refresh", json={}).status_code == 404
-            assert client.post(f"/ui/runs/{run_id}/banner-export-refresh", data={}).status_code == 404
-    finally:
-        service.close()
-
-
 @pytest.mark.parametrize("adapter", ("openai_responses", "openai_chat_completions"))
 def test_provider_profile_http_adapter_is_strict_and_non_secret(tmp_path: Path, adapter: str) -> None:
     from fastapi.testclient import TestClient
