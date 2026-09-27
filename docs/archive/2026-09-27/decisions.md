@@ -1,3 +1,5 @@
+> 历史归档（2026-09-27）：停止维护，不再作为当前执行规范。当前决定与进度统一见 [PROGRESS.md](../../../PROGRESS.md)。正文只做归档链接修正，旧状态不代表本轮完成。
+
 # 冻结决策记录
 
 ## D-055：MCP 独立 Node 运行时（2026-09-27 owner-approved）
@@ -17,7 +19,7 @@ MCP 只读查询与 stdio 入口迁移到 Node，Python Studio 继续构建、�
 - **状态**：冻结，供实现和审查使用；具体文档正在语义修复/复审
 - **适用对象**：Blockpedia MVP 及其本地索引、WebUI、MCP 和发布流程
 
-本文件集中记录本次确认的决定及其直接后果，不为每一项另建 ADR。规范优先级见 [`../AGENTS.md`](../AGENTS.md)，执行顺序和证据状态见 [`roadmap.md`](roadmap.md)，产品边界见 [`product-scope.md`](product-scope.md)，组件边界见 [`architecture.md`](architecture.md)。移入的原始设计稿仅是历史背景和最低优先级参考，不能与新文档一起执行；冲突内容禁止实现。
+本文件集中记录本次确认的决定及其直接后果，不为每一项另建 ADR。规范优先级见 `../AGENTS.md`（历史引用，文件未随当前仓库保留），执行顺序和证据状态见 [`roadmap.md`](roadmap.md)，产品边界见 [`product-scope.md`](product-scope.md)，组件边界见 [`architecture.md`](architecture.md)。移入的原始设计稿仅是历史背景和最低优先级参考，不能与新文档一起执行；冲突内容禁止实现。
 
 ## 决定总表
 
@@ -113,7 +115,7 @@ candidate-build gate 不包含 MCP smoke、双 release 或 current 切换。R3 �
 
 ### 原始稿冲突处理
 
-移入 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 的原始稿必须字节不变，但只作为历史背景和最低优先级参考。其中允许多个 provider、Streamable HTTP、Token 统计、费用控制、黄金集验收和文档打包等旧内容不属于当前 MVP。实现必须遵循本文件、[`../AGENTS.md`](../AGENTS.md) 和 [`roadmap.md`](roadmap.md) 的收缩决定，而不是静默采用旧内容。
+移入 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 的原始稿必须字节不变，但只作为历史背景和最低优先级参考。其中允许多个 provider、Streamable HTTP、Token 统计、费用控制、黄金集验收和文档打包等旧内容不属于当前 MVP。实现必须遵循本文件、`../AGENTS.md`（历史引用，文件未随当前仓库保留） 和 [`roadmap.md`](roadmap.md) 的收缩决定，而不是静默采用旧内容。
 
 ## 未来重大变更规则
 
@@ -138,7 +140,7 @@ candidate-build gate 不包含 MCP smoke、双 release 或 current 切换。R3 �
 
 这是 owner 批准的**破坏性当前 v1 契约简化**，不是保留兼容的等价替换。`export_id` 就是最终导出目录名，格式为 `export_YYYYMMDDTHHMMSSZ`，同一秒冲突时仅追加 `_01` 至 `_99`；staging 使用 `.<export_id>.staging`，成功后只做一次到最终目录的原子 rename，不再保留第二个 opaque identity、随机 UUID 或 32 位十六进制身份。每个 R1 block 只有一个 default representative，`variant_id` 等于 `block_id`；render 目录由已登记 `block_id` 直接推导，unsafe segment 保留 Block/State 并写 machine skip，不做 sanitizer、slug registry、映射文件或兼容层。旧本地导出直接废弃并重导。
 
-R1 只在 manifest 保留 `logical_input_signature`、`render_input_signature` 以及 registry、resource、Schema 和 render-environment 证据，并保留 `checksums.sha256`。变体 render reference 只保留 preview、mask、render metadata 三个文件的 SHA-256，用于内容完整性而不参与身份或路径；`render.json` 只保留最小图片、视角、policy、fixture、tint 和 mask 语义 metadata，不重复环境或内容哈希。release 阶段由 [`AGENTS.md`](../AGENTS.md) 强制的 checksum/hash 语义不受本次 R1 简化影响。
+R1 只在 manifest 保留 `logical_input_signature`、`render_input_signature` 以及 registry、resource、Schema 和 render-environment 证据，并保留 `checksums.sha256`。变体 render reference 只保留 preview、mask、render metadata 三个文件的 SHA-256，用于内容完整性而不参与身份或路径；`render.json` 只保留最小图片、视角、policy、fixture、tint 和 mask 语义 metadata，不重复环境或内容哈希。release 阶段由 `AGENTS.md`（历史引用，文件未随当前仓库保留） 强制的 checksum/hash 语义不受本次 R1 简化影响。
 
 本记录中的“已删除”字段仅用于冻结删留边界：manifest 的 `export_key`；variant render reference 的 `render_signature` 和重复的 `render_input_signature`；failure 的 `render_signature`；render.json 中重复的 camera、lighting、background、backboard、support、resource、environment hash、重复 `render_input_signature` 以及重复 image/mask content hash。它们不再作为当前 R1 身份、路径或完整性字段。
 

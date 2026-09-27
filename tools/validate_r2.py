@@ -297,7 +297,7 @@ def _check_assets_and_templates(root: Path) -> tuple[dict[str, Any], list[dict[s
 
 
 def _public_files(root: Path) -> Iterable[Path]:
-    roots = (root / "src/blockpedia", root / "tests/r2", root / "tools", root / "docs/r2-implementation.md")
+    roots = (root / "src/blockpedia", root / "tests/r2", root / "tools", root / "docs/archive/2026-09-27/r2-implementation.md")
     for candidate in roots:
         if candidate.is_file():
             yield candidate
@@ -312,7 +312,7 @@ def _check_public_surface(root: Path) -> tuple[dict[str, Any], list[dict[str, st
         forbidden_suffixes = {".png", ".jar", ".sqlite", ".sqlite3", ".db"}
         if any(path.suffix.casefold() in forbidden_suffixes for path in files):
             issues.append(_issue("PUBLIC_GENERATED_ASSET_FOUND", "Public R2 paths contain a generated asset."))
-        for path in (root / "docs/r2-implementation.md", root / "docs/evidence/r2-validation-report.json"):
+        for path in (root / "docs/archive/2026-09-27/r2-implementation.md", root / "docs/evidence/r2-validation-report.json"):
             if path.is_file():
                 text = path.read_text(encoding="utf-8")
                 if ABSOLUTE_RE.search(text) or SENSITIVE_RE.search(text):

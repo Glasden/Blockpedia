@@ -1,3 +1,5 @@
+> 历史归档（2026-09-27）：停止维护，不再作为当前执行规范。当前决定与进度统一见 [PROGRESS.md](../../../PROGRESS.md)。正文只做归档链接修正，旧状态不代表本轮完成。
+
 # Blockpedia 导出与构建事实闭环重构 Spec
 
 状态：用户已批准实施，按第 8 节分阶段推进。实现基线：e3ffb55。日期：2026-09-26。
@@ -10,10 +12,10 @@
 
 已核实的例子：
 
-- [构建快照](../src/blockpedia/releases.py)在同一轮分别为解析、checksum 和源文件摘要读取 JSONL；正常首次构建的 index 全文读取路径累计 15 次。该次数是源码推导，不是耗时测量。
-- [激活候选选择](../src/blockpedia/activation.py)要求同 run、同当前 workspace 指纹，并在日常发布前复制整个 release、启动 MCP 子进程做 smoke。
-- [特征任务](../src/blockpedia/worker.py)每处理一项都重新规划所有任务；[导入进度](../src/blockpedia/importer.py)逐项绕过节流并 fsync。
-- [R1 validator](../tools/validate_r1_export.py)与 [Studio 图片模块](../src/blockpedia/features.py)分别维护 PNG 解码器，已复现对同一 CRC 损坏输入作出不同判断。
+- [构建快照](../../../src/blockpedia/releases.py)在同一轮分别为解析、checksum 和源文件摘要读取 JSONL；正常首次构建的 index 全文读取路径累计 15 次。该次数是源码推导，不是耗时测量。
+- [激活候选选择](../../../src/blockpedia/activation.py)要求同 run、同当前 workspace 指纹，并在日常发布前复制整个 release、启动 MCP 子进程做 smoke。
+- [特征任务](../../../src/blockpedia/worker.py)每处理一项都重新规划所有任务；[导入进度](../../../src/blockpedia/importer.py)逐项绕过节流并 fsync。
+- [R1 validator](../../../tools/validate_r1_export.py)与 [Studio 图片模块](../../../src/blockpedia/features.py)分别维护 PNG 解码器，已复现对同一 CRC 损坏输入作出不同判断。
 
 目标闭环为：
 

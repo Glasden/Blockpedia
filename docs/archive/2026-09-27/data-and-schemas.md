@@ -1,3 +1,5 @@
+> 历史归档（2026-09-27）：停止维护，不再作为当前执行规范。当前决定与进度统一见 [PROGRESS.md](../../../PROGRESS.md)。正文只做归档链接修正，旧状态不代表本轮完成。
+
 # 数据、Schema 与历史兼容
 
 当前业务边界见 [D-054 规格](export-build-refactor-spec.md)。精确字段由 schemas/ 下的 JSON Schema 和 src/blockpedia/sql/ 下的 SQL 拥有，不在多份 Markdown 中重复逐字段定义。

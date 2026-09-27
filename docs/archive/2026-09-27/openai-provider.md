@@ -1,3 +1,5 @@
+> 历史归档（2026-09-27）：停止维护，不再作为当前执行规范。当前决定与进度统一见 [PROGRESS.md](../../../PROGRESS.md)。正文只做归档链接修正，旧状态不代表本轮完成。
+
 # OpenAI Provider 契约
 
 > D-054 边界：本文件继续定义 Studio 外部请求、批准和重试语义。构建/发布不依赖 active profile、Keyring、能力 probe 或历史请求重放；下文旧 artifact 文件证明、release 全链路 hash 绑定相关要求已由 [重构规格](export-build-refactor-spec.md) 取代。

@@ -1,3 +1,5 @@
+> 历史归档（2026-09-27）：停止维护，不再作为当前执行规范。当前决定与进度统一见 [PROGRESS.md](../../../PROGRESS.md)。正文只做归档链接修正，旧状态不代表本轮完成。
+
 # R0 实现说明
 
 ## 范围
@@ -28,7 +30,7 @@ gradlew.bat --offline build
 ./gradlew --offline build
 ```
 
-Windows 已使用 `C:\Users\Glasden\.jdks\azul-25.0.2` 的 Java 25 执行 `gradlew.bat --offline build` 并得到 `BUILD SUCCESSFUL`；Schema validator 报告 26 个 Schema、52 个 fixture case，通过报告位于 [`evidence/r0-schema-report.json`](evidence/r0-schema-report.json)，pytest 为 `1 passed`。Windows 的真实 Minecraft runtime/export 已由 R1 现有证据覆盖；Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现保留至 R5，CPython `3.14.7` 产品运行在 R2 执行，不重复作为 R0 门禁。
+Windows 已使用 `C:\Users\Glasden\.jdks\azul-25.0.2` 的 Java 25 执行 `gradlew.bat --offline build` 并得到 `BUILD SUCCESSFUL`；Schema validator 报告 26 个 Schema、52 个 fixture case，通过报告位于 [`evidence/r0-schema-report.json`](../../evidence/r0-schema-report.json)，pytest 为 `1 passed`。Windows 的真实 Minecraft runtime/export 已由 R1 现有证据覆盖；Linux Java 25/runtime、Linux exporter 独立重跑和最终双平台源码/运行时复现保留至 R5，CPython `3.14.7` 产品运行在 R2 执行，不重复作为 R0 门禁。
 
 ## 证据边界
 

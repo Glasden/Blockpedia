@@ -1,3 +1,5 @@
+> 历史归档（2026-09-27）：停止维护，不再作为当前执行规范。当前决定与进度统一见 [PROGRESS.md](../../../PROGRESS.md)。正文只做归档链接修正，旧状态不代表本轮完成。
+
 # 状态策略与标准渲染设计
 
 > D-054：BannerBlock/WallBannerBlock 居中缩放继续使用。当前新导出使用下述 camera.v3 修正公共相机方向；专用 banner-repair/refresh 与本地 checksum/inventory gate 已移除，涉及这些操作的旧要求只作历史背景。
@@ -76,7 +78,7 @@ R1 不执行候选之间的合并或去重。每个 `block_id` 的唯一 default
 
 ## 6. 跳过和审核
 
-无法稳定渲染不等于不存在。导出器必须保留 Block 和所有状态，并在 `variants.jsonl` 或 `failures.jsonl` 写入明确原因；精确 failure 字段和 reason 枚举以 [`schemas/exporter/export-failure.v1.json`](../schemas/exporter/export-failure.v1.json) 与 [`schemas/exporter/export-variant.v1.json`](../schemas/exporter/export-variant.v1.json) 为准。R1 的 skip 只由 exporter 产生并保持 pending，独立 workspace `skip-review.v1` 属于 R3 candidate-build 前置。
+无法稳定渲染不等于不存在。导出器必须保留 Block 和所有状态，并在 `variants.jsonl` 或 `failures.jsonl` 写入明确原因；精确 failure 字段和 reason 枚举以 [`schemas/exporter/export-failure.v1.json`](../../../schemas/exporter/export-failure.v1.json) 与 [`schemas/exporter/export-variant.v1.json`](../../../schemas/exporter/export-variant.v1.json) 为准。R1 的 skip 只由 exporter 产生并保持 pending，独立 workspace `skip-review.v1` 属于 R3 candidate-build 前置。
 
 R1 的 `retry_count` 最多为 1，不要求必须重试；仅已观察的可恢复失败可重试一次。R1 不写人工审计字段，不产生已解决 skip。`excluded` 资格必须通过独立 `qualification-review.v1`，不能用 exporter record 替代。
 

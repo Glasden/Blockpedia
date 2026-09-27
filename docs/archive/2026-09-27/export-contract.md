@@ -1,3 +1,5 @@
+> 历史归档（2026-09-27）：停止维护，不再作为当前执行规范。当前决定与进度统一见 [PROGRESS.md](../../../PROGRESS.md)。正文只做归档链接修正，旧状态不代表本轮完成。
+
 # Fabric 导出与 Studio 导入边界
 
 当前执行 [D-054](decisions.md) 与 [重构规格](export-build-refactor-spec.md)。旧 checksum/inventory gate 和 banner 专用补救流程是历史记录，不是新导出的前置条件。

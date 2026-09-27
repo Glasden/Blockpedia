@@ -1,3 +1,5 @@
+> 历史归档（2026-09-27）：停止维护，不再作为当前执行规范。当前决定与进度统一见 [PROGRESS.md](../../../PROGRESS.md)。正文只做归档链接修正，旧状态不代表本轮完成。
+
 # WebUI 与本地操作
 
 当前流程以 [D-054 规格](export-build-refactor-spec.md) 为准。WebUI 只绑定 127.0.0.1:8765，写操作由本机页面发起。HTTP 请求字段的精确类型、边界和未知字段拒绝由 web.py 的 StrictRequest 模型拥有。

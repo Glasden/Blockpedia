@@ -1,3 +1,5 @@
+> 历史归档（2026-09-27）：停止维护，不再作为当前执行规范。当前决定与进度统一见 [PROGRESS.md](../../../PROGRESS.md)。正文只做归档链接修正，旧状态不代表本轮完成。
+
 # 导入、工作结果、构建与发布
 
 当前流程由 [D-054](decisions.md) 和 [重构规格](export-build-refactor-spec.md) 定义。旧 check cache、全量 snapshot 指纹、派生结果 JSON、双 candidate 发布门和发布时 MCP smoke 已退出当前设计；历史数据不改写。

@@ -1,10 +1,12 @@
+> 历史归档（2026-09-27）：停止维护，不再作为当前执行规范。当前决定与进度统一见 [PROGRESS.md](../../../PROGRESS.md)。正文只做归档链接修正，旧状态不代表本轮完成。
+
 # MCP API 契约
 
 ## 文档状态、优先级与关联规范
 
 本文定义 `mcp-node/server.mjs` 的 stdio 进程、release 解析、四个且仅四个工具、只读边界和说明性响应示例。精确 input/output 字段形状唯一由 `schemas/mcp/` 下的真实 Schema 文件拥有；本文示例不构成重复的穷举规范。正文使用简体中文；MCP 方法、字段名、Schema 标识、状态、错误码和命令保持英文。MCP 当前输出 Schema ID 固定为 `mcp-index-info-output.v1`、`mcp-search-blocks-output.v1`、`mcp-block-details-output.v1`、`mcp-compare-blocks-output.v1`，错误可共享 `mcp-error.v1`。`MUST`、`MUST NOT`、`SHOULD`、`MAY` 为规范性关键字。
 
-本文服从 [`../AGENTS.md`](../AGENTS.md)、[`roadmap.md`](roadmap.md)、[`decisions.md`](decisions.md) 和 [`architecture.md`](architecture.md)，并与 [`product-scope.md`](product-scope.md) 保持一致。原始稿 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 仅作历史背景和最低优先级参考，不与本契约一起执行；冲突内容禁止实现。检索语义见 [`search-and-ranking.md`](search-and-ranking.md)，provider 规则见 [`openai-provider.md`](openai-provider.md)，数据和发布边界见 [`data-and-schemas.md`](data-and-schemas.md)、[`export-contract.md`](export-contract.md) 与 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)，发布门见 [`quality-and-testing.md`](quality-and-testing.md)，WebUI 写边界见 [`webui-and-operations.md`](webui-and-operations.md)，安全边界见 [`security-and-distribution.md`](security-and-distribution.md)。
+本文服从 `../AGENTS.md`（历史引用，文件未随当前仓库保留）、[`roadmap.md`](roadmap.md)、[`decisions.md`](decisions.md) 和 [`architecture.md`](architecture.md)，并与 [`product-scope.md`](product-scope.md) 保持一致。原始稿 [`minecraft_vanilla_block_index_mcp_design.md`](minecraft_vanilla_block_index_mcp_design.md) 仅作历史背景和最低优先级参考，不与本契约一起执行；冲突内容禁止实现。检索语义见 [`search-and-ranking.md`](search-and-ranking.md)，provider 规则见 [`openai-provider.md`](openai-provider.md)，数据和发布边界见 [`data-and-schemas.md`](data-and-schemas.md)、[`export-contract.md`](export-contract.md) 与 [`pipeline-storage-and-publishing.md`](pipeline-storage-and-publishing.md)，发布门见 [`quality-and-testing.md`](quality-and-testing.md)，WebUI 写边界见 [`webui-and-operations.md`](webui-and-operations.md)，安全边界见 [`security-and-distribution.md`](security-and-distribution.md)。
 
 ## 1. 传输、进程和只读边界
 
