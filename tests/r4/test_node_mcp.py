@@ -29,7 +29,7 @@ SCHEMAS = {
     "index_info": "mcp-index-info-output.v2",
     "search_blocks": "mcp-search-blocks-output.v2",
     "get_block_details": "mcp-block-details-output.v2",
-    "compare_blocks": "mcp-compare-blocks-output.v2",
+    "compare_blocks": "mcp-compare-blocks-output.v3",
 }
 CARD = 256
 WEBP_DECODER = (ROOT / "mcp-node/node_modules/@jsquash/webp/codec/dec/webp_dec.js").as_uri()
@@ -287,6 +287,9 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
                 preview = decode_rgba_png((fixture.release / "previews/minecraft/stone/preview.png").read_bytes())
                 assert images[0].pixels == nearest(preview)
             if name == "compare_blocks":
+                assert [(item["candidate_id"], item["block_id"]) for item in structured["blocks"]] == [("T01", "minecraft:stone"), ("T02", "minecraft:glass")]
+                assert "transparent" in structured["differing_fields"]
+                assert [tile["candidate_id"] for tile in metadata[0]["tiles"]] == ["T01", "T02"]
                 assert [(tile["candidate_id"], tile["block_id"], tile["column"]) for tile in metadata[0]["tiles"]] == [("T01", "minecraft:stone", 0), ("T02", "minecraft:glass", 1)]
                 assert (images[0].width, images[0].height) == (2 * CARD, CARD)
                 for x, name in [(128, "stone"), (384, "glass")]:
@@ -324,8 +327,11 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
         for id, name, args in [
             (10, "search_blocks", {"keywords": ["\x85"]}),
             (11, "search_blocks", {"keywords": ["stone"], "limit": None}),
-            (12, "compare_blocks", {"block_ids": ["minecraft:stone", "minecraft:glass"], "context": None}),
-            (13, "compare_blocks", {"block_ids": ["minecraft:stone", "minecraft:glass"], "compare_states": None}),
+            (12, "compare_blocks", {"block_ids": ["minecraft:stone", "minecraft:glass"], "context": "roof"}),
+            (13, "compare_blocks", {"block_ids": ["minecraft:stone", "minecraft:glass"], "compare_states": False}),
+            (26, "search_blocks", {}),
+            (27, "search_blocks", {"similar_to": "stone"}),
+            (28, "search_blocks", {"similar_to": None}),
             (16, "search_blocks", {"query": "stone"}),
             (17, "search_blocks", {"keywords": ["stone"], "limit": 0}),
             (18, "search_blocks", {"keywords": ["x"] * 17}),
@@ -491,3 +497,107 @@ def test_color_series_merge(tmp_path: Path, force_like: bool) -> None:
         exact = search(["minecraft:red_wool"])
         assert exact["candidates"][0]["block_id"] == "minecraft:red_wool"
         assert "color_series" not in exact["candidates"][0]
+
+
+# Face shading lighting.v2 bakes into the preview (RenderExporter.View order:
+# isometric, front/north, side/east, top); palette.mjs divides it back out.
+FACE_SHADES = ((0, 0, 0.6), (256, 0, 0.74), (0, 256, 0.497), (256, 256, 1.0))
+
+
+def _shaded_preview(colors: list[tuple[int, int, int]], alpha: int = 255) -> bytes:
+    """512px preview whose faces show `colors` as a 16px-texel checker, stored
+    alpha-premultiplied like the exporter's translucent pixels."""
+    from blockpedia.r3 import encode_rgba_png
+
+    pixels = bytearray(512 * 512 * 4)
+    for x0, y0, shade in FACE_SHADES:
+        for y in range(256):
+            for x in range(256):
+                color = colors[(x // 16 + y // 16) % len(colors)]
+                start = ((y0 + y) * 512 + x0 + x) * 4
+                pixels[start:start + 4] = bytes([round(channel * shade * alpha / 255) for channel in color] + [alpha])
+    return encode_rgba_png(512, 512, bytes(pixels))
+
+
+def _set_preview(release: Path, db: sqlite3.Connection, block_id: str, colors: list[tuple[int, int, int]], alpha: int = 255) -> None:
+    path = f"previews/minecraft/{block_id.removeprefix('minecraft:')}/preview.png"
+    (release / path).parent.mkdir(parents=True, exist_ok=True)
+    (release / path).write_bytes(_shaded_preview(colors, alpha))
+    db.execute("UPDATE visual_variants SET preview_path=? WHERE variant_id=?", (path, block_id))
+
+
+@pytest.mark.parametrize("force_like", [False, True], ids=["fts5", "like"])
+def test_face_colours_family_compare_and_similar_to(tmp_path: Path, force_like: bool) -> None:
+    fixture = build_fixture(tmp_path, force_like=force_like)
+    gray, brown = (125, 125, 125), (160, 130, 80)
+    with sqlite3.connect(fixture.release / "index.sqlite3") as db:
+        _add_search_block(db, "minecraft:andesite", "安山岩", "Andesite")
+        _add_search_block(db, "minecraft:cobblestone", "圆石", "Cobblestone")
+        _add_search_block(db, "minecraft:oak_planks", "橡木木板", "Oak Planks")
+        _add_search_block(db, "minecraft:infested_stone", "虫蚀石头", "Infested Stone")
+        _add_search_block(db, "minecraft:stone_stairs", "石头楼梯", "Stone Stairs", tags=["minecraft:stairs"])
+        _add_search_block(db, "minecraft:stone_slab", "石头台阶", "Stone Slab", tags=["minecraft:slabs"], visual=False)
+        _add_search_block(db, "minecraft:structure_void", "结构空位", "Structure Void", visual=False)
+        _add_search_block(db, "minecraft:white_stained_glass", "白色染色玻璃", "White Stained Glass", tags=["minecraft:impermeable"])
+        _set_preview(fixture.release, db, "minecraft:white_stained_glass", [(255, 255, 255)], alpha=102)
+        for block_id, colors in [("minecraft:stone", [gray]), ("minecraft:andesite", [(135, 135, 135)]), ("minecraft:cobblestone", [(100, 100, 100), (150, 150, 150)]),
+                                 ("minecraft:oak_planks", [brown]), ("minecraft:infested_stone", [gray]), ("minecraft:stone_stairs", [gray])]:
+            _set_preview(fixture.release, db, block_id, colors)
+    search_schema = Draft202012Validator(load_schema(SCHEMAS["search_blocks"]))
+    with node_session(tmp_path) as send:
+        details = call(send, 2, "get_block_details", {"block_id": "minecraft:stone"})["structuredContent"]
+        Draft202012Validator(load_schema(SCHEMAS["get_block_details"])).validate(details)
+        colors = details["representative"]["colors"]
+        # Top is unshaded; side divides the north/east shading back out.
+        assert colors["top"] == {"hex": "#7d7d7d", "lightness": colors["top"]["lightness"], "lightness_std": 0, "dominant": [{"hex": "#7d7d7d", "share": 1}]}
+        assert abs(int(colors["side"]["hex"][1:3], 16) - 125) <= 1
+        assert details["representative"]["shape_class"] == "full_cube"
+        assert details["family"] == {"base_block": "minecraft:stone", "forms": {"stairs": "minecraft:stone_stairs", "slab": "minecraft:stone_slab"}}
+        stairs = call(send, 3, "get_block_details", {"block_id": "minecraft:stone_stairs"})["structuredContent"]
+        assert stairs["representative"]["shape_class"] == "stairs" and stairs["family"] == details["family"]
+        assert "family" not in call(send, 4, "get_block_details", {"block_id": "minecraft:glass"})["structuredContent"]
+        # Premultiplied translucent pixels are divided back to texture colour.
+        glass = call(send, 12, "get_block_details", {"block_id": "minecraft:white_stained_glass"})["structuredContent"]
+        assert glass["representative"]["colors"]["top"]["hex"] == "#ffffff"
+
+        compared = call(send, 5, "compare_blocks", {"block_ids": ["minecraft:stone", "minecraft:cobblestone", "minecraft:oak_planks", "minecraft:structure_void"]})
+        data = compared["structuredContent"]
+        Draft202012Validator(load_schema(SCHEMAS["compare_blocks"])).validate(data)
+        assert [item.get("candidate_id") for item in data["blocks"]] == ["T01", "T02", "T03", None]
+        cobble = data["blocks"][1]["colors"]["top"]
+        assert sorted(item["hex"] for item in cobble["dominant"]) == ["#646464", "#969696"]
+        assert [item["share"] for item in cobble["dominant"]] == [0.5, 0.5] and cobble["lightness_std"] > 9
+        assert data["blocks"][3]["colors"] is None and data["blocks"][3]["semantics"] is None
+        assert data["blocks"][0]["family"] == details["family"] and data["blocks"][1]["family"] is None
+        assert {"colors", "family", "semantics"} <= set(data["differing_fields"]) and "shape_class" in data["differing_fields"]
+        assert len(result_images(compared)) == 1
+
+        def similar(id: int, arguments: dict) -> list[dict]:
+            result = call(send, id, "search_blocks", arguments)
+            assert not result["isError"], result
+            search_schema.validate(result["structuredContent"])
+            return result["structuredContent"]["candidates"]
+
+        ranked = similar(6, {"similar_to": "minecraft:stone"})
+        # Same shape class only (no stairs, glass or carpet); cobblestone shares
+        # the mean grey but its texture spread puts andesite first; infested
+        # stone is identical but keeps the ×0.25 recommendation penalty.  White
+        # glass stored premultiplied (grey 102) would pass for stone; divided
+        # back to white it is out of range.
+        assert [item["block_id"] for item in ranked] == ["minecraft:andesite", "minecraft:cobblestone", "minecraft:oak_planks", "minecraft:infested_stone"]
+        by_id = {item["block_id"]: item for item in ranked}
+        assert by_id["minecraft:infested_stone"]["score"] == 0.25 and by_id["minecraft:infested_stone"]["color_delta_e"] == 0
+        assert by_id["minecraft:cobblestone"]["color_delta_e"] < by_id["minecraft:andesite"]["color_delta_e"]
+        assert all(item["score_breakdown"]["shape"] == 1 and "color_series" not in item for item in ranked)
+        assert "minecraft:stone" in ranked[0]["reason"]
+        assert [item["block_id"] for item in similar(7, {"similar_to": "minecraft:stone_stairs"})] == []
+        assert [item["block_id"] for item in similar(8, {"similar_to": "minecraft:stone", "keywords": ["andesite"]})] == ["minecraft:andesite"]
+        assert len(similar(9, {"similar_to": "minecraft:stone", "limit": 1})) == 1
+
+        missing = call(send, 10, "search_blocks", {"similar_to": "minecraft:not_in_release"})
+        assert missing["isError"] and missing["structuredContent"]["error_code"] == "BLOCK_NOT_FOUND"
+        no_preview = call(send, 11, "search_blocks", {"similar_to": "minecraft:structure_void"})
+        assert no_preview["isError"] and no_preview["structuredContent"] == {
+            "error_code": "BLOCK_HAS_NO_PREVIEW", "message": "The similar_to block has no preview to compare colours with.", "invalid_block_ids": ["minecraft:structure_void"],
+        }
+        Draft202012Validator(load_schema("mcp-error.v2")).validate(no_preview["structuredContent"])

@@ -12,13 +12,13 @@ const versions = {
   index_info: 'mcp-index-info-output.v2',
   search_blocks: 'mcp-search-blocks-output.v2',
   get_block_details: 'mcp-block-details-output.v2',
-  compare_blocks: 'mcp-compare-blocks-output.v2',
+  compare_blocks: 'mcp-compare-blocks-output.v3',
 };
 const descriptions = {
   index_info: 'Read-only Blockpedia release identity and counts.',
-  search_blocks: 'Read-only Blockpedia block search. Host should provide short keywords; default English canonical keywords best match the current index. Returns one WebP contact sheet labelled T01.. per candidate.',
-  get_block_details: 'Read-only Blockpedia block details. detail="summary" (default) returns names, properties, tags, the representative state with geometry, behavior and semantics, plus a 256px WebP card. detail="states" pages through every legal state (offset, limit 1-16, default 8); if release_id changes between pages, restart from offset 0.',
-  compare_blocks: 'Read-only Blockpedia block comparison with a WebP contact sheet labelled T01.. in block_ids order.',
+  search_blocks: 'Read-only Blockpedia block search. Host should provide short keywords; default English canonical keywords best match the current index. similar_to=<block_id> instead ranks blocks of the same shape class by top/side face colour and texture (Oklab); keywords are then optional and only narrow the pool. The first similar_to call per release reads every preview and takes a few seconds. Returns one WebP contact sheet labelled T01.. per candidate.',
+  get_block_details: 'Read-only Blockpedia block details. detail="summary" (default) returns names, properties, tags, the representative state with shape class, geometry, behavior, top/side face colours and semantics, the material family (which stairs, slab, wall, fence, door, trapdoor ... exist), plus a 256px WebP card. detail="states" pages through every legal state (offset, limit 1-16, default 8); if release_id changes between pages, restart from offset 0.',
+  compare_blocks: 'Read-only Blockpedia comparison of 2-6 blocks side by side: shape class, behavior, top/side face colours (hex, L*, texture spread, dominant colours), colour terms, materials, styles, roles and material family, plus the fields that differ. WebP contact sheet labelled T01.. in block_ids order.',
 };
 const blockId = { type: 'string', pattern: '^minecraft:[a-z0-9_./-]+$' };
 const version = { type: 'string', pattern: '^[0-9]{1,3}\\.[0-9]{1,3}(?:\\.[0-9]{1,3})?$', minLength: 3, maxLength: 11 };
@@ -35,7 +35,8 @@ function inputSchema(name) {
   if (name === 'search_blocks') {
     schema.properties.keywords = { type: 'array', minItems: 1, maxItems: 16, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: 64 } };
     schema.properties.limit = { type: 'integer', minimum: 1, maximum: 12, default: 8 };
-    schema.required = ['keywords'];
+    schema.properties.similar_to = { ...blockId, description: 'Rank blocks of the same shape class by palette similarity to this block; keywords become optional.' };
+    // keywords or similar_to: checked by the query service.
   } else if (name === 'get_block_details') {
     schema.properties.block_id = blockId;
     schema.properties.detail = { enum: ['summary', 'states'], default: 'summary' };
@@ -45,8 +46,6 @@ function inputSchema(name) {
     schema.required = ['block_id'];
   } else if (name === 'compare_blocks') {
     schema.properties.block_ids = { type: 'array', minItems: 2, maxItems: 6, uniqueItems: true, items: blockId };
-    schema.properties.context = { type: 'string', maxLength: 1000, default: '' };
-    schema.properties.compare_states = { type: 'boolean', default: false };
     schema.required = ['block_ids'];
   }
   return schema;

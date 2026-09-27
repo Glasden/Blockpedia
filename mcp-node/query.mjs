@@ -10,6 +10,7 @@
 // the build/activation gate; no local tamper check is reintroduced here.
 import { MCPReleaseError, MCPReleaseResolver, MCPVersionInputError } from './release.mjs';
 import { makeBlockCard, makeContactSheet } from './png.mjs';
+import { facePalette, paletteDistance, paletteOutput } from './palette.mjs';
 
 export const BLOCK_ID_RE = /^minecraft:[a-z0-9_./-]+$/;
 const VERSION_RE = /^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$/;
@@ -241,27 +242,64 @@ const colorSeries = (blockId, blockIds) => {
   return { key: suffix, color };
 };
 
+// The shapes a material comes in, from the registry naming rule: oak_planks
+// has oak_stairs, oak_slab, oak_fence ...; stone_bricks has stone_brick_*;
+// quartz_block has quartz_*; white_wool has white_carpet.  Vanilla tags name
+// the shape (minecraft:stairs) but not the material, so the name decides.
+// Wall-mounted signs map to their material but are not listed as a form.
+const FAMILY_FORMS = [
+  'stairs', 'slab', 'wall', 'fence', 'fence_gate', 'door', 'trapdoor', 'button', 'pressure_plate',
+  'sign', 'hanging_sign', 'pane', 'bars', 'carpet', 'shelf',
+];
+const FAMILY_SUFFIXES = [...FAMILY_FORMS, 'wall_sign', 'wall_hanging_sign'].sort((left, right) => right.length - left.length);
+const familyBase = (stem, blockIds) => [`${stem}_planks`, `${stem}s`, `${stem}_block`, `${stem}_wool`, stem]
+  .map((path) => `minecraft:${path}`)
+  .find((id) => blockIds.has(id)) ?? null;
+const familyOfStem = (stem, blockIds) => {
+  const forms = {};
+  for (const form of FAMILY_FORMS) {
+    const id = `minecraft:${stem}_${form}`;
+    if (blockIds.has(id)) forms[form] = id;
+  }
+  return Object.keys(forms).length === 0 ? null : { base_block: familyBase(stem, blockIds), forms };
+};
+// { base_block, forms } for a block that is a material's full block or one of
+// its forms; null otherwise (bamboo_block is not the bamboo planks).
+const materialFamily = (blockId, blockIds) => {
+  const path = blockId.replace(/^minecraft:/, '');
+  const suffix = FAMILY_SUFFIXES.find((form) => path.endsWith(`_${form}`));
+  if (suffix !== undefined) return familyOfStem(path.slice(0, -suffix.length - 1), blockIds);
+  for (const stem of [path.replace(/_planks$/, ''), path.replace(/_block$/, ''), path.replace(/_wool$/, ''), path.replace(/s$/, ''), path]) {
+    const family = familyOfStem(stem, blockIds);
+    if (family !== null && family.base_block === blockId) return family;
+  }
+  return null;
+};
 // A material the game also offers as stairs, slab or wall is a construction
 // material (stone, smooth_stone, stone_bricks, oak_planks); end_stone or a
 // moss block is not.
-const FORM_BASES = [[/_planks$/, ''], [/_block$/, ''], [/_bricks$/, '_brick'], [/_tiles$/, '_tile'], [/$/, '']];
-const hasBuildingForms = (blockId, blockIds) => FORM_BASES.some(([pattern, replacement]) => {
-  if (!pattern.test(blockId)) return false;
-  const base = blockId.replace(pattern, replacement);
-  return ['_stairs', '_slab', '_wall'].some((suffix) => blockIds.has(`${base}${suffix}`));
-});
+const hasBuildingForms = (blockId, blockIds) => {
+  const family = materialFamily(blockId, blockIds);
+  return family?.base_block === blockId && ['stairs', 'slab', 'wall'].some((form) => form in family.forms);
+};
 const shapeClass = (blockId, tags = []) => {
   const tagged = SHAPE_TAGS.find(([, tag]) => tags.includes(tag));
   if (tagged !== undefined) return tagged[0];
   if (WALL_MOUNTED_RE.test(blockId.replace(/^minecraft:/, ''))) return 'wall_mounted';
   return SHAPE_ID_SUFFIXES.find(([, suffix]) => blockId.endsWith(suffix))?.[0] ?? null;
 };
+// Shape class for comparison and similarity: the tag class, else full_cube or
+// other from the representative's geometry.
+const shapeKey = (blockId, tags, geometry) => shapeClass(blockId, tags) ?? (geometry?.is_full_cube === true ? 'full_cube' : 'other');
+// Palette similarity is 1 at identical colour and texture and 0 at this
+// distance (Oklab plus the texture term) or beyond.
+const SIMILARITY_RANGE = 0.25;
 
 const ERROR_CODES = new Set([
   'DATA_ROOT_INVALID', 'CURRENT_POINTER_MISSING', 'CURRENT_POINTER_INVALID', 'VERSION_NOT_AVAILABLE',
   'RELEASE_NOT_FOUND', 'RELEASE_NOT_BUILT', 'INDEX_INFO_UNAVAILABLE', 'INDEX_OPEN_FAILED',
   'BLOCK_NOT_FOUND', 'IMAGE_READ_FAILED', 'IMAGE_MAPPING_INVALID', 'READ_ONLY_VIOLATION',
-  'MCP_INTERNAL_ERROR',
+  'BLOCK_HAS_NO_PREVIEW', 'MCP_INTERNAL_ERROR',
 ]);
 
 export class MCPInputError extends Error {
@@ -877,6 +915,7 @@ export class MCPQueryService {
     const variants = {};
     const features = {};
     const annotations = {};
+    const previewPaths = {};
     let manual;
     try {
       for (const row of handle.execute('SELECT block_id, minecraft_version, default_state_id, record_json FROM blocks ORDER BY block_id')) {
@@ -885,9 +924,10 @@ export class MCPQueryService {
       for (const row of handle.execute('SELECT state_id, block_id, record_json FROM states ORDER BY state_id')) {
         states[String(row.state_id)] = JSON.parse(row.record_json);
       }
-      for (const row of handle.execute('SELECT variant_id, block_id, record_json, feature_json FROM visual_variants ORDER BY variant_id')) {
+      for (const row of handle.execute('SELECT variant_id, block_id, preview_path, record_json, feature_json FROM visual_variants ORDER BY variant_id')) {
         variants[String(row.variant_id)] = JSON.parse(row.record_json);
         features[String(row.variant_id)] = JSON.parse(row.feature_json);
+        previewPaths[String(row.variant_id)] = String(row.preview_path);
       }
       for (const row of handle.execute('SELECT variant_id, semantic_json FROM annotations ORDER BY variant_id')) {
         const value = JSON.parse(row.semantic_json);
@@ -903,7 +943,7 @@ export class MCPQueryService {
         details: { integrity_component: 'index' },
       });
     }
-    const snapshot = { blocks, states, variants, features, annotations, manual };
+    const snapshot = { blocks, states, variants, features, annotations, manual, previewPaths, palettes: new Map() };
     this._snapshots.set(key, snapshot);
     return snapshot;
   }
@@ -967,9 +1007,12 @@ export class MCPQueryService {
   searchBlocks(argumentsValue) {
     const resources = { previewCache: new Map() };
     try {
-      const args = validateObject(argumentsValue, new Set(['minecraft_version', 'keywords', 'limit']));
+      const args = validateObject(argumentsValue, new Set(['minecraft_version', 'keywords', 'limit', 'similar_to']));
       const version = validateVersionInput(args);
-      const [keywords, joinedQuery] = MCPQueryService._validateKeywords(args.keywords);
+      const similarTo = 'similar_to' in args ? args.similar_to : null;
+      if ('similar_to' in args && !fullMatch(BLOCK_ID_RE, similarTo)) throw new MCPInputError('similar_to has an invalid format');
+      if (!('keywords' in args) && similarTo === null) throw new MCPInputError('keywords or similar_to is required');
+      const [keywords, joinedQuery] = 'keywords' in args ? MCPQueryService._validateKeywords(args.keywords) : [null, null];
       // Python's args.get("limit", 8): a present-but-null key stays null and
       // fails validation, so the default only applies when the key is absent.
       const limit = 'limit' in args ? args.limit : 8;
@@ -979,13 +1022,38 @@ export class MCPQueryService {
       const handle = this.resolver.resolve(version);
       try {
         const snapshot = this._snapshot(handle);
-        const query = parseQuery(keywords, this._searchIndex(snapshot).lexicon);
-        const rows = this._eligibleRows(snapshot);
-        const exactQuery = normalized(joinedQuery);
-        const recalled = this._recall(handle, rows, query, exactQuery);
-        const ranked = this._rankRows(recalled, snapshot, query, exactQuery);
-        const merged = query.colors.length > 0 ? ranked : MCPQueryService._mergeColorSeries(ranked);
-        const selected = merged.slice(0, 24).slice(0, limit);
+        let ranked = null;
+        let query = null;
+        if (keywords !== null) {
+          query = parseQuery(keywords, this._searchIndex(snapshot).lexicon);
+          const exactQuery = normalized(joinedQuery);
+          const recalled = this._recall(handle, this._eligibleRows(snapshot), query, exactQuery);
+          ranked = this._rankRows(recalled, snapshot, query, exactQuery);
+        }
+        let selected;
+        if (similarTo === null) {
+          const merged = query.colors.length > 0 ? ranked : MCPQueryService._mergeColorSeries(ranked);
+          selected = merged.slice(0, limit);
+        } else {
+          if (!(similarTo in snapshot.blocks)) {
+            return errorResult(
+              new MCPReleaseError('BLOCK_NOT_FOUND', 'The similar_to block is not in this release.', {
+                minecraftVersion: handle.minecraftVersion,
+              }),
+              [similarTo],
+            );
+          }
+          const similar = this._rankSimilar(handle, snapshot, similarTo, ranked, resources);
+          if (similar === null) {
+            return errorResult(
+              new MCPReleaseError('BLOCK_HAS_NO_PREVIEW', 'The similar_to block has no preview to compare colours with.', {
+                minecraftVersion: handle.minecraftVersion,
+              }),
+              [similarTo],
+            );
+          }
+          selected = similar.slice(0, limit);
+        }
         const candidates = this._candidateDicts(selected, snapshot);
         if (candidates.length === 0) return toolResult({ candidates, images: [] });
         const sheet = this._contactSheet(
@@ -1044,7 +1112,7 @@ export class MCPQueryService {
   compareBlocks(argumentsValue) {
     const resources = { previewCache: new Map() };
     try {
-      const args = validateObject(argumentsValue, new Set(['minecraft_version', 'block_ids', 'context', 'compare_states']));
+      const args = validateObject(argumentsValue, new Set(['minecraft_version', 'block_ids']));
       const version = validateVersionInput(args);
       const blockIds = args.block_ids;
       if (
@@ -1056,12 +1124,6 @@ export class MCPQueryService {
       ) {
         throw new MCPInputError('block_ids must contain 2-6 unique valid block IDs');
       }
-      const context = 'context' in args ? args.context : '';
-      if (typeof context !== 'string' || codePointLength(context) > 1000) {
-        throw new MCPInputError('context must be a string of at most 1000 characters');
-      }
-      const compareStates = 'compare_states' in args ? args.compare_states : false;
-      if (typeof compareStates !== 'boolean') throw new MCPInputError('compare_states must be boolean');
       const handle = this.resolver.resolve(version);
       try {
         const snapshot = this._snapshot(handle);
@@ -1238,6 +1300,62 @@ export class MCPQueryService {
     return result;
   }
 
+  // Blocks of the same shape class as `targetId`, nearest palette first.  With
+  // keywords, `textRanked` (their ranked matches) is the pool and the score is
+  // still the palette similarity alone.  Null when the target has no preview
+  // or no visible face.  Recommendation-list blocks keep the ×0.25 penalty,
+  // so infested stone does not lead a search for stone.
+  _rankSimilar(handle, snapshot, targetId, textRanked, resources) {
+    const target = variantsFor(snapshot, targetId)[0];
+    if (target === undefined || !isMapping(target.render)) return null;
+    const reference = this._palette(handle, snapshot, String(target.variant_id), resources);
+    if (reference.top === null && reference.side === null) return null;
+    const targetShape = shapeKey(targetId, snapshot.blocks[targetId].tags ?? [], target.machine_facts?.geometry);
+    const pool = textRanked ?? this._eligibleRows(snapshot).map((row) => ({ row, breakdown: { text: 0, color: 0, shape: 0, light: 0 } }));
+    const result = [];
+    for (const { row, breakdown } of pool) {
+      const [variantId, variant, , block] = row;
+      if (variant.block_id === targetId) continue;
+      if (shapeKey(String(variant.block_id), block.tags ?? [], variant.machine_facts?.geometry) !== targetShape) continue;
+      const distance = paletteDistance(reference, this._palette(handle, snapshot, variantId, resources));
+      if (distance === null) continue;
+      const similarity = pyRound8(clamp01(1 - distance.distance / SIMILARITY_RANGE));
+      if (similarity <= 0) continue;
+      const penalized = policyWarning(variant.block_id) !== null;
+      const colorDeltaE = Number((distance.color * 100).toFixed(1));
+      result.push({
+        row,
+        score: penalized ? pyRound8(similarity * 0.25) : similarity,
+        breakdown: { text: breakdown.text, color: similarity, shape: 1, light: 0 },
+        penalized,
+        notes: [
+          `palette similarity ${similarity.toFixed(2)} to ${targetId}: colour ΔE ${colorDeltaE} (Oklab ×100 over top and side faces), texture term ${(distance.texture * 100).toFixed(1)}`,
+          `same shape class ${targetShape}`,
+          ...(textRanked === null ? [] : ['keywords matched']),
+        ],
+        colorDeltaE,
+        distance: distance.distance,
+      });
+    }
+    result.sort((left, right) => right.score - left.score
+      || left.distance - right.distance
+      || byUtf8(left.row[0], right.row[0]));
+    return result;
+  }
+
+  // Face colours of a variant, cached with the release snapshot.  A preview
+  // already decoded for this request is reused; a similarity pass over every
+  // candidate reads each preview once and does not keep the decoded image.
+  _palette(handle, snapshot, variantId, resources) {
+    let palette = snapshot.palettes.get(variantId);
+    if (palette === undefined) {
+      const decoded = resources.previewCache.get(variantId)?.decoded ?? handle.readImage(snapshot.previewPaths[variantId]).decoded;
+      palette = facePalette(decoded);
+      snapshot.palettes.set(variantId, palette);
+    }
+    return palette;
+  }
+
   // Without a colour in the query, the 16 dye colours of one series collapse
   // into their best-ranked member (white first among equal scores), placed
   // where the series first appears.  An exact name or ID keeps its own entry.
@@ -1270,7 +1388,7 @@ export class MCPQueryService {
   }
 
   _candidateDicts(ranked, snapshot) {
-    return ranked.map(({ row, score, breakdown, penalized, notes, series, others }, index) => {
+    return ranked.map(({ row, score, breakdown, penalized, notes, series, others, colorDeltaE }, index) => {
       const [variantId, variant, , block] = row;
       const names = block.official_names ?? {};
       const reason = MCPQueryService._reason(notes, semantic(snapshot.annotations[variantId]));
@@ -1286,6 +1404,7 @@ export class MCPQueryService {
         score_breakdown: breakdown,
         reason: penalized ? `${reason.slice(0, 450)} Local recommendation rule: general-use score ×0.25.` : reason,
         warnings: blockWarnings(variant, String(variant.block_id), block),
+        ...(colorDeltaE === undefined ? {} : { color_delta_e: colorDeltaE }),
         ...(others === undefined ? {} : {
           color_series: { block_id_pattern: `minecraft:{color}_${series.key}`, other_colors: others },
         }),
@@ -1369,6 +1488,7 @@ export class MCPQueryService {
       representative: {
         state_id: stateId,
         candidate_qualification: variant?.candidate_qualification ?? null,
+        shape_class: shapeKey(blockId, block.tags ?? [], variant?.machine_facts?.geometry),
         shape: boxes(state.shape),
         collision: boxes(state.collision),
         geometry_classes: [...(geometry.geometry_classes ?? [])],
@@ -1379,10 +1499,14 @@ export class MCPQueryService {
       warnings,
       images: [],
     };
+    const family = materialFamily(blockId, new Set(Object.keys(snapshot.blocks)));
+    if (family !== null) output.family = family;
     const skip = MCPQueryService._skipReason(snapshot.manual, blockId);
     if (variant === undefined && skip !== null) output.skip_reason = skip;
     if (variant === undefined || !isMapping(variant.render)) return [output, []];
     const card = makeBlockCard(this._preview(handle, String(variant.variant_id), resources).decoded);
+    const colors = paletteOutput(this._palette(handle, snapshot, String(variant.variant_id), resources));
+    if (colors !== null) output.representative.colors = colors;
     output.images.push({ content_index: 1, mime_type: IMAGE_MIME_TYPE, width: card.width, height: card.height, state_id: stateId });
     return [output, [card.webp]];
   }
@@ -1420,49 +1544,57 @@ export class MCPQueryService {
     return typeof review?.reason_code === 'string' && review.reason_code ? review.reason_code : null;
   }
 
+  // Every block's comparable facts side by side, in block_ids order; each
+  // block describes its representative (first visual variant) like details.
+  // differing_fields names the fields whose values are not all equal.
   _compareData(handle, snapshot, blockIds, resources) {
-    const rows = [];
-    const fields = [
-      ['candidate_qualification', (variant) => variant.candidate_qualification, 'machine'],
-      ['geometry_classes', (variant) => (snapshot.features[String(variant.variant_id)].geometry_classes ?? []).join(','), 'machine'],
-      ['transparent', (variant, state) => behavior(variant, state).transparent ?? 'unknown', 'machine'],
-      ['emissive', (variant, state) => behavior(variant, state).emissive ?? 'unknown', 'machine'],
-      ['emission_level', (variant, state) => behavior(variant, state).emission_level ?? 'unknown', 'machine'],
-      ['redstone_related', (variant, state) => behavior(variant, state).redstone_related ?? 'unknown', 'machine'],
-      ['summary_en', (variant) => semantic(snapshot.annotations[String(variant.variant_id)]).summary_en, 'annotation'],
-    ];
-    const representatives = blockIds.map((blockId) => [blockId, variantsFor(snapshot, blockId)[0]]);
-    for (const [field, extractor, source] of fields) {
-      const values = [];
-      for (const [blockId, variant] of representatives) {
-        if (variant === undefined) continue;
-        const state = snapshot.states[String(variant.canonical_state_id)];
-        if (state === undefined) continue;
-        const value = extractor(variant, state);
-        if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
-          values.push({ block_id: blockId, value, source });
-        }
+    const allIds = new Set(Object.keys(snapshot.blocks));
+    const tiles = [];
+    const blocks = blockIds.map((blockId) => {
+      const block = snapshot.blocks[blockId];
+      const names = block.official_names ?? {};
+      const variant = variantsFor(snapshot, blockId)[0];
+      const entry = { block_id: blockId, display_name: String(names.zh_cn || names.en_us || blockId) };
+      if (variant !== undefined) {
+        entry.candidate_id = `T${String(tiles.length + 1).padStart(2, '0')}`;
+        tiles.push({ candidateId: entry.candidate_id, blockId, variantId: String(variant.variant_id) });
       }
-      const distinct = new Set(values.map((item) => scalarKey(item.value)));
-      if (values.length >= 2 && distinct.size > 1) rows.push({ field, values });
-    }
-    const tiles = representatives
-      .filter(([, variant]) => variant !== undefined)
-      .map(([blockId, variant], index) => ({
-        candidateId: `T${String(index + 1).padStart(2, '0')}`,
-        blockId,
-        variantId: String(variant.variant_id),
-      }));
-    if (tiles.length === 0) return [{ rows, images: [] }, []];
+      const state = snapshot.states[String(variant === undefined ? block.default_state_id : variant.canonical_state_id)] ?? {};
+      const facts = variant === undefined ? (isMapping(state.behavior) ? state.behavior : {}) : behavior(variant, state);
+      const annotation = variant === undefined ? undefined : snapshot.annotations[String(variant.variant_id)];
+      const semanticValue = semantic(annotation);
+      const colors = variant === undefined || !isMapping(variant.render)
+        ? null
+        : paletteOutput(this._palette(handle, snapshot, String(variant.variant_id), resources));
+      return {
+        ...entry,
+        candidate_qualification: variant?.candidate_qualification ?? null,
+        shape_class: shapeKey(blockId, block.tags ?? [], variant?.machine_facts?.geometry),
+        geometry_classes: [...(variant?.machine_facts?.geometry?.geometry_classes ?? [])],
+        transparent: facts.transparent ?? 'unknown',
+        emission_level: facts.emission_level ?? 'unknown',
+        redstone_related: facts.redstone_related ?? 'unknown',
+        colors,
+        semantics: annotation === undefined ? null : Object.fromEntries(COMPARE_SEMANTIC_KEYS
+          .filter((key) => key in semanticValue)
+          .map((key) => [key, semanticValue[key]])),
+        family: materialFamily(blockId, allIds),
+        warnings: blockWarnings(variant, blockId, block),
+      };
+    });
+    const differing = COMPARE_FIELDS.filter((field) => new Set(blocks.map((item) => JSON.stringify(item[field]))).size > 1);
+    if (tiles.length === 0) return [{ blocks, differing_fields: differing, images: [] }, []];
     const sheet = this._contactSheet(handle, tiles, tiles.length, resources);
-    return [{ rows, images: [sheet.image] }, [sheet.webp]];
+    return [{ blocks, differing_fields: differing, images: [sheet.image] }, [sheet.webp]];
   }
 }
 
-const scalarKey = (value) => {
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'number') return JSON.stringify(value);
-  return JSON.stringify(value);
-};
+const COMPARE_SEMANTIC_KEYS = [
+  'summary_zh', 'summary_en', 'color_terms', 'material_impressions', 'style_tags', 'building_roles',
+];
+const COMPARE_FIELDS = [
+  'candidate_qualification', 'shape_class', 'geometry_classes', 'transparent', 'emission_level',
+  'redstone_related', 'colors', 'semantics', 'family', 'warnings',
+];
 
 export const QueryService = MCPQueryService;

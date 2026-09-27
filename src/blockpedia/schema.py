@@ -62,7 +62,7 @@ SCHEMA_NAMESPACES: dict[str, str] = {
     "mcp-index-info-output.v2": "mcp",
     "mcp-search-blocks-output.v2": "mcp",
     "mcp-block-details-output.v2": "mcp",
-    "mcp-compare-blocks-output.v2": "mcp",
+    "mcp-compare-blocks-output.v3": "mcp",
     "mcp-error.v2": "mcp",
 }
 

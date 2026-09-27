@@ -1,0 +1,432 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:mcp:mcp-compare-blocks-output.v3",
+  "title": "Blockpedia MCP compare blocks output",
+  "description": "Every requested block with the same fields, in block_ids order. Each block describes its representative (first visual variant) as get_block_details does.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "blocks",
+    "differing_fields",
+    "images"
+  ],
+  "properties": {
+    "blocks": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 6,
+      "items": {
+        "$ref": "#/$defs/block"
+      }
+    },
+    "differing_fields": {
+      "type": "array",
+      "uniqueItems": true,
+      "description": "Fields whose values are not all equal across blocks.",
+      "items": {
+        "enum": [
+          "candidate_qualification",
+          "shape_class",
+          "geometry_classes",
+          "transparent",
+          "emission_level",
+          "redstone_related",
+          "colors",
+          "semantics",
+          "family",
+          "warnings"
+        ]
+      }
+    },
+    "images": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "$ref": "#/$defs/image"
+      }
+    }
+  },
+  "$defs": {
+    "block_id": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+$"
+    },
+    "candidate_id": {
+      "type": "string",
+      "pattern": "^T[0-9]{2}$"
+    },
+    "tristate": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "const": "unknown"
+        }
+      ]
+    },
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "block_id",
+        "display_name",
+        "candidate_qualification",
+        "shape_class",
+        "geometry_classes",
+        "transparent",
+        "emission_level",
+        "redstone_related",
+        "colors",
+        "semantics",
+        "family",
+        "warnings"
+      ],
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/block_id"
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "candidate_id": {
+          "$ref": "#/$defs/candidate_id",
+          "description": "Label of this block's card on the contact sheet; absent when the block has no visual variant."
+        },
+        "candidate_qualification": {
+          "enum": [
+            "eligible",
+            "conditional",
+            "excluded",
+            null
+          ]
+        },
+        "shape_class": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "Registry-tag shape (stairs, slab, wall, fence, door, trapdoor, pane ...), else full_cube or other from the representative geometry."
+        },
+        "geometry_classes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "transparent": {
+          "$ref": "#/$defs/tristate"
+        },
+        "emission_level": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 15
+            },
+            {
+              "const": "unknown"
+            }
+          ]
+        },
+        "redstone_related": {
+          "$ref": "#/$defs/tristate"
+        },
+        "colors": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/colors"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "semantics": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "description": "Published semantic fields of the representative visual variant; null when the block has no visual variant.",
+          "properties": {
+            "summary_zh": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 500
+            },
+            "summary_en": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 500
+            },
+            "color_terms": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "material_impressions": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "style_tags": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "building_roles": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            }
+          }
+        },
+        "family": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/family"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "face_colors": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "hex",
+        "lightness",
+        "lightness_std",
+        "dominant"
+      ],
+      "properties": {
+        "hex": {
+          "type": "string",
+          "pattern": "^#[0-9a-f]{6}$"
+        },
+        "lightness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "CIELAB L* of the mean colour."
+        },
+        "lightness_std": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Standard deviation of per-pixel L*: near 0 smooth (concrete), about 4 stone, 10+ mottled (cobblestone)."
+        },
+        "dominant": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "description": "Up to three colour clusters, largest first; clusters under 10% of the face are left out.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "hex",
+              "share"
+            ],
+            "properties": {
+              "hex": {
+                "type": "string",
+                "pattern": "^#[0-9a-f]{6}$"
+              },
+              "share": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "colors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "top",
+        "side"
+      ],
+      "description": "Texture colours of the top face and the side faces (north and east views), read from the preview with the renderer's fixed face shading divided back out. A face with too few visible pixels is null.",
+      "properties": {
+        "top": {
+          "$ref": "#/$defs/face_colors"
+        },
+        "side": {
+          "$ref": "#/$defs/face_colors"
+        }
+      }
+    },
+    "family": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_block",
+        "forms"
+      ],
+      "description": "Shapes this block's material comes in, from the registry naming rule (oak_planks: oak_stairs, oak_slab ...). base_block is the material's full block, null when there is none (petrified_oak_slab).",
+      "properties": {
+        "base_block": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/block_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "forms": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "stairs": {
+              "$ref": "#/$defs/block_id"
+            },
+            "slab": {
+              "$ref": "#/$defs/block_id"
+            },
+            "wall": {
+              "$ref": "#/$defs/block_id"
+            },
+            "fence": {
+              "$ref": "#/$defs/block_id"
+            },
+            "fence_gate": {
+              "$ref": "#/$defs/block_id"
+            },
+            "door": {
+              "$ref": "#/$defs/block_id"
+            },
+            "trapdoor": {
+              "$ref": "#/$defs/block_id"
+            },
+            "button": {
+              "$ref": "#/$defs/block_id"
+            },
+            "pressure_plate": {
+              "$ref": "#/$defs/block_id"
+            },
+            "sign": {
+              "$ref": "#/$defs/block_id"
+            },
+            "hanging_sign": {
+              "$ref": "#/$defs/block_id"
+            },
+            "pane": {
+              "$ref": "#/$defs/block_id"
+            },
+            "bars": {
+              "$ref": "#/$defs/block_id"
+            },
+            "carpet": {
+              "$ref": "#/$defs/block_id"
+            },
+            "shelf": {
+              "$ref": "#/$defs/block_id"
+            }
+          }
+        }
+      }
+    },
+    "tile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "block_id",
+        "row",
+        "column"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/candidate_id"
+        },
+        "block_id": {
+          "$ref": "#/$defs/block_id"
+        },
+        "row": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Lossless WebP contact sheet; each 256x256 card is labelled with its candidate_id.",
+      "required": [
+        "content_index",
+        "mime_type",
+        "width",
+        "height",
+        "tiles"
+      ],
+      "properties": {
+        "content_index": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Index of the ImageContent in the tool result content array."
+        },
+        "mime_type": {
+          "const": "image/webp"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/tile"
+          }
+        }
+      }
+    }
+  }
+}

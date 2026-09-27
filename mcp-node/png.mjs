@@ -64,30 +64,40 @@ function parseChunks(source) {
   return { header, idat };
 }
 
-function unfilter(filtered, previous, filterType, bpp) {
-  const row = Buffer.from(filtered);
-  if (filterType === 0) return row;
-  if (filterType > 4) fail(`unsupported PNG filter ${filterType}`);
-  for (let index = 0; index < row.length; index += 1) {
-    const left = index >= bpp ? row[index - bpp] : 0;
-    const above = previous[index];
-    const upperLeft = index >= bpp ? previous[index - bpp] : 0;
-    let predictor;
-    if (filterType === 1) {
-      predictor = left;
-    } else if (filterType === 2) {
-      predictor = above;
-    } else if (filterType === 3) {
-      predictor = (left + above) >> 1;
-    } else {
-      // Paeth: pick the neighbour nearest to left + above - upperLeft.
-      const estimate = left + above - upperLeft;
-      const distances = [Math.abs(estimate - left), Math.abs(estimate - above), Math.abs(estimate - upperLeft)];
-      predictor = [left, above, upperLeft][distances.indexOf(Math.min(...distances))];
+// Reverses one scanline's filter in place: `src` is the filtered row, the
+// result goes to pixels[out..], and the reconstructed previous row is read
+// from the same buffer.  One loop per filter type keeps the hot loop free of
+// branches; a release decode runs about a billion of these byte steps.
+function unfilterInto(pixels, out, src, rowBytes, filterType, bpp) {
+  const up = out - rowBytes;
+  const first = out === 0;
+  if (filterType === 0 || (filterType === 2 && first)) {
+    pixels.set(src, out);
+  } else if (filterType === 1 || (filterType === 4 && first)) {
+    // Paeth with no row above reduces to Sub.
+    for (let i = 0; i < bpp; i += 1) pixels[out + i] = src[i];
+    for (let i = bpp; i < rowBytes; i += 1) pixels[out + i] = (src[i] + pixels[out + i - bpp]) & 0xff;
+  } else if (filterType === 2) {
+    for (let i = 0; i < rowBytes; i += 1) pixels[out + i] = (src[i] + pixels[up + i]) & 0xff;
+  } else if (filterType === 3) {
+    for (let i = 0; i < rowBytes; i += 1) {
+      const left = i >= bpp ? pixels[out + i - bpp] : 0;
+      pixels[out + i] = (src[i] + ((left + (first ? 0 : pixels[up + i])) >> 1)) & 0xff;
     }
-    row[index] = (row[index] + predictor) & 0xff;
+  } else {
+    for (let i = 0; i < bpp; i += 1) pixels[out + i] = (src[i] + pixels[up + i]) & 0xff;
+    for (let i = bpp; i < rowBytes; i += 1) {
+      // Paeth: the neighbour nearest to left + above - upperLeft; ties prefer
+      // left, then above.
+      const a = pixels[out + i - bpp];
+      const b = pixels[up + i];
+      const c = pixels[up + i - bpp];
+      const pa = Math.abs(b - c);
+      const pb = Math.abs(a - c);
+      const pc = Math.abs(a + b - 2 * c);
+      pixels[out + i] = (src[i] + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 0xff;
+    }
   }
-  return row;
 }
 
 export function decodeRgbaPng(source) {
@@ -116,17 +126,13 @@ export function decodeRgbaPng(source) {
     if (decoded[row * (rowBytes + 1)] > 4) fail(`unsupported PNG filter ${decoded[row * (rowBytes + 1)]}`);
   }
   const pixels = Buffer.alloc(width * height * 4);
-  let previous = Buffer.alloc(rowBytes);
+  const view = new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.length);
+  const scanlines = new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.length);
   let cursor = 0;
-  let output = 0;
-  for (let row = 0; row < height; row += 1) {
-    const filterType = decoded[cursor];
-    cursor += 1;
-    const line = unfilter(decoded.subarray(cursor, cursor + rowBytes), previous, filterType, 4);
-    cursor += rowBytes;
-    line.copy(pixels, output);
-    output += rowBytes;
-    previous = line;
+  for (let output = 0; output < pixels.length; output += rowBytes) {
+    const filterType = scanlines[cursor];
+    unfilterInto(view, output, scanlines.subarray(cursor + 1, cursor + 1 + rowBytes), rowBytes, filterType, 4);
+    cursor += rowBytes + 1;
   }
   return { width, height, pixels };
 }

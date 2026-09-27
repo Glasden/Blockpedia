@@ -55,7 +55,7 @@ EXPECTED_SCHEMAS: Mapping[str, tuple[str, ...]] = {
         "mcp-index-info-output.v2",
         "mcp-search-blocks-output.v2",
         "mcp-block-details-output.v2",
-        "mcp-compare-blocks-output.v2",
+        "mcp-compare-blocks-output.v3",
         "mcp-error.v2",
     ),
 }

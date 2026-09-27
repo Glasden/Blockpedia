@@ -85,7 +85,7 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "description": "Local deterministic relevance after the derived-shape factor and recommendation-list deprioritization."
+          "description": "Local deterministic relevance after the derived-shape factor and recommendation-list deprioritization. With similar_to it is the palette similarity alone (keywords then only filter the pool)."
         },
         "score_breakdown": {
           "type": "object",
@@ -118,7 +118,7 @@
               "maximum": 1
             }
           },
-          "description": "Dimensions the query asked for, each 0-1; a dimension the query did not ask for is 0 and not part of score. text: name/synonym/annotation word coverage; color: preview colour and stated colour; shape: registry-tag shape class; light: brightest emission level / 15."
+          "description": "Dimensions the query asked for, each 0-1; a dimension the query did not ask for is 0 and not part of score. text: name/synonym/annotation word coverage; color: preview colour and stated colour; shape: registry-tag shape class; light: brightest emission level / 15. With similar_to: color is the palette similarity (1 identical, 0 at distance 0.25 or more), shape is 1 (same shape class required) and text is the keyword score when keywords were given."
         },
         "reason": {
           "type": "string",
@@ -127,6 +127,11 @@
         },
         "warnings": {
           "$ref": "#/$defs/warnings"
+        },
+        "color_delta_e": {
+          "type": "number",
+          "minimum": 0,
+          "description": "similar_to only: Oklab distance ×100 of the mean top and side face colours from the similar_to block."
         },
         "color_series": {
           "type": "object",

@@ -39,6 +39,7 @@
   "representative": {
     "state_id": "minecraft:oak_stairs[facing=north,half=bottom,shape=straight,waterlogged=false]",
     "candidate_qualification": "eligible",
+    "shape_class": "stairs",
     "shape": [
       {
         "max_x": 1,
@@ -84,6 +85,42 @@
       "redstone_related": false,
       "transparent": false,
       "waterloggable": true
+    },
+    "colors": {
+      "top": {
+        "hex": "#a2824e",
+        "lightness": 56.4,
+        "lightness_std": 9.9,
+        "dominant": [
+          {
+            "hex": "#b19058",
+            "share": 0.72
+          },
+          {
+            "hex": "#67502c",
+            "share": 0.11
+          }
+        ]
+      },
+      "side": {
+        "hex": "#a1824e",
+        "lightness": 56.3,
+        "lightness_std": 9.9,
+        "dominant": [
+          {
+            "hex": "#b7955c",
+            "share": 0.53
+          },
+          {
+            "hex": "#9d804a",
+            "share": 0.26
+          },
+          {
+            "hex": "#67502c",
+            "share": 0.12
+          }
+        ]
+      }
     }
   },
   "semantics": {
@@ -123,6 +160,22 @@
       "木台阶",
       "橡木楼梯"
     ]
+  },
+  "family": {
+    "base_block": "minecraft:oak_planks",
+    "forms": {
+      "stairs": "minecraft:oak_stairs",
+      "slab": "minecraft:oak_slab",
+      "fence": "minecraft:oak_fence",
+      "fence_gate": "minecraft:oak_fence_gate",
+      "door": "minecraft:oak_door",
+      "trapdoor": "minecraft:oak_trapdoor",
+      "button": "minecraft:oak_button",
+      "pressure_plate": "minecraft:oak_pressure_plate",
+      "sign": "minecraft:oak_sign",
+      "hanging_sign": "minecraft:oak_hanging_sign",
+      "shelf": "minecraft:oak_shelf"
+    }
   },
   "warnings": [],
   "images": [
