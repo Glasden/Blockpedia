@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:mcp:mcp-compare-blocks-output.v2",
+  "title": "Blockpedia MCP compare blocks output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "rows",
+    "images"
+  ],
+  "properties": {
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field",
+          "values"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/row_value"
+            }
+          }
+        }
+      }
+    },
+    "images": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "$ref": "#/$defs/image"
+      }
+    }
+  },
+  "$defs": {
+    "block_id": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+$"
+    },
+    "candidate_id": {
+      "type": "string",
+      "pattern": "^T[0-9]{2}$"
+    },
+    "row_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "block_id",
+        "value",
+        "source"
+      ],
+      "properties": {
+        "block_id": {
+          "$ref": "#/$defs/block_id"
+        },
+        "value": {
+          "type": [
+            "boolean",
+            "number",
+            "string"
+          ]
+        },
+        "source": {
+          "enum": [
+            "machine",
+            "annotation"
+          ]
+        }
+      }
+    },
+    "tile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "block_id",
+        "row",
+        "column"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/candidate_id"
+        },
+        "block_id": {
+          "$ref": "#/$defs/block_id"
+        },
+        "row": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Lossless WebP contact sheet; each 256x256 card is labelled with its candidate_id.",
+      "required": [
+        "content_index",
+        "mime_type",
+        "width",
+        "height",
+        "tiles"
+      ],
+      "properties": {
+        "content_index": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Index of the ImageContent in the tool result content array."
+        },
+        "mime_type": {
+          "const": "image/webp"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/tile"
+          }
+        }
+      }
+    }
+  }
+}

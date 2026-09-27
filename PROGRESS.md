@@ -2,7 +2,7 @@
 
 更新：2026-09-27。代码调查基线：`44233c2`。本文件是当前决定、实施顺序和进度的唯一维护入口；旧文档已归档，不再与本文并行维护。
 
-**用户已于 2026-09-27 授权开始实施，D1 exporter 颜色修复、C 特征多 worker 与 E1 推荐名单降权已实现。** 其余接口和参数仍是后续实施目标，并非当前已有能力。256×256 无损 WebP 决定已获用户批准；Windows 导出至构建进展见第 9 节。用户随后明确授权正式发布并上传本机，两端发布及本机 MCP 验证已完成，见第 10 节。
+**用户已于 2026-09-27 授权开始实施，D1 exporter 颜色修复、C 特征多 worker、E1 推荐名单降权与 B 详情瘦身／256 无损 WebP 已实现。** 其余接口和参数仍是后续实施目标，并非当前已有能力。256×256 无损 WebP 决定已获用户批准；Windows 导出至构建进展见第 9 节。用户随后明确授权正式发布并上传本机，两端发布及本机 MCP 验证已完成，见第 10 节。
 
 ## 1. 已确认决定与范围
 
@@ -37,7 +37,7 @@
 E1 实现：Node MCP 与 Studio 工作区查询均接入以下固定规则；不改动导出机器事实、AI 标注或 qualification。
 
 - 名单采用一个固定 ID 集合，不做可配置规则引擎。用户已批准该名单，后续实现可接入默认排序。
-- 泛用途检索中，对名单内已召回候选的相关性分乘 `0.25`，在 Top-N 截断前执行；`local_score`、`final_score` 返回降权后的分数，理由说明名单降权，原匹配分项保持其匹配含义。
+- 泛用途检索中，对名单内已召回候选的相关性分乘 `0.25`，在 Top-N 截断前执行；候选的 `score`（B 阶段起合并原先恒等的 `local_score`／`final_score`）返回降权后的分数，理由说明名单降权，原匹配分项保持其匹配含义。
 - 精确完整 block ID 或官方中英文全名查询保留名称优先，不施加这项泛用途惩罚；子串和同义词命中不算精确查询。并列按稳定 `variant_id` 排序。
 - 既有 `excluded` 过滤仍有效；精确查询也不恢复 excluded 或没有预览的搜索候选。不为名单中缺少预览的条目伪造图像。
 - 搜索和详情分别提供固定的技术／特殊用途提示、虫蚀风险提示；提示是本地推荐规则，不冒充新增运行时行为事实、AI 结论或人工 qualification review。`get_block_details` 仍能查询已登记的这些方块。
@@ -55,7 +55,7 @@ E1 实现：Node MCP 与 Studio 工作区查询均接入以下固定规则；不
 Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 ```
 
-这是十进制 8KB，测完整成功 envelope，包括版本、release 身份、警告、数据与图片元数据；不计协议中重复的 TextContent、JSON-RPC 外壳或 ImageContent/base64。状态页不受此 8KB 上限约束。传输总字节和图片字节在验收时另报，不能把排除图片解释为整个响应小于 8KB。
+这是十进制 8KB，测完整成功输出，包括警告、数据与图片元数据（B 阶段起输出不再带版本、release 身份与哈希外壳，见第 3.6 节）；不计协议中重复的 TextContent、JSON-RPC 外壳或 ImageContent/base64。状态页不受此 8KB 上限约束。传输总字节和图片字节在验收时另报，不能把排除图片解释为整个响应小于 8KB。
 
 摘要保留：官方名称、默认及 canonical 完整状态 ID、属性定义、tags、状态总数、代表状态的几何与碰撞、资格与警告、完整有效语义投影、图片映射。完整语义指已发布的语义字段，不包含 provider 原始响应、提示词或任务历史。当前一个 block 对应一个默认代表；几何和图片明确关联该 canonical 状态，不声称代表所有状态的形状。
 
@@ -69,7 +69,7 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 
 - 直接读取 release 的真实 `states`，按完整 `state_id` 的 UTF-8 字节序排序。每项保留属性、几何、碰撞、行为和必要的变体映射，不重复返回另一份 `state_behaviors`。
 - 每页返回 `block_id`、`total`、`offset`、`next_offset` 与状态数组；末页及越界空页的 `next_offset=null`。状态页不附带图片，也不重复完整语义摘要。
-- 每页沿用 envelope 的版本与 `resolved_release_id`。客户端跨页发现 release 改变，丢弃已收集页面并从第 0 页重取；不增加服务端游标、历史 release selector 或快照服务。
+- 每页返回 `release_id`（输出中唯一保留的 release 身份，专供分页一致性判断）。客户端跨页发现 release 改变，丢弃已收集页面并从第 0 页重取；不增加服务端游标、历史 release selector 或快照服务。
 - 不从属性笛卡尔积推测合法状态，不截掉后续状态。验收读取所有页后与数据库真实状态集合一致，无重复、遗漏，并验证页边界、非法参数和发布切换。
 
 ### 3.3 图片：最终 MCP 输出采用 256×256 无损 WebP（用户已批准）
@@ -82,7 +82,7 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 
 输出 MIME 统一为 `image/webp`；Schema、实际 ImageContent、尺寸、image ID、摘要及映射均与最终 WebP 字节一致。采用满足目标平台的最小编码依赖，不手写 WebP 编码器，不增加质量滑块、格式协商或持久图片缓存服务。
 
-图片仍独立于 8KB 文本预算。验收报告字节与编码耗时，检查客户端实际接收、透明度、联系表标签和四视角可辨识性；无损解码后的 alpha 与可见 RGB 应与缩采样结果一致，原文件不变。若发现 256 图细节问题，修正采样或排版并复验，不能静默回退到 512/PNG 或有损编码后宣称满足决定。当前仅方案获批，功能尚未实施。
+图片仍独立于 8KB 文本预算。验收报告字节与编码耗时，检查客户端实际接收、透明度、联系表标签和四视角可辨识性；无损解码后的 alpha 与可见 RGB 应与缩采样结果一致，原文件不变。若发现 256 图细节问题，修正采样或排版并复验，不能静默回退到 512/PNG 或有损编码后宣称满足决定。已实施，见第 3.6 节。
 
 ### 3.4 目前的尺寸证据（不是功能验收）
 
@@ -111,7 +111,41 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 
 这轮测量曾支持优先评估 512 原尺寸无损 WebP，用户随后选择了 **256×256 无损 WebP**，按第 3.3 节实施；表中的其他格式仅保留作对照证据。JPEG 样本必须合成背景，且玻璃、细栅栏、树叶等样本未必比 PNG 小。[WebP 官方资料](https://developers.google.com/speed/webp/docs/compression)说明其有损/无损模式均支持透明度。
 
-12 张原尺寸无损 WebP 解码检查通过：alpha 与所有 alpha 非零像素的 RGB 均保持原值；未要求保留全透明像素的隐藏 RGB。256 WebP 的最终 MCP 客户端接收、Schema/MIME 接线、编码时间及目标平台依赖仍待实施验证，不能由字节数推断视觉质量合格。原始渲染、mask 和特征计算继续使用原始数据；仅转换 MCP 响应节省的是传输体积，不等于已有 release 的磁盘占用减少。格式决定已批准，尚未实现。
+12 张原尺寸无损 WebP 解码检查通过：alpha 与所有 alpha 非零像素的 RGB 均保持原值；未要求保留全透明像素的隐藏 RGB。256 WebP 的最终 MCP 客户端接收、Schema/MIME 接线、编码时间及目标平台依赖仍待实施验证，不能由字节数推断视觉质量合格。原始渲染、mask 和特征计算继续使用原始数据；仅转换 MCP 响应节省的是传输体积，不等于已有 release 的磁盘占用减少。格式决定已批准，已按第 3.6 节实现。
+
+### 3.6 实施与实测（2026-09-27）
+
+B 阶段已在 Node MCP 实现，Schema 升为 `mcp-*-output.v2`／`mcp-error.v2`，不保留 v1 输出兼容。
+
+- `get_block_details` 按第 3.1、3.2 节实现 `detail="summary"|"states"`；summary 下传 `offset`／`limit` 返回参数错误，工具输入 Schema 对二者不设默认值，避免客户端自动补默认导致误拒。摘要的代表状态取首个视觉变体的 canonical 状态，没有视觉变体时取默认状态并给出已审核的 `skip_reason`；变体警告与本地名单提示合并去重。
+- 支撑事实在当前 release 全部为 unknown：输出省略值为 unknown 的 `requires_support` 与各方向 `support`，已知值原样保留，Schema 注明缺失即未知，不代表 false。
+- 图片：`png.mjs` 读取 release 原 PNG，在内存中 nearest 缩为 256×256 卡片，联系表按每卡 256 排列并在最终尺寸绘制 T01 标签，整张只编码一次。编码依赖为 `@jsquash/webp` 1.5.0（libwebp 的 WebAssembly 构建，约 1 MB，无原生二进制，Windows/Linux 通用），参数为 libwebp 默认无损强度 `q=75,m=4` 并开启 `exact`。实测 `q=100,m=6` 单卡约 0.7–1.3 秒、字节几乎不变，故不用。
+
+用户在实施时追加要求去除对流程无用的哈希、版本等信息，本次一并完成：
+
+| 移除 | 说明 |
+|---|---|
+| `schema_version`、`request_id`、`manifest_sha256`、`resolved_release_id`、`minecraft_version` 回显及 `data` 外壳 | 所有成功输出改为扁平对象。release 身份只保留在 `index_info` 与状态分页的 `release_id`（第 3.2 节的跨页一致性需要）。 |
+| 图片 `image_id`、`sha256`、`purpose`，以及与之重复的 `contact_sheet` | 图片元数据只剩 `content_index`、`mime_type`、宽高与 `tiles`（或详情卡的 `state_id`）。 |
+| 几何／碰撞 `signature` 哈希、审核记录 ID（`audit`）、`translation_key` | 形状只返回 boxes；审核 ID 在 MCP 内无可用消费方。 |
+| 搜索的 `search_id`、`query` 回显、恒空 `hard_filters`、恒 false `reranked_by_llm`、`exclusion_summary`、恒为 local 的 `score_source`、与 `block_id` 相同的 `variant_id`、仅复述已有 ID 的 `machine_fact_refs` | 原本恒等的 `local_score`／`final_score` 合并为 `score`。事实追溯改为以 `block_id` 与 `recommended_state_id` 调用详情。 |
+| 比较的 `block_ids` 回显；错误输出的 `retryable`、`provider_error_code`、`field_errors`、`integrity_component`、`images` 等恒定或空字段 | 错误只保留 `error_code`、`message`，以及非空时的 `available_versions`／`invalid_block_ids`。 |
+
+保留 `index_info` 的免责声明与 `built_at`；`score_breakdown`、`reason` 等搜索输出精简仍属第 5 节 P1 后续。
+
+全 release 扫描（`rel_ec8397fe58cb4faba5fa15b1de406ca0`，1,196 blocks）：摘要 Schema 全部通过，**0 项 ≥ 8000 B**，最大 3,656 B（`powder_snow_cauldron`），中位 1,644 B；`oak_stairs` 1,835 B、`spruce_trapdoor` 1,815 B（改前 `oak_stairs` 为 135,626 B）。以 limit=16 读取 2,733 页后，每个 block 的状态集合与索引完全一致，无重复或遗漏。1,172 张卡片解码后 RGBA 与原 PNG 的 nearest 缩采样逐字节一致，WebP 共 2,043,800 B，原 PNG 为 19,965,482 B。详情平均 39.9 ms（含 512 PNG 解码）。
+
+| 调用 | 文本 | 图片 | 尺寸 | 耗时 |
+|---|---:|---:|---|---:|
+| search `stone wall` 默认 limit 8 | 3,637 B（改前 7,934 B） | 12,958 B（改前 PNG 59,253 B） | 1024×512 | — |
+| search `stone wall` limit 12 | 5,420 B | 18,358 B | 1024×768 | 243 ms |
+| search `white` limit 8 | 3,758 B | 14,164 B | 1024×512 | 171 ms |
+| compare stone/oak_planks | 521 B（改前 1,329 B） | 4,946 B（改前 21,453 B） | 512×256 | 46 ms |
+| compare 6 种白色方块 | 1,339 B | 14,078 B | 1536×256 | 121 ms |
+
+人工查看了搜索 12 卡、比较（玻璃板、铁栏杆、橡树树叶、棕色旗帜）与楼梯卡片：T 标签清晰、四视角可辨、透明正常；玻璃板在 512 原图中本就只有中心柱，256 卡片与之一致。
+
+验证：`python -m pytest tests -q` **367 passed、6 skipped**；R4 新增用例覆盖摘要 < 8000 B、代表状态与 support 省略、带部分／全透明像素图案的卡片无损、20 个状态 8/8/4 分页与 UTF-8 顺序、越界空页、summary 下拒绝分页参数、非法 limit/offset、发布切换后页面 `release_id` 变化，以及三种带图工具的 WebP MIME／尺寸／标签位置；FTS/LIKE 两路径均执行。本机 Claude Code 会话通过真实 stdio 连接调用 `get_block_details`：摘要与状态页均为新结构，WebP 卡片在客户端正常显示。扫描脚本与报告在忽略目录 `build/mcp-slim-evidence/`。Windows 端需在 `mcp-node` 执行 `npm ci` 安装新依赖后才能运行本版本 MCP，尚未在 Windows 复验。
 
 ## 4. Studio 可选多 worker
 
@@ -172,7 +206,7 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 | 阶段 | 交付物与依赖 | 验收负责人及最小证据 | 状态 |
 |---|---|---|---|
 | A 文档收敛 | 本文件、旧文档归档、必要引用接线 | 主代理：归档完整性、有效链接、原稿和 evidence 保留、候选提交审核 | 文档已整理；18 项名单已获用户批准；提交状态见会话 |
-| B 详情与 MCP 图片输出 | summary/states、分页；三种带图工具最终响应采用256卡片/无损WebP，处理过程使用原图 | 实现者：两个摘要尺寸断言、全 release 大小扫描、分页集合一致、Schema/MIME、图片元数据、无损解码、客户端及视觉检查 | 未实施；图片方案已批准 |
+| B 详情与 MCP 图片输出 | summary/states、分页；三种带图工具最终响应采用256卡片/无损WebP，处理过程使用原图 | 实现者：两个摘要尺寸断言、全 release 大小扫描、分页集合一致、Schema/MIME、图片元数据、无损解码、客户端及视觉检查 | 已实现，见第 3.6 节；Windows 端需 `npm ci` 后复验 |
 | C 特征多 worker | 第 4 节配置与进程池；可与 B/D 独立开发 | 实现者：串并行结果一致、生命周期/故障检查、同 run 并行证据及真实计时 | 已实现；默认 1。Windows 本次已用 5 个实际子进程完成 1,172 项特征；Linux 生命周期与计时见第 4.1 节 |
 | D 渲染与形状事实 | D1 颜色修复及完整单次导出已交付；形状分类继续待办 | 实现者：Java 构建、真实 GPU 样本、分类来源检查；主代理核对完整导出验证 | 定向 GPU 与 Windows 完整单次导入校验已完成，见第 8、9 节；形状分类及双次确定性验证未完成 |
 | E 搜索与名单 | 相关性、中文映射、技术及虫蚀降权；名单已获用户批准，最终颜色/形状验收依赖 D | 实现者：约20条查询、FTS/LIKE、精确与泛用途查询对照、稳定排序 | E1 技术及虫蚀降权已实现；广义相关性、中文映射与完整建筑查询集仍未实施 |

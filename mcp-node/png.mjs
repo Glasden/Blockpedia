@@ -1,12 +1,13 @@
-// Minimal Node port of the restricted RGBA PNG lane used by the R3 contact
-// sheet: decode from src/blockpedia/png.py plus the 512px nearest resize,
-// T01-style label painting and chunked encoder from src/blockpedia/r3.py.
+// Minimal Node port of the restricted RGBA PNG decoder from
+// src/blockpedia/png.py, plus the MCP image composition: nearest resampling to
+// 256px block cards, T01-style labels and one lossless WebP per response.
 //
 // Only non-interlaced 8-bit RGBA is accepted.  Chunk framing, CRC and scanline
 // length are still enforced exactly as in Python; this is not a general PNG
-// decoder and deliberately no dependency is added.
+// decoder and deliberately no dependency is added.  Release previews are read
+// unchanged; only the bytes sent to the MCP client are resampled and re-encoded.
 import zlib from 'node:zlib';
-import { createHash } from 'node:crypto';
+import { encodeLosslessWebp } from './webp.mjs';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -130,39 +131,6 @@ export function decodeRgbaPng(source) {
   return { width, height, pixels };
 }
 
-function chunk(kind, payload) {
-  const out = Buffer.alloc(payload.length + 12);
-  out.writeUInt32BE(payload.length, 0);
-  Buffer.from(kind, 'latin1').copy(out, 4);
-  payload.copy(out, 8);
-  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(kind, 'latin1'), payload])), payload.length + 8);
-  return out;
-}
-
-export function encodeRgbaPng(width, height, pixels) {
-  if (width <= 0 || height <= 0 || pixels.length !== width * height * 4) {
-    throw new Error('invalid RGBA image');
-  }
-  const rowBytes = width * 4;
-  const rows = Buffer.alloc(height * (rowBytes + 1));
-  for (let row = 0; row < height; row += 1) {
-    pixels.copy(rows, row * (rowBytes + 1) + 1, row * rowBytes, (row + 1) * rowBytes);
-  }
-  const header = Buffer.alloc(13);
-  header.writeUInt32BE(width, 0);
-  header.writeUInt32BE(height, 4);
-  header.set([8, 6, 0, 0, 0], 8);
-  // ponytail: Node 24 statically links zlib-ng, so the IDAT stream is not
-  // byte-identical to CPython zlib 1.3 level 9; chunks, CRCs and scanlines are.
-  // Wire an external stock-zlib deflate only if byte equality is required.
-  return Buffer.concat([
-    PNG_SIGNATURE,
-    chunk('IHDR', header),
-    chunk('IDAT', zlib.deflateSync(rows, { level: 9 })),
-    chunk('IEND', Buffer.alloc(0)),
-  ]);
-}
-
 const GLYPHS = {
   0: ['111', '101', '101', '101', '111'],
   1: ['010', '110', '010', '010', '111'],
@@ -180,7 +148,14 @@ const GLYPHS = {
 const glyphFor = (char) => GLYPHS[char] ?? GLYPHS['0'];
 const tileId = (index) => `T${String(index + 1).padStart(2, '0')}`;
 
-function resizeNearest(image, width = 512, height = 512) {
+// Each block card is 256x256: the 512px four-view preview becomes four 128px
+// views.  Contact sheets place one card per block instead of shrinking the
+// whole sheet to 256px.
+export const CARD_SIZE = 256;
+const LABEL_SCALE = 3;
+const LABEL_PAD = 4;
+
+function resizeNearest(image, width = CARD_SIZE, height = CARD_SIZE) {
   if (image.width === width && image.height === height) return image.pixels;
   const result = Buffer.alloc(width * height * 4);
   for (let y = 0; y < height; y += 1) {
@@ -195,15 +170,16 @@ function resizeNearest(image, width = 512, height = 512) {
 }
 
 function paintLabel(pixels, width, height, x, y, label) {
-  const scale = 5;
+  const scale = LABEL_SCALE;
+  const pad = LABEL_PAD;
   const glyphWidth = label.split('').reduce((total, char) => total + glyphFor(char)[0].length + 1, 0) * scale;
   const glyphHeight = 5 * scale;
-  const left = Math.min(Math.max(0, x), Math.max(0, width - glyphWidth - 16));
+  const left = Math.min(Math.max(0, x), Math.max(0, width - glyphWidth - 2 * pad));
   const top = Math.max(0, y);
   // Opaque backing keeps the identifier readable without a font asset; it is
   // part of the deterministic contact-sheet image.
-  for (let row = 0; row < glyphHeight + 12; row += 1) {
-    for (let column = 0; column < glyphWidth + 12; column += 1) {
+  for (let row = 0; row < glyphHeight + 2 * pad; row += 1) {
+    for (let column = 0; column < glyphWidth + 2 * pad; column += 1) {
       const px = left + column;
       const py = top + row;
       if (px >= 0 && px < width && py >= 0 && py < height) {
@@ -211,7 +187,7 @@ function paintLabel(pixels, width, height, x, y, label) {
       }
     }
   }
-  let cursor = left + 6;
+  let cursor = left + pad;
   for (const char of label) {
     const glyph = glyphFor(char);
     for (let gy = 0; gy < glyph.length; gy += 1) {
@@ -220,7 +196,7 @@ function paintLabel(pixels, width, height, x, y, label) {
         for (let dy = 0; dy < scale; dy += 1) {
           for (let dx = 0; dx < scale; dx += 1) {
             const px = cursor + gx * scale + dx;
-            const py = top + 6 + gy * scale + dy;
+            const py = top + pad + gy * scale + dy;
             if (px >= 0 && px < width && py >= 0 && py < height) {
               pixels.set([0xff, 0xff, 0xff, 0xff], (py * width + px) * 4);
             }
@@ -232,29 +208,31 @@ function paintLabel(pixels, width, height, x, y, label) {
   }
 }
 
+export function makeBlockCard(image) {
+  return { webp: encodeLosslessWebp(CARD_SIZE, CARD_SIZE, resizeNearest(image)), width: CARD_SIZE, height: CARD_SIZE };
+}
+
 export function makeContactSheet(images, columns = 4) {
   if (!(images.length >= 1 && images.length <= 16)) throw new Error('contact sheets contain 1-16 images');
   const cols = Math.max(1, Math.min(columns, images.length));
   const rows = Math.ceil(images.length / cols);
-  const width = cols * 512;
-  const height = rows * 512;
+  const width = cols * CARD_SIZE;
+  const height = rows * CARD_SIZE;
+  const labelHeight = 5 * LABEL_SCALE + 2 * LABEL_PAD;
   const pixels = Buffer.alloc(width * height * 4);
   for (let index = 0; index < images.length; index += 1) {
     const card = resizeNearest(images[index]);
     const column = index % cols;
     const row = Math.floor(index / cols);
-    const x0 = column * 512;
-    const y0 = row * 512;
-    for (let y = 0; y < 512; y += 1) {
+    const x0 = column * CARD_SIZE;
+    const y0 = row * CARD_SIZE;
+    for (let y = 0; y < CARD_SIZE; y += 1) {
       const target = ((y0 + y) * width + x0) * 4;
-      const source = y * 512 * 4;
-      card.copy(pixels, target, source, source + 512 * 4);
+      const source = y * CARD_SIZE * 4;
+      card.copy(pixels, target, source, source + CARD_SIZE * 4);
     }
-    paintLabel(pixels, width, height, x0 + 12, y0 + 470, tileId(index));
+    paintLabel(pixels, width, height, x0 + 6, y0 + CARD_SIZE - labelHeight - 3, tileId(index));
   }
-  return { png: encodeRgbaPng(width, height, pixels), width, height };
-}
-
-export function sha256Bytes(value) {
-  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+  // One encode for the finished sheet, not one per card.
+  return { webp: encodeLosslessWebp(width, height, pixels), width, height };
 }

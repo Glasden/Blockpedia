@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:mcp:mcp-search-blocks-output.v2",
+  "title": "Blockpedia MCP search blocks output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "candidates",
+    "images"
+  ],
+  "properties": {
+    "candidates": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "$ref": "#/$defs/candidate"
+      }
+    },
+    "images": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "$ref": "#/$defs/image"
+      }
+    }
+  },
+  "$defs": {
+    "block_id": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+$"
+    },
+    "state_id": {
+      "type": "string",
+      "maxLength": 8192,
+      "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "candidate_id": {
+      "type": "string",
+      "pattern": "^T[0-9]{2}$"
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "block_id",
+        "display_name",
+        "recommended_state_id",
+        "candidate_qualification",
+        "score",
+        "score_breakdown",
+        "reason",
+        "warnings"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/candidate_id"
+        },
+        "block_id": {
+          "$ref": "#/$defs/block_id"
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "recommended_state_id": {
+          "$ref": "#/$defs/state_id"
+        },
+        "candidate_qualification": {
+          "enum": [
+            "eligible",
+            "conditional"
+          ]
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Local deterministic score after recommendation-list deprioritization."
+        },
+        "score_breakdown": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "shape",
+            "color",
+            "use",
+            "name_synonym",
+            "style",
+            "behavior"
+          ],
+          "properties": {
+            "shape": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "color": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "use": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "name_synonym": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "style": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "behavior": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "warnings": {
+          "$ref": "#/$defs/warnings"
+        }
+      }
+    },
+    "tile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "block_id",
+        "row",
+        "column"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/candidate_id"
+        },
+        "block_id": {
+          "$ref": "#/$defs/block_id"
+        },
+        "row": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Lossless WebP contact sheet; each 256x256 card is labelled with its candidate_id.",
+      "required": [
+        "content_index",
+        "mime_type",
+        "width",
+        "height",
+        "tiles"
+      ],
+      "properties": {
+        "content_index": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Index of the ImageContent in the tool result content array."
+        },
+        "mime_type": {
+          "const": "image/webp"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/tile"
+          }
+        }
+      }
+    }
+  }
+}

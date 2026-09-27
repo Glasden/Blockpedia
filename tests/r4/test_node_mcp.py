@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
 import shutil
@@ -11,6 +10,7 @@ import sqlite3
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -26,11 +26,13 @@ NODE = Path(os.environ.get("BLOCKPEDIA_NODE") or (
     "/opt/node-v24.21.0-linux-arm64/bin/node" if Path("/opt/node-v24.21.0-linux-arm64/bin/node").is_file() else shutil.which("node") or "node"
 ))
 SCHEMAS = {
-    "index_info": "mcp-index-info-output.v1",
-    "search_blocks": "mcp-search-blocks-output.v1",
-    "get_block_details": "mcp-block-details-output.v1",
-    "compare_blocks": "mcp-compare-blocks-output.v1",
+    "index_info": "mcp-index-info-output.v2",
+    "search_blocks": "mcp-search-blocks-output.v2",
+    "get_block_details": "mcp-block-details-output.v2",
+    "compare_blocks": "mcp-compare-blocks-output.v2",
 }
+CARD = 256
+WEBP_DECODER = (ROOT / "mcp-node/node_modules/@jsquash/webp/codec/dec/webp_dec.js").as_uri()
 
 
 def _inventory(root: Path) -> dict[str, bytes]:
@@ -40,6 +42,47 @@ def _inventory(root: Path) -> dict[str, bytes]:
 def _pixel(image, x: int, y: int) -> bytes:
     start = (y * image.width + x) * 4
     return image.pixels[start:start + 4]
+
+
+@dataclass(frozen=True)
+class RGBA:
+    width: int
+    height: int
+    pixels: bytes
+
+
+def decode_webp(payloads: list[bytes]) -> list[RGBA]:
+    """Decode WebP with the same libwebp wasm package the server ships."""
+    script = f"""import {{ readFileSync }} from 'node:fs';
+const url = new URL({json.dumps(WEBP_DECODER)});
+const {{ default: factory }} = await import(url);
+const wasm = new WebAssembly.Module(readFileSync(new URL(url.href.replace(/\\.js$/, '.wasm'))));
+const dec = await factory({{ noInitialRun: true, instantiateWasm: (imports, done) => {{ const i = new WebAssembly.Instance(wasm, imports); done(i); return i.exports; }} }});
+const out = JSON.parse(readFileSync(0, 'utf8')).map((item) => {{
+  const image = dec.decode(Buffer.from(item, 'base64'));
+  return {{ width: image.width, height: image.height, pixels: Buffer.from(image.data.buffer, image.data.byteOffset, image.data.length).toString('base64') }};
+}});
+process.stdout.write(JSON.stringify(out));
+"""
+    result = subprocess.run([str(NODE), "--input-type=module", "-e", script], input=json.dumps([base64.b64encode(item).decode() for item in payloads]).encode(), capture_output=True, check=True)
+    return [RGBA(item["width"], item["height"], base64.b64decode(item["pixels"])) for item in json.loads(result.stdout)]
+
+
+def nearest(image, size: int = CARD) -> bytes:
+    out = bytearray(size * size * 4)
+    for y in range(size):
+        sy = min(image.height - 1, y * image.height // size)
+        for x in range(size):
+            sx = min(image.width - 1, x * image.width // size)
+            start = (sy * image.width + sx) * 4
+            out[(y * size + x) * 4:(y * size + x) * 4 + 4] = image.pixels[start:start + 4]
+    return bytes(out)
+
+
+def result_images(result: dict) -> list[RGBA]:
+    items = result["content"][1:]
+    assert all(item["type"] == "image" and item["mimeType"] == "image/webp" for item in items)
+    return decode_webp([base64.b64decode(item["data"], validate=True) for item in items])
 
 
 def _send(process: subprocess.Popen[bytes], reader: ThreadPoolExecutor, message: dict) -> dict | None:
@@ -135,16 +178,16 @@ def test_e1_local_ranking_exact_names_and_warnings(tmp_path: Path, force_like: b
             result = call(send, 50, "search_blocks", {"keywords": [term], "limit": limit})
             assert not result["isError"]
             Draft202012Validator(load_schema(SCHEMAS["search_blocks"])).validate(result["structuredContent"])
-            return result["structuredContent"]["data"]["candidates"]
+            return result["structuredContent"]["candidates"]
 
         wall = search("wall")
         by_id = {item["block_id"]: item for item in wall}
         assert [item["block_id"] for item in wall[:1]] == ["minecraft:glass"]
         assert search("wall", 1)[0]["block_id"] == "minecraft:glass"
-        assert by_id["minecraft:barrier"]["local_score"] == by_id["minecraft:glass"]["local_score"] * 0.25
-        assert by_id["minecraft:infested_stone"]["final_score"] == by_id["minecraft:stone"]["final_score"] * 0.25
+        assert by_id["minecraft:barrier"]["score"] == by_id["minecraft:glass"]["score"] * 0.25
+        assert by_id["minecraft:infested_stone"]["score"] == by_id["minecraft:stone"]["score"] * 0.25
         assert by_id["minecraft:barrier"]["score_breakdown"] == by_id["minecraft:glass"]["score_breakdown"]
-        assert by_id["minecraft:sand"]["local_score"] == by_id["minecraft:gravel"]["local_score"] == by_id["minecraft:glass"]["local_score"]
+        assert by_id["minecraft:sand"]["score"] == by_id["minecraft:gravel"]["score"] == by_id["minecraft:glass"]["score"]
         assert [item["block_id"] for item in wall if item["block_id"] in {"minecraft:barrier", "minecraft:command_block"}] == ["minecraft:barrier", "minecraft:command_block"]
         assert "Local recommendation rule" in by_id["minecraft:infested_stone"]["reason"]
         assert "蠹虫风险" in " ".join(by_id["minecraft:infested_stone"]["warnings"])
@@ -156,15 +199,14 @@ def test_e1_local_ranking_exact_names_and_warnings(tmp_path: Path, force_like: b
         for term in ("MINECRAFT:INFESTED_STONE", "  iNfEsTeD   StOnE  ", "  虫蚀石头  "):
             item = search(term, 1)[0]
             assert item["block_id"] == "minecraft:infested_stone"
-            assert item["local_score"] == item["final_score"]
-            assert item["local_score"] == (0 if term.startswith("MINECRAFT:") else 1)
+            assert item["score"] == (0 if term.startswith("MINECRAFT:") else 1)
             assert "Local recommendation rule" not in item["reason"]
         for term in ("infested", "bugstone"):
             item = next(item for item in search(term) if item["block_id"] == "minecraft:infested_stone")
             assert "Local recommendation rule" in item["reason"]
-            assert item["local_score"] == 0.25
+            assert item["score"] == 0.25
         assert search("MINECRAFT:BARRIER", 1)[0]["block_id"] == "minecraft:barrier"
-        assert search("  BARRIER  ", 1)[0]["local_score"] == 1
+        assert search("  BARRIER  ", 1)[0]["score"] == 1
         assert search("屏障", 1)[0]["block_id"] == "minecraft:barrier"
         assert search("minecraft:light") == []
         assert search("minecraft:structure_void") == []
@@ -172,8 +214,8 @@ def test_e1_local_ranking_exact_names_and_warnings(tmp_path: Path, force_like: b
             details = call(send, 51, "get_block_details", {"block_id": block_id})["structuredContent"]
             Draft202012Validator(load_schema(SCHEMAS["get_block_details"])).validate(details)
             assert expected in " ".join(details["warnings"])
-            if details["data"]["variants"]:
-                assert expected in " ".join(details["data"]["variants"][0]["warnings"])
+            assert len(details["warnings"]) == len(set(details["warnings"]))
+        assert "existing review warning" in call(send, 53, "get_block_details", {"block_id": "minecraft:barrier"})["structuredContent"]["warnings"]
         assert call(send, 52, "get_block_details", {"block_id": "minecraft:stone"})["structuredContent"]["warnings"] == []
 
 
@@ -193,7 +235,7 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
         for tool in listed["result"]["tools"]:
             assert tool["annotations"]["readOnlyHint"] is True
             branches = tool["outputSchema"]["oneOf"]
-            assert {branch["properties"]["schema_version"]["const"] for branch in branches} == {SCHEMAS[tool["name"]], "mcp-error.v1"}
+            assert {branch["$id"].rsplit(":", 1)[1] for branch in branches} == {SCHEMAS[tool["name"]], "mcp-error.v2"}
         calls = [
             ("index_info", {}),
             ("search_blocks", {"keywords": ["yellow", "carpet"]}),
@@ -204,66 +246,64 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
             result = call(send, id, name, args)
             structured = result["structuredContent"]
             assert result["isError"] is False
-            assert structured["schema_version"] == SCHEMAS[name]
-            assert structured["minecraft_version"] == "26.2"
-            assert structured["resolved_release_id"] == fixture.release.name
             assert json.loads(result["content"][0]["text"]) == structured
             Draft202012Validator(load_schema(SCHEMAS[name])).validate(structured)
-            images = [base64.b64decode(item["data"], validate=True) for item in result["content"][1:]]
-            metadata = structured["data"].get("images", [])
+            assert not {"schema_version", "request_id", "manifest_sha256", "resolved_release_id"} & set(structured)
+            images = result_images(result)
+            metadata = structured.get("images", [])
             assert len(images) == len(metadata)
             for index, (image, meta) in enumerate(zip(images, metadata, strict=True), start=1):
-                decoded = decode_rgba_png(image)
-                digest = hashlib.sha256(image).hexdigest()
-                assert (meta["width"], meta["height"]) == (decoded.width, decoded.height)
-                assert meta["sha256"] == "sha256:" + digest
-                assert meta["image_id"] == "img_" + digest[:24]
+                assert (meta["width"], meta["height"]) == (image.width, image.height)
+                assert meta["mime_type"] == "image/webp"
                 assert meta["content_index"] == index
+            if name == "index_info":
+                assert (structured["minecraft_version"], structured["release_id"]) == ("26.2", fixture.release.name)
             if name == "search_blocks":
-                assert [(item["block_id"], item["local_score"]) for item in structured["data"]["candidates"]] == [("minecraft:yellow_carpet", 0.48389055)]
-                assert structured["data"]["hard_filters"] == []
-                assert structured["data"]["reranked_by_llm"] is False
-                assert all(item["score_source"] == "local" for item in structured["data"]["candidates"])
-                assert structured["data"]["contact_sheet"]["tile_mapping"] == [{"candidate_id": "T01", "variant_id": "minecraft:yellow_carpet", "block_id": "minecraft:yellow_carpet", "row": 0, "column": 0}]
-                assert metadata[0]["mapping"] == [{"candidate_id": "T01", "variant_id": "minecraft:yellow_carpet", "block_id": "minecraft:yellow_carpet"}]
+                assert [(item["block_id"], item["score"]) for item in structured["candidates"]] == [("minecraft:yellow_carpet", 0.48389055)]
+                assert metadata[0]["tiles"] == [{"candidate_id": "T01", "block_id": "minecraft:yellow_carpet", "row": 0, "column": 0}]
+                assert (images[0].width, images[0].height) == (CARD, CARD)
                 preview = decode_rgba_png((fixture.release / "previews/minecraft/yellow_carpet/preview.png").read_bytes())
-                assert _pixel(decode_rgba_png(images[0]), 256, 256) == _pixel(preview, 256, 256)
+                assert _pixel(images[0], 128, 128) == _pixel(preview, 256, 256)
             if name == "get_block_details":
-                assert structured["data"]["block_id"] == "minecraft:stone"
-                assert images == [(fixture.release / "previews/minecraft/stone/preview.png").read_bytes()]
+                assert structured["block_id"] == "minecraft:stone"
+                assert metadata[0]["state_id"] == structured["representative"]["state_id"] == "minecraft:stone"
+                preview = decode_rgba_png((fixture.release / "previews/minecraft/stone/preview.png").read_bytes())
+                assert images[0].pixels == nearest(preview)
             if name == "compare_blocks":
-                assert structured["data"]["block_ids"] == ["minecraft:stone", "minecraft:glass"]
-                assert [tile["variant_id"] for tile in structured["data"]["contact_sheet"]["tile_mapping"]] == ["minecraft:stone", "minecraft:glass"]
-                assert [item["variant_id"] for item in metadata[0]["mapping"]] == ["minecraft:stone", "minecraft:glass"]
-                sheet = decode_rgba_png(images[0])
-                for x, name in [(256, "stone"), (768, "glass")]:
+                assert [(tile["candidate_id"], tile["block_id"], tile["column"]) for tile in metadata[0]["tiles"]] == [("T01", "minecraft:stone", 0), ("T02", "minecraft:glass", 1)]
+                assert (images[0].width, images[0].height) == (2 * CARD, CARD)
+                for x, name in [(128, "stone"), (384, "glass")]:
                     preview = decode_rgba_png((fixture.release / f"previews/minecraft/{name}/preview.png").read_bytes())
-                    assert _pixel(sheet, x, 256) == _pixel(preview, 256, 256)
+                    assert _pixel(images[0], x, 128) == _pixel(preview, 256, 256)
         missing = call(send, 7, "get_block_details", {"block_id": "minecraft:not_in_release"})
-        assert missing["isError"] and missing["structuredContent"]["error_code"] == "BLOCK_NOT_FOUND"
-        Draft202012Validator(load_schema("mcp-error.v1")).validate(missing["structuredContent"])
+        assert missing["isError"] and missing["structuredContent"] == {
+            "error_code": "BLOCK_NOT_FOUND", "message": "The requested block is not in this release.", "invalid_block_ids": ["minecraft:not_in_release"],
+        }
+        Draft202012Validator(load_schema("mcp-error.v2")).validate(missing["structuredContent"])
         for id, keyword in [(8, "ﬆone"), (9, "😀a")]:
             result = call(send, id, "search_blocks", {"keywords": [keyword]})
-            candidates = result["structuredContent"]["data"]["candidates"]
+            candidates = result["structuredContent"]["candidates"]
             assert [item["block_id"] for item in candidates] == ["minecraft:stone"]
             assert candidates[0]["display_name"] == "Stone"
         ranked = call(send, 14, "search_blocks", {"keywords": ["yellow", "stone", "glass"]})
-        ranked_data = ranked["structuredContent"]["data"]
-        assert [(item["block_id"], item["local_score"]) for item in ranked_data["candidates"]] == [
+        ranked_data = ranked["structuredContent"]
+        assert [(item["block_id"], item["score"]) for item in ranked_data["candidates"]] == [
             ("minecraft:yellow_carpet", 0.90729479), ("minecraft:stone", 0.73314455), ("minecraft:glass", 0.63587496),
         ]
         assert [item["candidate_id"] for item in ranked_data["candidates"]] == ["T01", "T02", "T03"]
-        assert [item["variant_id"] for item in ranked_data["contact_sheet"]["tile_mapping"]] == [item["variant_id"] for item in ranked_data["candidates"]]
-        assert [item["variant_id"] for item in ranked_data["images"][0]["mapping"]] == [item["variant_id"] for item in ranked_data["candidates"]]
-        sheet = decode_rgba_png(base64.b64decode(ranked["content"][1]["data"], validate=True))
+        assert [(item["candidate_id"], item["block_id"]) for item in ranked_data["images"][0]["tiles"]] == [(item["candidate_id"], item["block_id"]) for item in ranked_data["candidates"]]
+        [sheet] = result_images(ranked)
+        assert (sheet.width, sheet.height) == (3 * CARD, CARD)
         for index, candidate in enumerate(ranked_data["candidates"]):
-            preview_name = candidate["variant_id"].removeprefix("minecraft:")
+            preview_name = candidate["block_id"].removeprefix("minecraft:")
             preview = decode_rgba_png((fixture.release / f"previews/minecraft/{preview_name}/preview.png").read_bytes())
-            assert _pixel(sheet, index * 512 + 256, 256) == _pixel(preview, 256, 256)
+            assert _pixel(sheet, index * CARD + 128, 128) == _pixel(preview, 256, 256)
+            label = _pixel(sheet, index * CARD + 7, CARD - 5)
+            assert label == bytes([0x18, 0x18, 0x18, 0xFF]), "T-label backing must be drawn inside its 256px card"
         empty = call(send, 15, "search_blocks", {"keywords": ["term-not-present"]})
         assert empty["isError"] is False
-        assert empty["structuredContent"]["data"]["candidates"] == []
-        assert empty["structuredContent"]["data"]["images"] == []
+        assert empty["structuredContent"] == {"candidates": [], "images": []}
+        assert len(empty["content"]) == 1
         for id, name, args in [
             (10, "search_blocks", {"keywords": ["\x85"]}),
             (11, "search_blocks", {"keywords": ["stone"], "limit": None}),
@@ -272,6 +312,13 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
             (16, "search_blocks", {"query": "stone"}),
             (17, "search_blocks", {"keywords": ["stone"], "limit": 0}),
             (18, "search_blocks", {"keywords": ["x"] * 17}),
+            (19, "get_block_details", {"block_id": "minecraft:stone", "offset": 0}),
+            (20, "get_block_details", {"block_id": "minecraft:stone", "limit": 8}),
+            (21, "get_block_details", {"block_id": "minecraft:stone", "detail": "full"}),
+            (22, "get_block_details", {"block_id": "minecraft:stone", "detail": "states", "limit": 17}),
+            (23, "get_block_details", {"block_id": "minecraft:stone", "detail": "states", "limit": 0}),
+            (24, "get_block_details", {"block_id": "minecraft:stone", "detail": "states", "offset": -1}),
+            (25, "get_block_details", {"block_id": "minecraft:stone", "detail": "states", "offset": 1.5}),
         ]:
             rejected = send({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": args}})
             assert rejected and rejected["error"]["code"] == -32602, rejected
@@ -294,7 +341,9 @@ def test_pointer_switch_is_seen_on_next_request(tmp_path: Path) -> None:
         current["versions"]["26.2"].update({"release_id": second_id, "relative_path": f"releases/26.2/{second_id}"})
         (tmp_path / "current.json").write_text(json.dumps(current), encoding="utf-8")
         second = call(send, 3, "index_info", {})["structuredContent"]
-        assert first["resolved_release_id"] != second["resolved_release_id"] == second_id
+        assert first["release_id"] != second["release_id"] == second_id
+        page = call(send, 4, "get_block_details", {"block_id": "minecraft:stone", "detail": "states"})["structuredContent"]
+        assert page["release_id"] == second_id
 
 
 def test_unpublished_version_and_invalid_pointer_fail_closed(tmp_path: Path) -> None:
@@ -302,6 +351,7 @@ def test_unpublished_version_and_invalid_pointer_fail_closed(tmp_path: Path) -> 
     with node_session(tmp_path) as send:
         unpublished = call(send, 2, "index_info", {"minecraft_version": "99.9"})
         assert unpublished["isError"] and unpublished["structuredContent"]["error_code"] == "VERSION_NOT_AVAILABLE"
+        assert unpublished["structuredContent"]["available_versions"] == ["26.2"]
         current_file = tmp_path / "current.json"
         current = json.loads(current_file.read_text(encoding="utf-8"))
         current["versions"]["26.2"]["relative_path"] = "releases/26.2/../escape"
@@ -318,4 +368,70 @@ def test_missing_index_fails_closed_without_writes(tmp_path: Path) -> None:
         result = call(send, 2, "index_info", {})
         assert result["isError"] is True
         assert result["structuredContent"]["error_code"] == "INDEX_OPEN_FAILED"
+    assert _inventory(tmp_path) == before
+
+
+def test_details_summary_budget_state_pages_and_lossless_card(tmp_path: Path) -> None:
+    from blockpedia.r3 import encode_rgba_png
+
+    fixture = build_fixture(tmp_path)
+    # Patterned preview with partial and zero alpha (hidden RGB) to prove the
+    # 256px card is the exact nearest resample of the untouched release PNG.
+    pixels = bytearray()
+    for y in range(512):
+        for x in range(512):
+            pixels += bytes([x % 256, y % 256, (x * y) % 256, 0 if (x // 16 + y // 16) % 5 == 0 else (x + y) % 256])
+    preview_path = fixture.release / "previews/minecraft/stone/preview.png"
+    preview_path.write_bytes(encode_rgba_png(512, 512, bytes(pixels)))
+    block_id = "minecraft:stone"
+    extra = [f"{block_id}[level={index}]" for index in range(19)]
+    with sqlite3.connect(fixture.release / "index.sqlite3") as db:
+        block = json.loads(db.execute("SELECT record_json FROM blocks WHERE block_id=?", (block_id,)).fetchone()[0])
+        block["properties"] = {"level": [str(index) for index in range(19)]}
+        db.execute("UPDATE blocks SET record_json=? WHERE block_id=?", (json.dumps(block), block_id))
+        state = json.loads(db.execute("SELECT record_json FROM states WHERE state_id=?", (block_id,)).fetchone()[0])
+        for index, state_id in enumerate(extra):
+            state.update(state_id=state_id, is_default=False, properties={"level": str(index)}, variant_ids=[], mapping_status="skipped")
+            db.execute("INSERT INTO states SELECT ?,block_id,?,0,? FROM states WHERE state_id=?", (state_id, json.dumps(state["properties"]), json.dumps(state), block_id))
+    expected = sorted([block_id, *extra], key=lambda value: value.encode("utf-8"))
+    before = _inventory(tmp_path)
+    details_schema = Draft202012Validator(load_schema(SCHEMAS["get_block_details"]))
+    with node_session(tmp_path) as send:
+        result = call(send, 2, "get_block_details", {"block_id": block_id})
+        summary = result["structuredContent"]
+        details_schema.validate(summary)
+        assert len(json.dumps(summary, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) < 8000
+        assert summary["state_count"] == 20
+        assert summary["properties"] == {"level": [str(index) for index in range(19)]}
+        assert not {"states", "represented_state_ids", "state_behaviors", "variants"} & set(summary)
+        assert summary["representative"]["state_id"] == block_id
+        # Known support facts survive; unknown sides are omitted, never false.
+        assert summary["representative"]["behavior"]["support"] == {"below": True}
+        assert summary["representative"]["behavior"]["requires_support"] is False
+        assert summary["semantics"]["summary_en"] == "Stone" and summary["semantics"]["building_roles"] == ["wall"]
+        [card] = result_images(result)
+        assert (card.width, card.height) == (CARD, CARD)
+        assert card.pixels == nearest(decode_rgba_png(preview_path.read_bytes()))
+
+        seen: list[str] = []
+        offset: int | None = 0
+        pages = []
+        while offset is not None:
+            response = call(send, 3 + len(pages), "get_block_details", {"block_id": block_id, "detail": "states", "offset": offset})
+            page = response["structuredContent"]
+            details_schema.validate(page)
+            assert len(response["content"]) == 1 and "images" not in page
+            assert (page["release_id"], page["total"], page["offset"]) == (fixture.release.name, 20, offset)
+            pages.append(page)
+            seen += [item["state_id"] for item in page["states"]]
+            offset = page["next_offset"]
+        assert [len(page["states"]) for page in pages] == [8, 8, 4]
+        assert [page["next_offset"] for page in pages] == [8, 16, None]
+        assert seen == expected
+        level = next(item for page in pages for item in page["states"] if item["state_id"] == extra[1])
+        assert (level["properties"], level["mapping_status"], level["is_default"]) == ({"level": "1"}, "skipped", False)
+        wide = call(send, 10, "get_block_details", {"block_id": block_id, "detail": "states", "offset": 4, "limit": 16})["structuredContent"]
+        assert [item["state_id"] for item in wide["states"]] == expected[4:20] and wide["next_offset"] is None
+        beyond = call(send, 11, "get_block_details", {"block_id": block_id, "detail": "states", "offset": 25})["structuredContent"]
+        assert (beyond["states"], beyond["next_offset"], beyond["total"]) == ([], None, 20)
     assert _inventory(tmp_path) == before

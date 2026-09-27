@@ -1,0 +1,138 @@
+{
+  "block_id": "minecraft:oak_stairs",
+  "official_names": {
+    "en_us": "Oak Stairs",
+    "zh_cn": "橡木楼梯"
+  },
+  "default_state_id": "minecraft:oak_stairs[facing=north,half=bottom,shape=straight,waterlogged=false]",
+  "properties": {
+    "facing": [
+      "east",
+      "north",
+      "south",
+      "west"
+    ],
+    "half": [
+      "bottom",
+      "top"
+    ],
+    "shape": [
+      "inner_left",
+      "inner_right",
+      "outer_left",
+      "outer_right",
+      "straight"
+    ],
+    "waterlogged": [
+      "false",
+      "true"
+    ]
+  },
+  "tags": [
+    "minecraft:mineable/axe",
+    "minecraft:stairs",
+    "minecraft:wooden_stairs"
+  ],
+  "has_item": true,
+  "has_block_entity": false,
+  "state_count": 80,
+  "representative": {
+    "state_id": "minecraft:oak_stairs[facing=north,half=bottom,shape=straight,waterlogged=false]",
+    "candidate_qualification": "eligible",
+    "shape": [
+      {
+        "max_x": 1,
+        "max_y": 0.5,
+        "max_z": 1,
+        "min_x": 0,
+        "min_y": 0,
+        "min_z": 0
+      },
+      {
+        "max_x": 1,
+        "max_y": 1,
+        "max_z": 0.5,
+        "min_x": 0,
+        "min_y": 0.5,
+        "min_z": 0
+      }
+    ],
+    "collision": [
+      {
+        "max_x": 1,
+        "max_y": 0.5,
+        "max_z": 1,
+        "min_x": 0,
+        "min_y": 0,
+        "min_z": 0
+      },
+      {
+        "max_x": 1,
+        "max_y": 1,
+        "max_z": 0.5,
+        "min_x": 0,
+        "min_y": 0.5,
+        "min_z": 0
+      }
+    ],
+    "geometry_classes": [],
+    "machine_tags": [],
+    "behavior": {
+      "emission_level": 0,
+      "emissive": false,
+      "passable": false,
+      "redstone_related": false,
+      "transparent": false,
+      "waterloggable": true
+    }
+  },
+  "semantics": {
+    "avoid_for": [
+      "oak planks",
+      "oak slab"
+    ],
+    "building_roles": [
+      "staircase",
+      "stepped trim"
+    ],
+    "color_terms": [
+      "light tan",
+      "oak brown"
+    ],
+    "confidence": 0.99,
+    "material_impressions": [
+      "wooden planks"
+    ],
+    "shape_terms": [
+      "right-angled",
+      "stepped",
+      "tiered"
+    ],
+    "style_tags": [
+      "building block",
+      "minecraft",
+      "wooden"
+    ],
+    "summary_en": "Oak plank stairs with a two-level stepped profile.",
+    "summary_zh": "橡木楼梯，由两级木板构成阶梯轮廓。",
+    "synonyms_en": [
+      "oak stairs",
+      "wooden steps"
+    ],
+    "synonyms_zh": [
+      "木台阶",
+      "橡木楼梯"
+    ]
+  },
+  "warnings": [],
+  "images": [
+    {
+      "content_index": 1,
+      "mime_type": "image/webp",
+      "width": 256,
+      "height": 256,
+      "state_id": "minecraft:oak_stairs[facing=north,half=bottom,shape=straight,waterlogged=false]"
+    }
+  ],
+  "unexpected": true
+}

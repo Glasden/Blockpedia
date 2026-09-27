@@ -22,13 +22,13 @@ def test_slow_query_does_not_block_ping_and_invalid_result_fails_closed(tmp_path
     if not NODE.is_file():
         pytest.skip("Node 24 is unavailable")
     fixtures = ROOT / "tests" / "schema" / "fixtures" / "mcp"
-    info = json.loads((fixtures / "mcp-index-info-output.v1.valid.json").read_text())
-    info["data"]["built_at"] = "invalid timestamp"
-    search = json.loads((fixtures / "mcp-search-blocks-output.v1.valid.json").read_text())
-    del search["request_id"]
-    details = json.loads((fixtures / "mcp-block-details-output.v1.valid.json").read_text())
-    details["data"]["block_facts"]["has_item"] = "invalid boolean"
-    payloads = {"index_info": info, "search_blocks": search, "get_block_details": details, "compare_blocks": {"schema_version": "mcp-error.v1"}}
+    info = json.loads((fixtures / "mcp-index-info-output.v2.valid.json").read_text())
+    info["built_at"] = "invalid timestamp"
+    search = json.loads((fixtures / "mcp-search-blocks-output.v2.valid.json").read_text())
+    del search["candidates"]
+    details = json.loads((fixtures / "mcp-block-details-output.v2.valid.json").read_text())
+    details["has_item"] = "invalid boolean"
+    payloads = {"index_info": info, "search_blocks": search, "get_block_details": details, "compare_blocks": {"error_code": "NOT_A_CODE", "message": "x"}}
     worker = tmp_path / "slow-worker.mjs"
     worker.write_text(
         """import { parentPort } from 'node:worker_threads';

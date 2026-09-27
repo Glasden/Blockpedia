@@ -52,11 +52,11 @@ EXPECTED_SCHEMAS: Mapping[str, tuple[str, ...]] = {
         "rerank-output.v1",
     ),
     "mcp": (
-        "mcp-index-info-output.v1",
-        "mcp-search-blocks-output.v1",
-        "mcp-block-details-output.v1",
-        "mcp-compare-blocks-output.v1",
-        "mcp-error.v1",
+        "mcp-index-info-output.v2",
+        "mcp-search-blocks-output.v2",
+        "mcp-block-details-output.v2",
+        "mcp-compare-blocks-output.v2",
+        "mcp-error.v2",
     ),
 }
 

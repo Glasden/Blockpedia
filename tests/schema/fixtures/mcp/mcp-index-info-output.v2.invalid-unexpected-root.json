@@ -1,0 +1,12 @@
+{
+  "minecraft_version": "26.2",
+  "release_id": "rel_ec8397fe58cb4faba5fa15b1de406ca0",
+  "built_at": "2026-09-27T13:07:33Z",
+  "counts": {
+    "blocks": 1196,
+    "visual_variants": 1172,
+    "audited_skips": 24
+  },
+  "official_disclaimer": "NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.",
+  "unexpected": true
+}

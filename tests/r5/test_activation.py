@@ -123,11 +123,11 @@ def test_mcp_stdio_reads_new_build_and_observes_next_pointer(tmp_path):
             for index, (name, arguments) in enumerate(calls, start=2):
                 assert call(send, index, name, arguments)['isError'] is False
             assert before == {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
-            assert call(send, 6, 'index_info', {})['structuredContent']['resolved_release_id'] == first['release_id']
+            assert call(send, 6, 'index_info', {})['structuredContent']['release_id'] == first['release_id']
             second = service.build_candidate_release(run_id, '26.2', 'build_' + 'b' * 32)
             _, token = service.activation.current()
             service.publish_release(**_body(second['release_id'], token))
-            assert call(send, 7, 'index_info', {})['structuredContent']['resolved_release_id'] == second['release_id']
+            assert call(send, 7, 'index_info', {})['structuredContent']['release_id'] == second['release_id']
     finally:
         service.close()
 

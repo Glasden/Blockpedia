@@ -59,11 +59,11 @@ SCHEMA_NAMESPACES: dict[str, str] = {
     "annotation-wire-item.v1": "provider",
     "query-spec-output.v1": "provider",
     "rerank-output.v1": "provider",
-    "mcp-index-info-output.v1": "mcp",
-    "mcp-search-blocks-output.v1": "mcp",
-    "mcp-block-details-output.v1": "mcp",
-    "mcp-compare-blocks-output.v1": "mcp",
-    "mcp-error.v1": "mcp",
+    "mcp-index-info-output.v2": "mcp",
+    "mcp-search-blocks-output.v2": "mcp",
+    "mcp-block-details-output.v2": "mcp",
+    "mcp-compare-blocks-output.v2": "mcp",
+    "mcp-error.v2": "mcp",
 }
 
 

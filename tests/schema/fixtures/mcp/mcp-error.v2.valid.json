@@ -1,0 +1,7 @@
+{
+  "error_code": "VERSION_NOT_AVAILABLE",
+  "message": "The requested Minecraft version is not published.",
+  "available_versions": [
+    "26.2"
+  ]
+}

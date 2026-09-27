@@ -1,20 +1,18 @@
 // Deterministic, read-only MCP queries over the pointer-selected release.
 //
 // Port of src/blockpedia/mcp_query.py onto Node 24 with the sibling
-// ./release.mjs reader and ./png.mjs contact-sheet encoder.  The four tools
-// share the Python business logic exactly: keyword recall (FTS5 trigram or
-// LIKE), deterministic scoring/ranking, per-request preview caching, pointer
-// switching per request and the same output/error envelopes.  Release
-// completeness stays with the build/activation gate; no local tamper check is
-// reintroduced here.
-import { createHash } from 'node:crypto';
-
+// ./release.mjs reader and ./png.mjs image composition.  Keyword recall (FTS5
+// trigram or LIKE), deterministic scoring/ranking, per-request preview caching
+// and pointer switching per request follow the Python business logic.  Outputs
+// carry only what a host needs to choose blocks: no request IDs, schema
+// versions, release hashes or image digests.  Release completeness stays with
+// the build/activation gate; no local tamper check is reintroduced here.
 import { MCPReleaseError, MCPReleaseResolver, MCPVersionInputError } from './release.mjs';
-import { makeContactSheet, sha256Bytes } from './png.mjs';
+import { makeBlockCard, makeContactSheet } from './png.mjs';
 
 export const BLOCK_ID_RE = /^minecraft:[a-z0-9_./-]+$/;
 const VERSION_RE = /^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$/;
-const REQUEST_ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
+const IMAGE_MIME_TYPE = 'image/webp';
 
 export const WEIGHTS = { shape: 0.35, color: 0.3, use: 0.15, name_synonym: 0.1, style: 0.05, behavior: 0.05 };
 const TECHNICAL_BLOCKS = new Set([
@@ -331,14 +329,6 @@ const pyStrip = (value) => {
   return value.slice(start, end);
 };
 
-const requestId = (value, counter) => {
-  if (value !== null && value !== undefined) {
-    if (!fullMatch(REQUEST_ID_RE, value)) throw new MCPInputError('request_id must be an opaque identifier');
-    return value;
-  }
-  return `mcp_${counter}`;
-};
-
 const validateVersionInput = (args) => {
   const value = args.minecraft_version;
   if (value === undefined || value === null) return null;
@@ -357,35 +347,18 @@ const validateObject = (argumentsValue, allowed) => {
   return value;
 };
 
-const errorDetails = (error, invalidBlockIds) => {
-  const details = {
-    release_id: error.details.release_id ?? null,
-    available_versions: [...(error.availableVersions ?? [])],
-    invalid_block_ids: [...invalidBlockIds],
-    field_errors: [],
-    provider_error_code: null,
-    integrity_component: error.details.integrity_component ?? null,
-  };
-  for (const key of Object.keys(error.details)) if (key in details) details[key] = error.details[key];
-  return details;
-};
-
-const errorResult = (error, id, invalidBlockIds = []) => {
+// Only fields a host can act on: which versions exist, which IDs were unknown.
+const errorResult = (error, invalidBlockIds = []) => {
   const structuredContent = {
-    schema_version: 'mcp-error.v1',
-    request_id: id,
     error_code: ERROR_CODES.has(error.code) ? error.code : 'MCP_INTERNAL_ERROR',
     message: String(error.message).slice(0, 500),
-    retryable: false,
-    minecraft_version: error.minecraftVersion ?? null,
-    details: errorDetails(error, invalidBlockIds),
-    warnings: [],
-    images: [],
   };
+  if (error.availableVersions?.length) structuredContent.available_versions = [...error.availableVersions];
+  if (invalidBlockIds.length) structuredContent.invalid_block_ids = [...invalidBlockIds];
   return { structuredContent, images: [], isError: true };
 };
 
-const toolResult = (envelope, images = []) => ({ structuredContent: envelope, images: [...images], isError: false });
+const toolResult = (output, images = []) => ({ structuredContent: output, images: [...images], isError: false });
 
 const keywordTokens = (keywords) => {
   const tokens = [];
@@ -477,29 +450,51 @@ export const deterministicScore = (matches) => {
   return [pyRound8(clamp01(score)), breakdown];
 };
 
-const imageIdFor = (payload, prefix = 'img') =>
-  `${prefix}_${createHash('sha256').update(payload).digest('hex').slice(0, 24)}`;
+const sortedObject = (mapping) => {
+  const result = {};
+  for (const key of Object.keys(mapping ?? {}).sort(byUtf8)) result[key] = mapping[key];
+  return result;
+};
 
-const behaviorEntries = (byState) =>
-  Object.keys(byState)
-    .sort(byUtf8)
-    .map((stateId) => ({ state_id: stateId, behavior: byState[stateId] }));
+// Support facts are not exported yet.  An unknown support side (and an unknown
+// requires_support) is omitted rather than reported, never turned into false.
+const behaviorOutput = (value) => {
+  const result = {};
+  if (!isMapping(value)) return result;
+  for (const key of Object.keys(value)) {
+    if (key === 'support') {
+      const known = {};
+      for (const side of Object.keys(value.support ?? {})) {
+        if (value.support[side] !== 'unknown') known[side] = value.support[side];
+      }
+      if (Object.keys(known).length > 0) result.support = known;
+    } else if (!(key === 'requires_support' && value[key] === 'unknown')) {
+      result[key] = value[key];
+    }
+  }
+  return result;
+};
 
-const propertyValues = (state) =>
-  Object.keys(state.properties ?? {})
-    .sort(byUtf8)
-    .map((name) => ({ name, value: state.properties[name] }));
+const boxes = (shape) => (Array.isArray(shape?.boxes) ? shape.boxes : []);
+
+const variantsFor = (snapshot, blockId) =>
+  Object.values(snapshot.variants)
+    .filter((variant) => variant.block_id === blockId)
+    .sort((left, right) => byUtf8(String(left.variant_id), String(right.variant_id)));
+
+const DETAIL_MODES = new Set(['summary', 'states']);
+const pageInteger = (args, key, fallback, min, max) => {
+  const value = key in args ? args[key] : fallback;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new MCPInputError(`${key} must be an integer from ${min} to ${max}`);
+  }
+  return value;
+};
 
 export class MCPQueryService {
   constructor(dataRoot) {
     this.resolver = new MCPReleaseResolver(dataRoot);
-    this._counter = 0;
     this._snapshots = new Map();
-  }
-
-  _nextRequestId(value) {
-    this._counter += 1;
-    return requestId(value, this._counter);
   }
 
   _snapshot(handle) {
@@ -542,8 +537,7 @@ export class MCPQueryService {
     return snapshot;
   }
 
-  indexInfo(argumentsValue = {}, options = {}) {
-    const request = this._nextRequestId(options.requestId ?? null);
+  indexInfo(argumentsValue = {}) {
     try {
       // Python defaults with `arguments or {}`, so any falsy value (null, "", 0)
       // becomes an empty object here as well.
@@ -552,17 +546,15 @@ export class MCPQueryService {
       const handle = this.resolver.resolve(version);
       try {
         const snapshot = this._snapshot(handle);
-        const qualityHash = handle.manifest.quality_report_sha256;
         const builtAt = handle.release.built_at;
-        if (typeof qualityHash !== 'string' || typeof builtAt !== 'string') {
+        if (typeof builtAt !== 'string') {
           throw new MCPReleaseError('INDEX_INFO_UNAVAILABLE', 'Release metadata needed for index_info is unavailable.', {
             minecraftVersion: handle.minecraftVersion,
           });
         }
         const skipReviews = snapshot.manual.skip_reviews;
-        const data = {
-          product: 'Blockpedia',
-          official_disclaimer: OFFICIAL_DISCLAIMER,
+        return toolResult({
+          minecraft_version: handle.minecraftVersion,
           release_id: handle.releaseId,
           built_at: builtAt,
           counts: {
@@ -570,23 +562,13 @@ export class MCPQueryService {
             visual_variants: Object.keys(snapshot.variants).length,
             audited_skips: Array.isArray(skipReviews) ? skipReviews.length : 0,
           },
-          quality_gate: { passed: true, quality_report_sha256: qualityHash },
-        };
-        const envelope = {
-          schema_version: 'mcp-index-info-output.v1',
-          request_id: request,
-          minecraft_version: handle.minecraftVersion,
-          resolved_release_id: handle.releaseId,
-          manifest_sha256: handle.manifestSha256,
-          warnings: [],
-          data,
-        };
-        return toolResult(envelope);
+          official_disclaimer: OFFICIAL_DISCLAIMER,
+        });
       } finally {
         handle.close();
       }
     } catch (error) {
-      return this._mapError(error, request);
+      return this._mapError(error);
     }
   }
 
@@ -611,9 +593,8 @@ export class MCPQueryService {
     return [trimmed, trimmed.join(' ')];
   }
 
-  searchBlocks(argumentsValue, options = {}) {
+  searchBlocks(argumentsValue) {
     const resources = { previewCache: new Map() };
-    const request = this._nextRequestId(options.requestId ?? null);
     try {
       const args = validateObject(argumentsValue, new Set(['minecraft_version', 'keywords', 'limit']));
       const version = validateVersionInput(args);
@@ -633,68 +614,39 @@ export class MCPQueryService {
         const recalled = this._recall(handle, rows, intent.keywords, exactQuery);
         const ranked = this._rankRows(recalled, snapshot, intent, exactQuery);
         const selected = ranked.slice(0, 24).slice(0, limit);
-        const candidates = this._candidateDicts(selected, snapshot, intent);
-        const searchId = this._searchId(handle, joinedQuery);
-        const exclusions = this._exclusions(snapshot, rows, recalled);
-        if (selected.length === 0) {
-          const data = {
-            search_id: searchId,
-            query: joinedQuery,
-            hard_filters: [],
-            exclusion_summary: exclusions,
-            candidates: [],
-            contact_sheet: { image_id: null, tile_mapping: [] },
-            images: [],
-            reranked_by_llm: false,
-          };
-          const envelope = {
-            schema_version: 'mcp-search-blocks-output.v1',
-            request_id: request,
-            minecraft_version: handle.minecraftVersion,
-            resolved_release_id: handle.releaseId,
-            manifest_sha256: handle.manifestSha256,
-            warnings: [],
-            data,
-          };
-          return toolResult(envelope);
-        }
-        const sheet = this._searchSheet(handle, candidates, resources);
-        const data = {
-          search_id: searchId,
-          query: joinedQuery,
-          hard_filters: [],
-          exclusion_summary: exclusions,
-          candidates,
-          contact_sheet: { image_id: sheet.imageId, tile_mapping: sheet.tiles },
-          images: [sheet.image],
-          reranked_by_llm: false,
-        };
-        const envelope = {
-          schema_version: 'mcp-search-blocks-output.v1',
-          request_id: request,
-          minecraft_version: handle.minecraftVersion,
-          resolved_release_id: handle.releaseId,
-          manifest_sha256: handle.manifestSha256,
-          warnings: [],
-          data,
-        };
-        return toolResult(envelope, [sheet.png]);
+        const candidates = this._candidateDicts(selected, snapshot);
+        if (candidates.length === 0) return toolResult({ candidates, images: [] });
+        const sheet = this._contactSheet(
+          handle,
+          candidates.map((candidate, index) => ({ candidateId: candidate.candidate_id, blockId: candidate.block_id, variantId: selected[index][0][0] })),
+          4,
+          resources,
+        );
+        return toolResult({ candidates, images: [sheet.image] }, [sheet.webp]);
       } finally {
         handle.close();
       }
     } catch (error) {
-      return this._mapError(error, request);
+      return this._mapError(error);
     }
   }
 
-  getBlockDetails(argumentsValue, options = {}) {
-    const request = this._nextRequestId(options.requestId ?? null);
+  getBlockDetails(argumentsValue) {
     const resources = { previewCache: new Map() };
     try {
-      const args = validateObject(argumentsValue, new Set(['minecraft_version', 'block_id']));
+      const args = validateObject(argumentsValue, new Set(['minecraft_version', 'block_id', 'detail', 'offset', 'limit']));
       const version = validateVersionInput(args);
       const blockId = args.block_id;
       if (!fullMatch(BLOCK_ID_RE, blockId)) throw new MCPInputError('block_id has an invalid format');
+      const detail = 'detail' in args ? args.detail : 'summary';
+      if (!DETAIL_MODES.has(detail)) throw new MCPInputError('detail must be "summary" or "states"');
+      let page = null;
+      if (detail === 'states') {
+        page = { offset: pageInteger(args, 'offset', 0, 0, Number.MAX_SAFE_INTEGER), limit: pageInteger(args, 'limit', 8, 1, 16) };
+      } else if ('offset' in args || 'limit' in args) {
+        // Rejected rather than ignored: paging only applies to detail="states".
+        throw new MCPInputError('offset and limit require detail="states"');
+      }
       const handle = this.resolver.resolve(version);
       try {
         const snapshot = this._snapshot(handle);
@@ -703,31 +655,21 @@ export class MCPQueryService {
             new MCPReleaseError('BLOCK_NOT_FOUND', 'The requested block is not in this release.', {
               minecraftVersion: handle.minecraftVersion,
             }),
-            request,
             [blockId],
           );
         }
-        const [data, images] = this._detailsData(handle, snapshot, blockId, resources);
-        const envelope = {
-          schema_version: 'mcp-block-details-output.v1',
-          request_id: request,
-          minecraft_version: handle.minecraftVersion,
-          resolved_release_id: handle.releaseId,
-          manifest_sha256: handle.manifestSha256,
-          warnings: policyWarning(blockId) ? [policyWarning(blockId)] : [],
-          data,
-        };
-        return toolResult(envelope, images);
+        if (page !== null) return toolResult(this._statesPage(handle, snapshot, blockId, page));
+        const [output, images] = this._detailsSummary(handle, snapshot, blockId, resources);
+        return toolResult(output, images);
       } finally {
         handle.close();
       }
     } catch (error) {
-      return this._mapError(error, request);
+      return this._mapError(error);
     }
   }
 
-  compareBlocks(argumentsValue, options = {}) {
-    const request = this._nextRequestId(options.requestId ?? null);
+  compareBlocks(argumentsValue) {
     const resources = { previewCache: new Map() };
     try {
       const args = validateObject(argumentsValue, new Set(['minecraft_version', 'block_ids', 'context', 'compare_states']));
@@ -757,46 +699,32 @@ export class MCPQueryService {
             new MCPReleaseError('BLOCK_NOT_FOUND', 'One or more requested blocks are not in this release.', {
               minecraftVersion: handle.minecraftVersion,
             }),
-            request,
             invalid,
           );
         }
-        const [data, images] = this._compareData(handle, snapshot, blockIds, resources);
-        const envelope = {
-          schema_version: 'mcp-compare-blocks-output.v1',
-          request_id: request,
-          minecraft_version: handle.minecraftVersion,
-          resolved_release_id: handle.releaseId,
-          manifest_sha256: handle.manifestSha256,
-          warnings: [],
-          data,
-        };
-        return toolResult(envelope, images);
+        const [output, images] = this._compareData(handle, snapshot, blockIds, resources);
+        return toolResult(output, images);
       } finally {
         handle.close();
       }
     } catch (error) {
-      return this._mapError(error, request);
+      return this._mapError(error);
     }
   }
 
-  callTool(name, argumentsValue = {}, options = {}) {
-    if (name === 'index_info') return this.indexInfo(argumentsValue, options);
-    if (name === 'search_blocks') return this.searchBlocks(argumentsValue || {}, options);
-    if (name === 'get_block_details') return this.getBlockDetails(argumentsValue || {}, options);
-    if (name === 'compare_blocks') return this.compareBlocks(argumentsValue || {}, options);
+  callTool(name, argumentsValue = {}) {
+    if (name === 'index_info') return this.indexInfo(argumentsValue);
+    if (name === 'search_blocks') return this.searchBlocks(argumentsValue || {});
+    if (name === 'get_block_details') return this.getBlockDetails(argumentsValue || {});
+    if (name === 'compare_blocks') return this.compareBlocks(argumentsValue || {});
     throw new MCPProtocolError(-32602, 'Unknown tool name');
   }
 
-  _mapError(error, request) {
+  _mapError(error) {
     if (error instanceof MCPInputError) throw error;
     if (error instanceof MCPVersionInputError) throw new MCPInputError(error.message);
-    if (error instanceof MCPReleaseError) return errorResult(error, request);
+    if (error instanceof MCPReleaseError) return errorResult(error);
     throw error;
-  }
-
-  _searchId(handle, query) {
-    return `search_${createHash('sha256').update(`${handle.manifestSha256}\u0000${query}`, 'utf8').digest('hex').slice(0, 20)}`;
   }
 
   _eligibleRows(snapshot) {
@@ -860,37 +788,28 @@ export class MCPQueryService {
     return result;
   }
 
-  _candidateDicts(ranked, snapshot, intent) {
-    const candidates = [];
-    ranked.forEach((entry, index) => {
-      const [row, score, breakdown, exact] = entry;
-      const [variantId, variant, state, block] = row;
+  _candidateDicts(ranked, snapshot) {
+    return ranked.map(([row, score, breakdown, exact], index) => {
+      const [variantId, variant, , block] = row;
       const names = block.official_names ?? {};
       const semanticValue = semantic(snapshot.annotations[variantId]);
-      candidates.push({
+      const policy = policyWarning(variant.block_id);
+      return {
         candidate_id: `T${String(index + 1).padStart(2, '0')}`,
-        variant_id: variantId,
         block_id: String(variant.block_id),
         // Python str(names.get("zh_cn") or names.get("en_us") or variant_id):
         // an empty string falls through, so the schema minLength 1 still holds.
         display_name: String(names.zh_cn || names.en_us || variantId),
         recommended_state_id: String(variant.canonical_state_id),
         candidate_qualification: String(variant.candidate_qualification),
-        local_score: score,
-        final_score: score,
-        score_source: 'local',
+        score,
         score_breakdown: breakdown,
-        reason: exact || !policyWarning(variant.block_id)
+        reason: exact || !policy
           ? MCPQueryService._reason(breakdown, semanticValue)
           : `${MCPQueryService._reason(breakdown, semanticValue).slice(0, 450)} Local recommendation rule: general-use score ×0.25.`,
-        warnings: [...(variant.warnings ?? []), ...(policyWarning(variant.block_id) ? [policyWarning(variant.block_id)] : [])],
-        machine_fact_refs: [
-          { record_type: 'state', record_id: String(state.state_id), field: 'behavior' },
-          { record_type: 'visual_variant', record_id: variantId, field: 'machine_facts' },
-        ],
-      });
+        warnings: [...(variant.warnings ?? []), ...(policy ? [policy] : [])],
+      };
     });
-    return candidates;
   }
 
   static _reason(breakdown, semanticValue) {
@@ -900,49 +819,25 @@ export class MCPQueryService {
     return typeof summary === 'string' && summary ? summary.slice(0, 500) : 'Deterministic release candidate.';
   }
 
-  _exclusions(snapshot, rows, recalled) {
-    let excluded = 0;
-    for (const variantId of Object.keys(snapshot.variants)) {
-      if (snapshot.variants[variantId].candidate_qualification === 'excluded') excluded += 1;
-    }
-    const recallRemoved = Math.max(0, rows.length - recalled.length);
-    const result = [];
-    if (excluded) result.push({ reason: 'excluded qualification', count: excluded });
-    if (recallRemoved) result.push({ reason: 'text recall', count: recallRemoved });
-    return result;
-  }
-
-  _searchSheet(handle, candidates, resources) {
-    const source = [];
-    const mapping = [];
-    for (const candidate of candidates) {
-      const preview = this._preview(handle, candidate.variant_id, resources);
-      source.push(preview);
-      mapping.push({ candidate_id: candidate.candidate_id, variant_id: candidate.variant_id, block_id: candidate.block_id });
-    }
-    const sheet = makeContactSheet(source.map((item) => item.decoded), 4);
-    const tiles = mapping.map((item, index) => ({
-      candidate_id: item.candidate_id,
-      variant_id: item.variant_id,
-      block_id: item.block_id,
-      row: Math.floor(index / 4),
-      column: index % 4,
-    }));
-    // Python calls _image_id(png, "contact"); the second argument is the
-    // ignored variant_id, so the prefix stays the default "img".
-    const imageId = imageIdFor(sheet.png);
-    const columns = Math.min(4, source.length);
+  // tiles: [{ candidateId, blockId, variantId }] in sheet order; the painted
+  // T01.. label of each card is its candidateId.
+  _contactSheet(handle, tiles, columns, resources) {
+    const previews = tiles.map((tile) => this._preview(handle, tile.variantId, resources).decoded);
+    const sheet = makeContactSheet(previews, columns);
+    const cols = Math.max(1, Math.min(columns, tiles.length));
     const image = {
-      image_id: imageId,
-      purpose: 'search_contact_sheet',
-      mime_type: 'image/png',
-      width: columns * 512,
-      height: Math.ceil(source.length / columns) * 512,
-      sha256: sha256Bytes(sheet.png),
       content_index: 1,
-      mapping,
+      mime_type: IMAGE_MIME_TYPE,
+      width: sheet.width,
+      height: sheet.height,
+      tiles: tiles.map((tile, index) => ({
+        candidate_id: tile.candidateId,
+        block_id: tile.blockId,
+        row: Math.floor(index / cols),
+        column: index % cols,
+      })),
     };
-    return { imageId, tiles, image, png: sheet.png };
+    return { image, webp: sheet.webp };
   }
 
   _preview(handle, variantId, resources) {
@@ -959,135 +854,88 @@ export class MCPQueryService {
     return value;
   }
 
-  _detailsData(handle, snapshot, blockId, resources) {
+  // A block's summary describes one representative: the canonical state of its
+  // first visual variant (the default state when it has none).  Geometry and the
+  // image belong to that state only; every legal state is read through
+  // detail="states".
+  _detailsSummary(handle, snapshot, blockId, resources) {
     const block = snapshot.blocks[blockId];
-    const states = Object.values(snapshot.states)
-      .filter((state) => state.block_id === blockId)
-      .sort((left, right) => byUtf8(String(left.state_id), String(right.state_id)));
-    const variants = Object.values(snapshot.variants)
-      .filter((variant) => variant.block_id === blockId)
-      .sort((left, right) => byUtf8(String(left.variant_id), String(right.variant_id)));
-    const propertyDefinitions = Object.keys(block.properties ?? {})
-      .sort(byUtf8)
-      .map((name) => ({ name, allowed_values: [...block.properties[name]] }));
-    const images = [];
-    const imageBytes = [];
-    const variantOutputs = [];
-    for (const variant of variants) {
-      const variantId = String(variant.variant_id);
-      const state = snapshot.states[String(variant.canonical_state_id)];
-      if (state === undefined) {
-        throw new MCPReleaseError('INDEX_INFO_UNAVAILABLE', 'A variant references unavailable state data.', {
-          minecraftVersion: handle.minecraftVersion,
-          details: { integrity_component: 'index' },
-        });
-      }
-      const annotationValue = semantic(snapshot.annotations[variantId]);
-      let annotation = null;
-      if (
-        typeof annotationValue.summary_zh === 'string'
-        && typeof annotationValue.summary_en === 'string'
-        && typeof annotationValue.confidence === 'number'
-        && !Number.isNaN(annotationValue.confidence)
-        && annotationValue.confidence >= 0
-        && annotationValue.confidence <= 1
-      ) {
-        annotation = {
-          summary_zh: annotationValue.summary_zh,
-          summary_en: annotationValue.summary_en,
-          confidence: annotationValue.confidence,
-        };
-      }
-      const imageIds = [];
-      if (isMapping(variant.render)) {
-        const { payload, decoded } = this._preview(handle, variantId, resources);
-        const imageId = imageIdFor(payload, 'img');
-        imageIds.push(imageId);
-        images.push({
-          image_id: imageId,
-          purpose: 'block_variant_views',
-          mime_type: 'image/png',
-          width: decoded.width,
-          height: decoded.height,
-          sha256: sha256Bytes(payload),
-          content_index: imageBytes.length + 1,
-          mapping: [{ candidate_id: null, variant_id: variantId, block_id: blockId }],
-        });
-        imageBytes.push(payload);
-      }
-      const geometry = variant.machine_facts.geometry;
-      variantOutputs.push({
-        variant_id: variantId,
-        canonical_state_id: variant.canonical_state_id,
-        represented_state_ids: [...variant.represented_state_ids],
-        candidate_qualification: variant.candidate_qualification,
-        warnings: [...(variant.warnings ?? []), ...(policyWarning(blockId) ? [policyWarning(blockId)] : [])],
-        variant_facts: {
-          geometry_summary: geometry.shape,
-          geometry_signature: geometry.geometry_signature,
-          collision_signature: geometry.collision_signature,
-          geometry_classes: [...geometry.geometry_classes],
-          machine_tags: [...variant.machine_facts.machine_tags],
-          state_behaviors: behaviorEntries(variant.machine_facts.behavior_by_state),
-        },
-        annotation,
-        image_ids: imageIds,
-      });
-    }
-    const defaultState = snapshot.states[String(block.default_state_id)];
-    if (defaultState === undefined) {
-      throw new MCPReleaseError('INDEX_INFO_UNAVAILABLE', 'A block references unavailable default-state data.', {
+    const variant = variantsFor(snapshot, blockId)[0];
+    const stateId = String(variant === undefined ? block.default_state_id : variant.canonical_state_id);
+    const state = snapshot.states[stateId];
+    if (state === undefined) {
+      throw new MCPReleaseError('INDEX_INFO_UNAVAILABLE', 'A block references unavailable state data.', {
         minecraftVersion: handle.minecraftVersion,
         details: { integrity_component: 'index' },
       });
     }
-    const stateOutputs = states.map((state) => ({
-      state_id: state.state_id,
-      is_default: state.is_default,
-      properties: propertyValues(state),
-      shape: state.shape,
-      collision: state.collision,
-      behavior: state.behavior,
-      variant_ids: [...state.variant_ids],
-      mapping_status: state.mapping_status,
-    }));
-    const data = {
+    let stateCount = 0;
+    for (const value of Object.values(snapshot.states)) if (value.block_id === blockId) stateCount += 1;
+    const geometry = variant?.machine_facts?.geometry ?? {};
+    const policy = policyWarning(blockId);
+    const warnings = [...new Set([...(variant?.warnings ?? []), ...(policy ? [policy] : [])])];
+    const annotation = variant === undefined ? undefined : snapshot.annotations[String(variant.variant_id)];
+    const output = {
       block_id: blockId,
       official_names: block.official_names,
-      translation_key: block.translation_key,
       default_state_id: block.default_state_id,
-      property_definitions: propertyDefinitions,
-      states: stateOutputs,
-      block_facts: {
-        has_item: block.machine_facts.has_item,
-        has_block_entity: block.machine_facts.has_block_entity,
-        tags: [...(block.tags ?? [])],
-        default_state_behavior: defaultState.behavior,
+      properties: sortedObject(block.properties),
+      tags: [...(block.tags ?? [])],
+      has_item: block.machine_facts.has_item,
+      has_block_entity: block.machine_facts.has_block_entity,
+      state_count: stateCount,
+      representative: {
+        state_id: stateId,
+        candidate_qualification: variant?.candidate_qualification ?? null,
+        shape: boxes(state.shape),
+        collision: boxes(state.collision),
+        geometry_classes: [...(geometry.geometry_classes ?? [])],
+        machine_tags: [...(variant?.machine_facts?.machine_tags ?? [])],
+        behavior: behaviorOutput(variant === undefined ? state.behavior : behavior(variant, state)),
       },
-      variants: variantOutputs,
-      images,
-      audit: {
-        skip_records: MCPQueryService._auditIds(snapshot.manual, 'skip_reviews', blockId),
-        override_refs: MCPQueryService._auditIds(snapshot.manual, 'manual_overrides', blockId),
-        qualification_review_refs: MCPQueryService._auditIds(snapshot.manual, 'qualification_reviews', blockId),
-      },
+      semantics: annotation === undefined ? null : semantic(annotation),
+      warnings,
+      images: [],
     };
-    return [data, imageBytes];
+    const skip = MCPQueryService._skipReason(snapshot.manual, blockId);
+    if (variant === undefined && skip !== null) output.skip_reason = skip;
+    if (variant === undefined || !isMapping(variant.render)) return [output, []];
+    const card = makeBlockCard(this._preview(handle, String(variant.variant_id), resources).decoded);
+    output.images.push({ content_index: 1, mime_type: IMAGE_MIME_TYPE, width: card.width, height: card.height, state_id: stateId });
+    return [output, [card.webp]];
   }
 
-  static _auditIds(manual, key, blockId) {
-    const values = manual[key] ?? [];
-    const result = [];
-    if (!Array.isArray(values)) return result;
-    for (const item of values) {
-      if (!isMapping(item)) continue;
-      const targetId = key === 'manual_overrides' && isMapping(item.scope) ? item.scope.variant_id : item.target_id;
-      if (targetId !== blockId && item.block_id !== blockId) continue;
-      // Python "a or b or c": empty strings fall through.
-      const value = item.review_id || item.override_id || item.qualification_review_id;
-      if (typeof value === 'string') result.push(value);
-    }
-    return result;
+  // Real release states in UTF-8 byte order of state_id; never synthesized from
+  // the property cross product.  release_id lets a client restart paging when
+  // the published release changes between pages.
+  _statesPage(handle, snapshot, blockId, { offset, limit }) {
+    const states = Object.values(snapshot.states)
+      .filter((state) => state.block_id === blockId)
+      .sort((left, right) => byUtf8(String(left.state_id), String(right.state_id)));
+    const next = offset + limit;
+    return {
+      block_id: blockId,
+      release_id: handle.releaseId,
+      total: states.length,
+      offset,
+      next_offset: next < states.length ? next : null,
+      states: states.slice(offset, next).map((state) => ({
+        state_id: state.state_id,
+        is_default: state.is_default,
+        properties: sortedObject(state.properties),
+        shape: boxes(state.shape),
+        collision: boxes(state.collision),
+        behavior: behaviorOutput(state.behavior),
+        variant_ids: [...state.variant_ids],
+        mapping_status: state.mapping_status,
+      })),
+    };
+  }
+
+  static _skipReason(manual, blockId) {
+    const reviews = Array.isArray(manual.skip_reviews) ? manual.skip_reviews : [];
+    const review = reviews.find((item) => isMapping(item) && (item.target_id === blockId || item.block_id === blockId));
+    return typeof review?.reason_code === 'string' && review.reason_code ? review.reason_code : null;
   }
 
   _compareData(handle, snapshot, blockIds, resources) {
@@ -1101,14 +949,11 @@ export class MCPQueryService {
       ['redstone_related', (variant, state) => behavior(variant, state).redstone_related ?? 'unknown', 'machine'],
       ['summary_en', (variant) => semantic(snapshot.annotations[String(variant.variant_id)]).summary_en, 'annotation'],
     ];
+    const representatives = blockIds.map((blockId) => [blockId, variantsFor(snapshot, blockId)[0]]);
     for (const [field, extractor, source] of fields) {
       const values = [];
-      for (const blockId of blockIds) {
-        const variants = Object.values(snapshot.variants)
-          .filter((variant) => variant.block_id === blockId)
-          .sort((left, right) => byUtf8(String(left.variant_id), String(right.variant_id)));
-        if (variants.length === 0) continue;
-        const variant = variants[0];
+      for (const [blockId, variant] of representatives) {
+        if (variant === undefined) continue;
         const state = snapshot.states[String(variant.canonical_state_id)];
         if (state === undefined) continue;
         const value = extractor(variant, state);
@@ -1119,47 +964,16 @@ export class MCPQueryService {
       const distinct = new Set(values.map((item) => scalarKey(item.value)));
       if (values.length >= 2 && distinct.size > 1) rows.push({ field, values });
     }
-    const sourceImages = [];
-    const mapping = [];
-    blockIds.forEach((blockId, index) => {
-      const variants = Object.values(snapshot.variants)
-        .filter((variant) => variant.block_id === blockId)
-        .sort((left, right) => byUtf8(String(left.variant_id), String(right.variant_id)));
-      if (variants.length === 0) return;
-      const variant = variants[0];
-      sourceImages.push(this._preview(handle, String(variant.variant_id), resources));
-      mapping.push({ candidate_id: `T${String(index + 1).padStart(2, '0')}`, variant_id: variant.variant_id, block_id: blockId });
-    });
-    if (sourceImages.length === 0) {
-      return [
-        { block_ids: [...blockIds], rows, contact_sheet: { image_id: null, tile_mapping: [] }, images: [] },
-        [],
-      ];
-    }
-    const sheet = makeContactSheet(sourceImages.map((item) => item.decoded), sourceImages.length);
-    const tiles = mapping.map((item, index) => ({
-      candidate_id: item.candidate_id,
-      variant_id: item.variant_id,
-      block_id: item.block_id,
-      row: 0,
-      column: index,
-    }));
-    // Matches the Python _image_id(png, "compare") call: prefix stays "img".
-    const imageId = imageIdFor(sheet.png);
-    const image = {
-      image_id: imageId,
-      purpose: 'compare_contact_sheet',
-      mime_type: 'image/png',
-      width: sourceImages.length * 512,
-      height: 512,
-      sha256: sha256Bytes(sheet.png),
-      content_index: 1,
-      mapping,
-    };
-    return [
-      { block_ids: [...blockIds], rows, contact_sheet: { image_id: imageId, tile_mapping: tiles }, images: [image] },
-      [sheet.png],
-    ];
+    const tiles = representatives
+      .filter(([, variant]) => variant !== undefined)
+      .map(([blockId, variant], index) => ({
+        candidateId: `T${String(index + 1).padStart(2, '0')}`,
+        blockId,
+        variantId: String(variant.variant_id),
+      }));
+    if (tiles.length === 0) return [{ rows, images: [] }, []];
+    const sheet = this._contactSheet(handle, tiles, tiles.length, resources);
+    return [{ rows, images: [sheet.image] }, [sheet.webp]];
   }
 }
 

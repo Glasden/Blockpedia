@@ -1,0 +1,539 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:blockpedia:schema:mcp:mcp-block-details-output.v2",
+  "title": "Blockpedia MCP block details output",
+  "description": "Either a detail=summary object or a detail=states page.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "block_id": {
+      "$ref": "#/$defs/block_id"
+    },
+    "official_names": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zh_cn",
+        "en_us"
+      ],
+      "properties": {
+        "zh_cn": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "en_us": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "default_state_id": {
+      "$ref": "#/$defs/state_id"
+    },
+    "properties": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9_]+$"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/block_id"
+      }
+    },
+    "has_item": {
+      "$ref": "#/$defs/tristate"
+    },
+    "has_block_entity": {
+      "$ref": "#/$defs/tristate"
+    },
+    "state_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "representative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state_id",
+        "candidate_qualification",
+        "shape",
+        "collision",
+        "geometry_classes",
+        "machine_tags",
+        "behavior"
+      ],
+      "properties": {
+        "state_id": {
+          "$ref": "#/$defs/state_id"
+        },
+        "candidate_qualification": {
+          "enum": [
+            "eligible",
+            "conditional",
+            "excluded",
+            null
+          ]
+        },
+        "shape": {
+          "$ref": "#/$defs/boxes"
+        },
+        "collision": {
+          "$ref": "#/$defs/boxes"
+        },
+        "geometry_classes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "machine_tags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "behavior": {
+          "$ref": "#/$defs/behavior"
+        }
+      }
+    },
+    "semantics": {
+      "$ref": "#/$defs/semantics"
+    },
+    "skip_reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "description": "Audited reason the block has no visual variant."
+    },
+    "warnings": {
+      "$ref": "#/$defs/warnings"
+    },
+    "images": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "$ref": "#/$defs/image"
+      }
+    },
+    "release_id": {
+      "type": "string",
+      "pattern": "^rel_[0-9a-f]{32}$"
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "offset": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "next_offset": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "states": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/state"
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "description": "detail=summary. Geometry, behavior and the image describe representative.state_id only, not every state.",
+      "required": [
+        "block_id",
+        "official_names",
+        "default_state_id",
+        "properties",
+        "tags",
+        "has_item",
+        "has_block_entity",
+        "state_count",
+        "representative",
+        "semantics",
+        "warnings",
+        "images"
+      ],
+      "properties": {
+        "release_id": false,
+        "total": false,
+        "offset": false,
+        "next_offset": false,
+        "states": false
+      }
+    },
+    {
+      "description": "detail=states. States are ordered by the UTF-8 bytes of state_id; if release_id differs between pages, discard collected pages and restart at offset 0.",
+      "required": [
+        "block_id",
+        "release_id",
+        "total",
+        "offset",
+        "next_offset",
+        "states"
+      ],
+      "properties": {
+        "official_names": false,
+        "default_state_id": false,
+        "properties": false,
+        "tags": false,
+        "has_item": false,
+        "has_block_entity": false,
+        "state_count": false,
+        "representative": false,
+        "semantics": false,
+        "skip_reason": false,
+        "warnings": false,
+        "images": false
+      }
+    }
+  ],
+  "$defs": {
+    "block_id": {
+      "type": "string",
+      "pattern": "^minecraft:[a-z0-9_./-]+$"
+    },
+    "state_id": {
+      "type": "string",
+      "maxLength": 8192,
+      "pattern": "^minecraft:[a-z0-9_./-]+(?:\\[[a-z0-9_]+=[a-z0-9_.-]+(?:,[a-z0-9_]+=[a-z0-9_.-]+)*\\])?$"
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "tristate": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "const": "unknown"
+        }
+      ]
+    },
+    "behavior": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Runtime behavior facts. Unexported support facts are omitted: a missing requires_support or support side means unknown, never false.",
+      "required": [
+        "transparent",
+        "emissive",
+        "emission_level",
+        "passable",
+        "waterloggable",
+        "redstone_related"
+      ],
+      "properties": {
+        "transparent": {
+          "$ref": "#/$defs/tristate"
+        },
+        "emissive": {
+          "$ref": "#/$defs/tristate"
+        },
+        "emission_level": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 15
+            },
+            {
+              "const": "unknown"
+            }
+          ]
+        },
+        "passable": {
+          "$ref": "#/$defs/tristate"
+        },
+        "waterloggable": {
+          "$ref": "#/$defs/tristate"
+        },
+        "requires_support": {
+          "type": "boolean"
+        },
+        "redstone_related": {
+          "$ref": "#/$defs/tristate"
+        },
+        "support": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "above": {
+              "type": "boolean"
+            },
+            "below": {
+              "type": "boolean"
+            },
+            "east": {
+              "type": "boolean"
+            },
+            "north": {
+              "type": "boolean"
+            },
+            "south": {
+              "type": "boolean"
+            },
+            "west": {
+              "type": "boolean"
+            },
+            "none": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "box": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "min_x",
+        "min_y",
+        "min_z",
+        "max_x",
+        "max_y",
+        "max_z"
+      ],
+      "properties": {
+        "min_x": {
+          "type": "number"
+        },
+        "min_y": {
+          "type": "number"
+        },
+        "min_z": {
+          "type": "number"
+        },
+        "max_x": {
+          "type": "number"
+        },
+        "max_y": {
+          "type": "number"
+        },
+        "max_z": {
+          "type": "number"
+        }
+      }
+    },
+    "boxes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/box"
+      }
+    },
+    "semantics": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "description": "Published semantic projection of the representative visual variant; null when the block has no visual variant.",
+      "properties": {
+        "synonyms_zh": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "synonyms_en": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "summary_zh": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 500
+        },
+        "summary_en": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 500
+        },
+        "color_terms": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "shape_terms": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "material_impressions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "building_roles": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "style_tags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "avoid_for": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Lossless 256x256 WebP card of the representative state's four views (128px each).",
+      "required": [
+        "content_index",
+        "mime_type",
+        "width",
+        "height",
+        "state_id"
+      ],
+      "properties": {
+        "content_index": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Index of the ImageContent in the tool result content array."
+        },
+        "mime_type": {
+          "const": "image/webp"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state_id": {
+          "$ref": "#/$defs/state_id"
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state_id",
+        "is_default",
+        "properties",
+        "shape",
+        "collision",
+        "behavior",
+        "variant_ids",
+        "mapping_status"
+      ],
+      "properties": {
+        "state_id": {
+          "$ref": "#/$defs/state_id"
+        },
+        "is_default": {
+          "type": "boolean"
+        },
+        "properties": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z0-9_]+$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[a-z0-9_.-]+$"
+          }
+        },
+        "shape": {
+          "$ref": "#/$defs/boxes"
+        },
+        "collision": {
+          "$ref": "#/$defs/boxes"
+        },
+        "behavior": {
+          "$ref": "#/$defs/behavior"
+        },
+        "variant_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/block_id"
+          }
+        },
+        "mapping_status": {
+          "enum": [
+            "mapped",
+            "skipped"
+          ]
+        }
+      }
+    }
+  }
+}
