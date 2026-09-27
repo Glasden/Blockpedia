@@ -1,0 +1,10 @@
+{
+  "name": "blockpedia-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.14.0 <25" },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.1.0"
+  }
+}
