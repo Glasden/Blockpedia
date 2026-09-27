@@ -2,7 +2,7 @@
 
 更新：2026-09-27。代码调查基线：`44233c2`。本文件是当前决定、实施顺序和进度的唯一维护入口；旧文档已归档，不再与本文并行维护。
 
-**本轮只维护文档与已批准名单，不实施功能、不执行真实标注或发布。** 下文的接口和参数是下一轮实施目标，并非当前已有能力。技术方块名单已于 2026-09-27 获用户批准；其他条目区分用户决定与据此制定的实施方案。
+**用户已于 2026-09-27 授权开始实施，当前先完成 D1 exporter 颜色修复。** 其余接口和参数仍是后续实施目标，并非当前已有能力。技术方块名单与 256×256 无损 WebP 决定已获用户批准；本阶段不执行真实标注或发布。
 
 ## 1. 已确认决定与范围
 
@@ -132,7 +132,7 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 
 | 项目 | 本次新 release 的计划 |
 |---|---|
-| 渲染偏暗 | 保留为必做调查与修正。用真实 GPU、原始贴图/atlas 和逐面输出定位 lightmap、tint、面阴影等因素；不凭均值直接乘亮度系数。固定采样和颜色空间后再确定数值阈值，旧稿统一 L*≥85 不作为已成立的门槛。修复后完整重新导出与提取特征。 |
+| 渲染偏暗 | D1 已修复继承 GUI 方向光的问题，使用固定的原版 DEFAULT/LEVEL 双灯 diffuse 预设，详见第 8 节。不是统一补亮，也不宣称采用 terrain 的 0.8/0.6 面阴影系数。完整重新导出与特征重算尚待后续执行，旧稿统一 L*≥85 不作为门槛。 |
 | 形状分类 | 优先将已有 stairs/slabs/walls/fences 等 registry tags 映射到统一分类；只有缺少事实的类别才补 exporter 最小运行时分类。查询词与实际分类对齐。 |
 | 搜索相关性 | 保留现有 FTS/LIKE 宽召回，改进短语、词覆盖率与字段加权；英文按词边界，名称/同义词高于用途/材料/风格，再高于摘要。补中文颜色与常用用途映射，材料真正参与评分；不新增在线模型。 |
 | `avoid_for` | 只从正向索引文本排除。暂不拆分标注字段或重做受控词表：没有旧兼容要求，也不意味着必须扩大本次 Schema 改造。保留共享语义投影/人工覆盖功能，不把含义混杂的历史字段直接用于负向惩罚。 |
@@ -154,7 +154,7 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 | A 文档收敛 | 本文件、旧文档归档、必要引用接线 | 主代理：归档完整性、有效链接、原稿和 evidence 保留、候选提交审核 | 文档已整理；18 项名单已获用户批准；提交状态见会话 |
 | B 详情与 MCP 图片输出 | summary/states、分页；三种带图工具最终响应采用256卡片/无损WebP，处理过程使用原图 | 实现者：两个摘要尺寸断言、全 release 大小扫描、分页集合一致、Schema/MIME、图片元数据、无损解码、客户端及视觉检查 | 未实施；图片方案已批准 |
 | C 特征多 worker | 第 4 节配置与进程池；可与 B/D 独立开发 | 实现者：串并行结果一致、生命周期/故障检查、同 run 并行证据及真实计时 | 未实施；本次计划内必做 |
-| D 渲染与形状事实 | 真实根因调查、修正、分类对齐；新导出在修正后产生 | 实现者：Java 构建、真实 GPU 样本、分类来源检查；主代理核对完整导出验证 | 未实施；真实渲染待验证 |
+| D 渲染与形状事实 | D1 颜色修复先独立交付；形状分类、新完整导出继续待办 | 实现者：Java 构建、真实 GPU 样本、分类来源检查；主代理核对完整导出验证 | D1 代码及定向 GPU 验证完成，见第 8 节；阶段整体未完成 |
 | E 搜索与名单 | 相关性、中文映射、技术降权；名单已获用户批准，最终颜色/形状验收依赖 D | 实现者：约20条查询、FTS/LIKE、精确与泛用途查询对照、稳定排序 | 未实施；名单已批准 |
 | F 新 release | 整合 B–E，新 workspace 完整处理并构建 | 主代理：构建通过，真实产物 summary 扫描、查询集、四工具 stdio 和状态引用一致；provider 结果独立取证 | 未执行；无新 release ID |
 | G 发布 | F 验收后由用户明确发布 | 主代理：实际指针切换及下一次 MCP 查询指向新 release | 未授权执行，未发布 |
@@ -168,3 +168,27 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 [docs/evidence/](docs/evidence/) 中历史 JSON 报告保持原路径和内容，不因归档改写测试结论。旧 R2 验证工具对阶段文档的两处引用随归档更新，避免搬迁导致检查静默漏读；这不是功能实施。
 
 以后只在本文更新当前范围、未决事项、阶段状态和证据链接；不继续补写归档规格，也不把代码字段列表复制进多份 Markdown。精确接口、数据类型与校验以实际 Schema/实现为准；本轮尚未实施的目标不会因写入本文而自动生效。
+
+## 8. D1 exporter 颜色修复（2026-09-27）
+
+根因：`BlockModelResolver` 使用原版 item/special-model shader；`FULL_BRIGHT` 只指定 lightmap 坐标，不能关闭方向漫反射。原 `RenderExporter` 未绑定自己的 Lighting，继承了界面绘制的灯光；shader 的 0.4 环境光项使顶面、侧面约只剩原贴图的 40%。原先“lightmap 整体少了约 0.7 倍”未获证实，不按该猜测补亮。
+
+修复：渲染期间用独立的原版 `Lighting`，调用 `updateLevel(CardinalLighting.Type.DEFAULT)` 与 `setupFor(Lighting.Entry.LEVEL)`，结束（含异常）恢复原 shader lights 并释放资源。保留 FULL_BRIGHT、camera.v3、tint、透明度和特殊模型路径；记录 `lighting.v2` 及对应环境摘要，manifest Schema 接通新策略。
+
+真实证据来自反向 SSH 显卡机，复用 `D:\Code\blockpedia` 的依赖与测试世界副本，在独立的 `D:\Temp\blockpedia-color-20260927` 运行。Windows x86_64、RTX 4080 Laptop GPU、OpenGL、驱动 610.88。13 类样本包含三种白色方块、石英、木材、石头、玻璃、楼梯、旗帜、箱子、萤石及橡树叶；每类分别以前置 ITEMS_FLAT 与 ENTITY_IN_UI 灯光启动，两次预览字节相同。PNG 写入故障后的灯光恢复和下一次成功渲染也通过。
+
+8 种可直接对照原纹理的材质，按正交视角 alpha=255 的对象像素统计 RGB 均值，与对应原贴图均值比较：
+
+| 面 | 修复前比例 | 修复后比例 | 解释 |
+|---|---:|---:|---|
+| 正面 | 约 0.546 | 约 0.740 | 原版 DEFAULT 双灯 diffuse |
+| 侧面 | 约 0.400 | 约 0.497 | 同一预设的方向阴影 |
+| 顶面 | 约 0.400 | 1.000 | 恢复原贴图颜色 |
+
+数值容差计入 8 位量化；方向阴影仍存在，整张联系图的平均 L* 不能解释为无阴影材质色。实际查看了雪块、楼梯、玻璃、旗帜与树叶的导出预览。
+
+验证：Java 25 `./gradlew --no-daemon build renderLightingProbeJar` 通过（含 camera 检查）；指定本次 GPU 产物运行 `tests/test_render_lighting.py`、`tests/test_r0_schemas.py`、`tests/test_r1_export_validator.py`，共 **40 passed**；颜色回归检查对旧暗图按预期失败。生产 exporter JAR 不含测试探针。提交前 Oracle 结论与 commit 见会话。
+
+复验入口：`renderLightingProbeJar` 生成独立测试 JAR；与 exporter 一起放进隔离 Fabric 游戏目录，指定 `-Dblockpedia.probe.output=<全新输出目录>` 后加载测试世界，探针运行完会退出客户端。必须检查 `PASS.txt` 存在且无 `FAIL.txt`，再以 `BLOCKPEDIA_RENDER_EVIDENCE=<该目录> python -m pytest -q tests/test_render_lighting.py` 检查真实 PNG。没有 GPU 产物时该项明确跳过，不算通过。原图、纹理及本地量测保留在忽略目录 `build/lighting-v2-evidence/{before,final}/`，不提交游戏资产；远端临时计划任务已移除。
+
+剩余边界：未完成全注册表新导出、完整导出的双次确定性验证、Linux/Vulkan GPU 验证或新 release 构建。旧 release 不会因代码修复自动变亮；后续仍需新导出、特征重算与新标注。本阶段没有顺带实施形状分类、搜索、详情压缩或多 worker。

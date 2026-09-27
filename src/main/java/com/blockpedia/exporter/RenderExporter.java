@@ -7,6 +7,7 @@ import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.buffers.GpuFence;
 import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.platform.NativeImage;
+import com.mojang.blaze3d.platform.Lighting;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Minecraft;
@@ -62,6 +63,7 @@ final class RenderExporter {
         var previousColor = RenderSystem.outputColorTextureOverride;
         var previousDepth = RenderSystem.outputDepthTextureOverride;
         var previousFog = RenderSystem.getShaderFog();
+        var previousLights = RenderSystem.getShaderLights();
         var previousScissor = new com.mojang.blaze3d.systems.ScissorState(RenderSystem.getScissorStateForRenderTypeDraws());
         NativeImage preview = new NativeImage(
             NativeImage.Format.RGBA,
@@ -74,7 +76,11 @@ final class RenderExporter {
         RenderSystem.backupProjectionMatrix();
         Matrix4fStack modelView = RenderSystem.getModelViewStack();
         modelView.pushMatrix();
-        try {
+        try (Lighting lighting = new Lighting()) {
+            // Item/special-model shaders still use diffuse lights at FULL_BRIGHT.
+            // Bind world-space lighting instead of inheriting the last GUI draw.
+            lighting.updateLevel(CardinalLighting.Type.DEFAULT);
+            lighting.setupFor(Lighting.Entry.LEVEL);
             for (View view : View.values()) {
                 renderView(state, variantId, view, projectionBuffer, projection, modelView, preview);
             }
@@ -110,6 +116,7 @@ final class RenderExporter {
                 RenderSystem.outputColorTextureOverride = previousColor;
                 RenderSystem.outputDepthTextureOverride = previousDepth;
                 RenderSystem.setShaderFog(previousFog);
+                RenderSystem.setShaderLights(previousLights);
                 RenderSystem.getScissorStateForRenderTypeDraws().setFrom(previousScissor);
                 modelView.popMatrix();
                 RenderSystem.restoreProjectionMatrix();

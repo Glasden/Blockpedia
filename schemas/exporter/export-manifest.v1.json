@@ -229,7 +229,7 @@
       "properties": {
         "camera_policy_version": { "enum": ["camera.v1", "camera.v2", "camera.v3"] },
         "camera_sha256": { "$ref": "#/$defs/hash" },
-        "lighting_policy_version": { "const": "lighting.v1" },
+        "lighting_policy_version": { "enum": ["lighting.v1", "lighting.v2"] },
         "lighting_sha256": { "$ref": "#/$defs/hash" },
         "background_sha256": { "$ref": "#/$defs/hash" },
         "backboard_sha256": { "$ref": "#/$defs/hash" },

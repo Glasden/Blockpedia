@@ -67,6 +67,16 @@ tasks.register('verifyRenderCamera', JavaExec) {
 
 tasks.named('test') {
     exclude '**/RenderCameraCheck.class' // Executed by verifyRenderCamera, without a test framework.
+    exclude '**/RenderLightingProbe.class' // Opt-in Fabric GPU probe, not a framework test.
+}
+
+tasks.register('renderLightingProbeJar', Jar) {
+    dependsOn testClasses
+    archiveClassifier = 'lighting-probe'
+    from(sourceSets.test.output) {
+        include 'com/blockpedia/exporter/RenderLightingProbe.class'
+        include 'fabric.mod.json'
+    }
 }
 
 check.dependsOn verifyRenderCamera

@@ -24,6 +24,17 @@ def test_export_camera_policy_accepts_corrected_and_historical_views() -> None:
         validator.validate(manifest)
 
 
+def test_export_accepts_fixed_world_lighting_policy() -> None:
+    schema = json.loads((REPO_ROOT / "schemas/exporter/export-manifest.v1.json").read_text())
+    manifest = json.loads((REPO_ROOT / "tests/schema/fixtures/exporter/valid/export-manifest.v1.json").read_text())
+    validator = Draft202012Validator(schema)
+    for version in ("lighting.v1", "lighting.v2"):
+        manifest["render_environment"]["lighting_policy_version"] = version
+        validator.validate(manifest)
+    manifest["render_environment"]["lighting_policy_version"] = "lighting.unknown"
+    assert not validator.is_valid(manifest)
+
+
 def test_r0_dual_openai_adapter_conditionals() -> None:
     envelope_schema = json.loads(
         (REPO_ROOT / "schemas/provider/provider-batch-envelope.v1.json").read_text(
