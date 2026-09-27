@@ -25,6 +25,17 @@ SEMANTIC_LIST_FIELDS = (
 )
 SEMANTIC_SCALAR_FIELDS = ("summary_zh", "summary_en")
 HUMAN_SEMANTIC_FIELDS = SEMANTIC_LIST_FIELDS + SEMANTIC_SCALAR_FIELDS + ("confidence",)
+DEPRIORITIZED_BLOCKS = frozenset("minecraft:" + block_id for block_id in (
+    "air", "cave_air", "void_air", "barrier", "light", "structure_void",
+    "structure_block", "jigsaw", "test_block", "test_instance_block",
+    "command_block", "chain_command_block", "repeating_command_block",
+    "moving_piston", "piston_head", "nether_portal", "end_portal", "end_gateway",
+    "infested_stone", "infested_cobblestone", "infested_stone_bricks",
+    "infested_mossy_stone_bricks", "infested_cracked_stone_bricks",
+    "infested_chiseled_stone_bricks", "infested_deepslate",
+))
+
+
 def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value).casefold()).strip()
 
@@ -143,27 +154,45 @@ class WorkspaceQueryService:
         if self.database.fts_mode == "trigram" and len(normalized) >= 3:
             try:
                 rows = self.database.fetchall(
-                    "SELECT d.block_id, d.content FROM fts_documents f JOIN search_documents d ON d.block_id = f.block_id WHERE fts_documents MATCH ? ORDER BY d.block_id LIMIT ?",
-                    (f'"{normalized.replace(chr(34), " ")}"', limit),
+                    "SELECT d.block_id, d.content FROM fts_documents f JOIN search_documents d ON d.block_id = f.block_id WHERE fts_documents MATCH ? ORDER BY d.block_id",
+                    (f'"{normalized.replace(chr(34), " ")}"',),
                 )
             except sqlite3.OperationalError:
-                rows = self._like_rows(normalized, limit)
+                rows = self._like_rows(normalized)
         else:
-            rows = self._like_rows(normalized, limit)
-        hits = []
-        seen_blocks: set[str] = set()
+            rows = self._like_rows(normalized)
+        if normalized.startswith("minecraft:"):
+            rows.extend(self.database.fetchall(
+                "SELECT block_id, content FROM search_documents WHERE block_id = ? ORDER BY block_id",
+                (normalized,),
+            ))
+        names_by_id = {
+            str(row["block_id"]): json.loads(row["record_json"]).get("official_names", {})
+            for row in self.database.fetchall("SELECT block_id, record_json FROM blocks")
+        }
+        hits: dict[str, SearchHit] = {}
+        exact_blocks: set[str] = set()
         for row in rows:
-            if str(row["block_id"]) in seen_blocks:
+            block_id = str(row["block_id"])
+            if block_id in hits:
                 continue
-            seen_blocks.add(str(row["block_id"]))
             content = str(row["content"])
-            hits.append(SearchHit(str(row["block_id"]), _score(normalized, normalize_text(content)), content))
-        return sorted(hits, key=lambda hit: (-hit.score, hit.block_id.encode("utf-8")))[:limit]
+            names = names_by_id[block_id]
+            exact = normalized == block_id or any(
+                normalized == normalize_text(name) for name in names.values() if isinstance(name, str) and name
+            )
+            if exact:
+                exact_blocks.add(block_id)
+            score = _score(normalized, normalize_text(content))
+            if block_id in DEPRIORITIZED_BLOCKS and not exact:
+                score = round(score * 0.25, 8)
+            hits[block_id] = SearchHit(block_id, score, content)
+        return sorted(hits.values(), key=lambda hit: (hit.block_id not in exact_blocks, -hit.score, hit.block_id.encode("utf-8")))[:limit]
 
-    def _like_rows(self, normalized: str, limit: int) -> list[sqlite3.Row]:
+    def _like_rows(self, normalized: str) -> list[sqlite3.Row]:
         return self.database.fetchall(
-            "SELECT block_id, content FROM search_documents WHERE normalized_content LIKE ? ORDER BY block_id LIMIT ?",
-            ("%" + normalized + "%", limit),
+            "SELECT block_id, content FROM search_documents WHERE normalized_content LIKE ? ORDER BY block_id",
+            ("%" + normalized + "%",),
         )
 
 

@@ -17,6 +17,25 @@ const VERSION_RE = /^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$/;
 const REQUEST_ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 
 export const WEIGHTS = { shape: 0.35, color: 0.3, use: 0.15, name_synonym: 0.1, style: 0.05, behavior: 0.05 };
+const TECHNICAL_BLOCKS = new Set([
+  'air', 'cave_air', 'void_air', 'barrier', 'light', 'structure_void',
+  'structure_block', 'jigsaw', 'test_block', 'test_instance_block',
+  'command_block', 'chain_command_block', 'repeating_command_block',
+  'moving_piston', 'piston_head', 'nether_portal', 'end_portal', 'end_gateway',
+].map((id) => `minecraft:${id}`));
+const INFESTED_BLOCKS = new Set([
+  'infested_stone', 'infested_cobblestone', 'infested_stone_bricks',
+  'infested_mossy_stone_bricks', 'infested_cracked_stone_bricks',
+  'infested_chiseled_stone_bricks', 'infested_deepslate',
+].map((id) => `minecraft:${id}`));
+const policyWarning = (blockId) => INFESTED_BLOCKS.has(blockId)
+  ? '本地推荐规则：虫蚀方块有蠹虫风险，泛用途检索降权；此提示不是运行时事实或人工审核。'
+  : TECHNICAL_BLOCKS.has(blockId)
+    ? '本地推荐规则：技术或特殊用途方块在泛用途检索中降权；此提示不是运行时事实或人工审核。'
+    : null;
+const exactBlockQuery = (query, blockId, names) =>
+  query === normalized(blockId)
+  || [names.zh_cn, names.en_us].some((name) => name && query === normalized(name));
 export const OFFICIAL_DISCLAIMER =
   'NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.';
 
@@ -610,8 +629,9 @@ export class MCPQueryService {
       try {
         const snapshot = this._snapshot(handle);
         const rows = this._eligibleRows(snapshot);
-        const recalled = this._recall(handle, rows, intent.keywords);
-        const ranked = this._rankRows(recalled, snapshot, intent);
+        const exactQuery = normalized(joinedQuery);
+        const recalled = this._recall(handle, rows, intent.keywords, exactQuery);
+        const ranked = this._rankRows(recalled, snapshot, intent, exactQuery);
         const selected = ranked.slice(0, 24).slice(0, limit);
         const candidates = this._candidateDicts(selected, snapshot, intent);
         const searchId = this._searchId(handle, joinedQuery);
@@ -694,7 +714,7 @@ export class MCPQueryService {
           minecraft_version: handle.minecraftVersion,
           resolved_release_id: handle.releaseId,
           manifest_sha256: handle.manifestSha256,
-          warnings: [],
+          warnings: policyWarning(blockId) ? [policyWarning(blockId)] : [],
           data,
         };
         return toolResult(envelope, images);
@@ -791,7 +811,7 @@ export class MCPQueryService {
     return rows;
   }
 
-  _recall(handle, rows, keywords) {
+  _recall(handle, rows, keywords, exactQuery) {
     const tokens = keywordTokens(keywords);
     if (tokens.length === 0) return [...rows];
     const ids = new Set();
@@ -809,10 +829,11 @@ export class MCPQueryService {
       }
       for (const row of cursor) ids.add(String(row.variant_id));
     }
-    return rows.filter((row) => ids.has(row[0]));
+    return rows.filter((row) => ids.has(row[0])
+      || exactBlockQuery(exactQuery, row[1].block_id, row[3].official_names ?? {}));
   }
 
-  _rankRows(rows, snapshot, intent) {
+  _rankRows(rows, snapshot, intent, exactQuery) {
     const result = [];
     for (const row of rows) {
       const [variantId, variant, , block] = row;
@@ -832,16 +853,17 @@ export class MCPQueryService {
       }
       if (intent.styles.length > 0) matches.style = containsAny(semanticValue.style_tags ?? [], intent.styles);
       const [score, breakdown] = deterministicScore(matches);
-      result.push([row, score, breakdown]);
+      const exact = exactBlockQuery(exactQuery, variant.block_id, names);
+      result.push([row, policyWarning(variant.block_id) && !exact ? pyRound8(score * 0.25) : score, breakdown, exact]);
     }
-    result.sort((left, right) => right[1] - left[1] || byUtf8(left[0][0], right[0][0]));
+    result.sort((left, right) => Number(right[3]) - Number(left[3]) || right[1] - left[1] || byUtf8(left[0][0], right[0][0]));
     return result;
   }
 
   _candidateDicts(ranked, snapshot, intent) {
     const candidates = [];
     ranked.forEach((entry, index) => {
-      const [row, score, breakdown] = entry;
+      const [row, score, breakdown, exact] = entry;
       const [variantId, variant, state, block] = row;
       const names = block.official_names ?? {};
       const semanticValue = semantic(snapshot.annotations[variantId]);
@@ -858,8 +880,10 @@ export class MCPQueryService {
         final_score: score,
         score_source: 'local',
         score_breakdown: breakdown,
-        reason: MCPQueryService._reason(breakdown, semanticValue),
-        warnings: [...(variant.warnings ?? [])],
+        reason: exact || !policyWarning(variant.block_id)
+          ? MCPQueryService._reason(breakdown, semanticValue)
+          : `${MCPQueryService._reason(breakdown, semanticValue).slice(0, 450)} Local recommendation rule: general-use score ×0.25.`,
+        warnings: [...(variant.warnings ?? []), ...(policyWarning(variant.block_id) ? [policyWarning(variant.block_id)] : [])],
         machine_fact_refs: [
           { record_type: 'state', record_id: String(state.state_id), field: 'behavior' },
           { record_type: 'visual_variant', record_id: variantId, field: 'machine_facts' },
@@ -997,7 +1021,7 @@ export class MCPQueryService {
         canonical_state_id: variant.canonical_state_id,
         represented_state_ids: [...variant.represented_state_ids],
         candidate_qualification: variant.candidate_qualification,
-        warnings: [...(variant.warnings ?? [])],
+        warnings: [...(variant.warnings ?? []), ...(policyWarning(blockId) ? [policyWarning(blockId)] : [])],
         variant_facts: {
           geometry_summary: geometry.shape,
           geometry_signature: geometry.geometry_signature,

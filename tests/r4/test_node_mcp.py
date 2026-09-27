@@ -96,6 +96,87 @@ def call(send, id: int, name: str, arguments: dict) -> dict:
     return response["result"]
 
 
+def _add_search_block(db: sqlite3.Connection, block_id: str, zh: str, en: str, *, qualification: str = "eligible", warning: str | None = None, visual: bool = True) -> None:
+    source = "minecraft:stone"
+    block = json.loads(db.execute("SELECT record_json FROM blocks WHERE block_id=?", (source,)).fetchone()[0])
+    block.update(block_id=block_id, default_state_id=block_id, translation_key="block." + block_id.removeprefix("minecraft:"))
+    block["official_names"] = {"zh_cn": zh, "en_us": en}
+    db.execute("INSERT INTO blocks SELECT ?,minecraft_version,?, ?, ?, ?,machine_facts_json,? FROM blocks WHERE block_id=?", (block_id, block["translation_key"], zh, en, block_id, json.dumps(block), source))
+    state = json.loads(db.execute("SELECT record_json FROM states WHERE state_id=?", (source,)).fetchone()[0])
+    state.update(state_id=block_id, block_id=block_id, variant_ids=[block_id] if visual else [])
+    db.execute("INSERT INTO states SELECT ?,?,properties_json,is_default,? FROM states WHERE state_id=?", (block_id, block_id, json.dumps(state), source))
+    if not visual:
+        return
+    variant = json.loads(db.execute("SELECT record_json FROM visual_variants WHERE variant_id=?", (source,)).fetchone()[0])
+    variant.update(variant_id=block_id, block_id=block_id, canonical_state_id=block_id, represented_state_ids=[block_id], candidate_qualification=qualification, warnings=[warning] if warning else [])
+    variant["machine_facts"]["behavior_by_state"] = {block_id: variant["machine_facts"]["behavior_by_state"][source]}
+    db.execute("INSERT INTO visual_variants SELECT ?,?,?,?,preview_path,mask_path,render_metadata_path,image_sha256,mask_sha256,render_metadata_sha256,?,?,?,feature_json FROM visual_variants WHERE variant_id=?", (block_id, block_id, block_id, json.dumps([block_id]), qualification, json.dumps(variant["warnings"]), json.dumps(variant), source))
+    annotation = json.loads(db.execute("SELECT semantic_json FROM annotations WHERE variant_id=?", (source,)).fetchone()[0])
+    annotation.update(synonyms_en=["bugstone"] if block_id == "minecraft:infested_stone" else [], summary_en=en)
+    db.execute("INSERT INTO annotations VALUES (?,?)", (block_id, json.dumps(annotation)))
+    table = "search_fts" if db.execute("SELECT name FROM sqlite_master WHERE name='search_fts'").fetchone() else "search_text"
+    db.execute(f"INSERT INTO {table}(variant_id,normalized_text) VALUES (?,?)", (block_id, f"{zh} {en.lower()} wall {' '.join(annotation['synonyms_en'])}"))
+
+
+@pytest.mark.parametrize("force_like", [False, True], ids=["fts5", "like"])
+def test_e1_local_ranking_exact_names_and_warnings(tmp_path: Path, force_like: bool) -> None:
+    fixture = build_fixture(tmp_path, force_like=force_like)
+    with sqlite3.connect(fixture.release / "index.sqlite3") as db:
+        assert bool(db.execute("SELECT 1 FROM sqlite_master WHERE name='search_fts'").fetchone()) is not force_like
+        _add_search_block(db, "minecraft:barrier", "屏障", "Barrier", qualification="conditional", warning="existing review warning")
+        _add_search_block(db, "minecraft:command_block", "命令方块", "Command Block")
+        _add_search_block(db, "minecraft:infested_stone", "虫蚀石头", "Infested Stone")
+        _add_search_block(db, "minecraft:sand", "沙子", "Sand")
+        _add_search_block(db, "minecraft:gravel", "沙砾", "Gravel")
+        _add_search_block(db, "minecraft:light", "光源方块", "Light", qualification="excluded")
+        _add_search_block(db, "minecraft:structure_void", "结构空位", "Structure Void", visual=False)
+    with node_session(tmp_path) as send:
+        def search(term: str, limit: int = 12) -> list[dict]:
+            result = call(send, 50, "search_blocks", {"keywords": [term], "limit": limit})
+            assert not result["isError"]
+            Draft202012Validator(load_schema(SCHEMAS["search_blocks"])).validate(result["structuredContent"])
+            return result["structuredContent"]["data"]["candidates"]
+
+        wall = search("wall")
+        by_id = {item["block_id"]: item for item in wall}
+        assert [item["block_id"] for item in wall[:1]] == ["minecraft:glass"]
+        assert search("wall", 1)[0]["block_id"] == "minecraft:glass"
+        assert by_id["minecraft:barrier"]["local_score"] == by_id["minecraft:glass"]["local_score"] * 0.25
+        assert by_id["minecraft:infested_stone"]["final_score"] == by_id["minecraft:stone"]["final_score"] * 0.25
+        assert by_id["minecraft:barrier"]["score_breakdown"] == by_id["minecraft:glass"]["score_breakdown"]
+        assert by_id["minecraft:sand"]["local_score"] == by_id["minecraft:gravel"]["local_score"] == by_id["minecraft:glass"]["local_score"]
+        assert [item["block_id"] for item in wall if item["block_id"] in {"minecraft:barrier", "minecraft:command_block"}] == ["minecraft:barrier", "minecraft:command_block"]
+        assert "Local recommendation rule" in by_id["minecraft:infested_stone"]["reason"]
+        assert "蠹虫风险" in " ".join(by_id["minecraft:infested_stone"]["warnings"])
+        assert "existing review warning" in by_id["minecraft:barrier"]["warnings"]
+        assert "本地推荐规则" in " ".join(by_id["minecraft:barrier"]["warnings"])
+        assert not by_id["minecraft:stone"]["warnings"]
+        assert "minecraft:light" not in by_id and "minecraft:structure_void" not in by_id
+
+        for term in ("MINECRAFT:INFESTED_STONE", "  iNfEsTeD   StOnE  ", "  虫蚀石头  "):
+            item = search(term, 1)[0]
+            assert item["block_id"] == "minecraft:infested_stone"
+            assert item["local_score"] == item["final_score"]
+            assert item["local_score"] == (0 if term.startswith("MINECRAFT:") else 1)
+            assert "Local recommendation rule" not in item["reason"]
+        for term in ("infested", "bugstone"):
+            item = next(item for item in search(term) if item["block_id"] == "minecraft:infested_stone")
+            assert "Local recommendation rule" in item["reason"]
+            assert item["local_score"] == 0.25
+        assert search("MINECRAFT:BARRIER", 1)[0]["block_id"] == "minecraft:barrier"
+        assert search("  BARRIER  ", 1)[0]["local_score"] == 1
+        assert search("屏障", 1)[0]["block_id"] == "minecraft:barrier"
+        assert search("minecraft:light") == []
+        assert search("minecraft:structure_void") == []
+        for block_id, expected in (("minecraft:barrier", "本地推荐规则"), ("minecraft:infested_stone", "蠹虫风险"), ("minecraft:structure_void", "本地推荐规则")):
+            details = call(send, 51, "get_block_details", {"block_id": block_id})["structuredContent"]
+            Draft202012Validator(load_schema(SCHEMAS["get_block_details"])).validate(details)
+            assert expected in " ".join(details["warnings"])
+            if details["data"]["variants"]:
+                assert expected in " ".join(details["data"]["variants"][0]["warnings"])
+        assert call(send, 52, "get_block_details", {"block_id": "minecraft:stone"})["structuredContent"]["warnings"] == []
+
+
 @pytest.mark.parametrize("force_like", [False, True], ids=["fts5", "like"])
 def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force_like: bool) -> None:
     fixture = build_fixture(tmp_path, force_like=force_like)

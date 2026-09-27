@@ -16,7 +16,7 @@ from blockpedia.features import PngDecodeError, axis_aligned_union, decode_rgba_
 from blockpedia.importer import ImportNotAllowed
 from blockpedia.paths import DataRoot, ExportPathError, UnsafeReference, default_data_root
 from blockpedia.run_snapshots import _safe_config
-from blockpedia.search import WorkspaceQueryService
+from blockpedia.search import WorkspaceQueryService, _score, normalize_text
 from blockpedia.services import StudioService
 from blockpedia.stages import RunStateConflict
 from blockpedia.storage import DatabaseSchemaMismatch, WorkspaceDatabase, utc_now
@@ -397,6 +397,49 @@ def test_fts_excludes_skipped_and_excluded_candidates(tmp_path: Path, export_fix
         block_count = database.fetchone("SELECT COUNT(*) AS n FROM blocks")
         assert block_count is not None and block_count["n"] == 2
     service.close()
+
+
+@pytest.mark.parametrize("force_like", [False, True], ids=["fts5", "like"])
+def test_workspace_search_e1_ranks_before_limit_and_keeps_exact_names(tmp_path: Path, force_like: bool) -> None:
+    with WorkspaceDatabase.open(tmp_path / "workspace.sqlite3", force_normalized_like=force_like) as database:
+        assert (database.fts_mode == "trigram") is not force_like
+        connection = database.connection
+        names = {
+            "minecraft:barrier": ("屏障", "Barrier"),
+            "minecraft:infested_stone": ("虫蚀石头", "Infested Stone"),
+            "minecraft:stone": ("石头", "Stone"),
+            "minecraft:sand": ("沙子", "Sand"),
+            "minecraft:gravel": ("沙砾", "Gravel"),
+            "minecraft:bedrock": ("基岩", "Bedrock"),
+            "minecraft:light": ("光源方块", "Light"),
+        }
+        for block_id, (zh, en) in names.items():
+            connection.execute("INSERT INTO blocks(block_id,minecraft_version,record_json) VALUES (?,?,?)", (block_id, "26.2", json.dumps({"official_names": {"zh_cn": zh, "en_us": en}})))
+            if block_id == "minecraft:light":  # No indexed visual candidate.
+                continue
+            content = f"wall {zh} {en} " + ("bugstone" if block_id == "minecraft:infested_stone" else "")
+            connection.execute("INSERT INTO search_documents(document_id,block_id,content,normalized_content) VALUES (?,?,?,?)", (f"doc_{block_id}", block_id, content, content.casefold()))
+            if database.fts_mode == "trigram":
+                connection.execute("INSERT INTO fts_documents(block_id,content) VALUES (?,?)", (block_id, content.casefold()))
+        search = WorkspaceQueryService(database)
+        wall = search.query("wall")
+        assert {hit.block_id for hit in wall[:4]} == {"minecraft:bedrock", "minecraft:gravel", "minecraft:sand", "minecraft:stone"}
+        assert search.query("wall", limit=1) == wall[:1]
+        assert {hit.block_id for hit in wall[4:]} == {"minecraft:barrier", "minecraft:infested_stone"}
+        for hit in wall:
+            expected = _score("wall", normalize_text(hit.content))
+            assert hit.score == round(expected * (0.25 if hit.block_id in {"minecraft:barrier", "minecraft:infested_stone"} else 1), 8)
+        for term in ("MINECRAFT:INFESTED_STONE", "  iNfEsTeD   StOnE  ", "虫蚀石头"):
+            hit = search.query(term, limit=1)[0]
+            assert hit.block_id == "minecraft:infested_stone"
+            assert hit.score == _score(normalize_text(term), normalize_text(hit.content))
+            assert hit.score > 0.25 or term.startswith("MINECRAFT:")
+        for term in ("infested", "bugstone"):
+            hit = search.query(term)[0]
+            assert hit.block_id == "minecraft:infested_stone" and 0 < hit.score < 0.25
+        assert search.query("Barrier", limit=1)[0].block_id == "minecraft:barrier"
+        assert search.query("MINECRAFT:BARRIER", limit=1)[0].block_id == "minecraft:barrier"
+        assert search.query("minecraft:light") == []
 
 
 def test_explicit_local_recovery_can_repeat_without_promoting_files(tmp_path, export_fixture):
