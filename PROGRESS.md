@@ -302,6 +302,14 @@ Schema：详情 v2 与比较 v3 的 `family.forms` 允许为空并新增 `materi
 
 验证：`tests/r4/test_node_png.py` 新增标签文本、换行与超长单词、不同方块标签像素不同、full 保持方形、compact 条高随行数变化；`tests/r4/test_node_mcp.py` 的 compact 断言改为 384×94（`T01 yellow_carpet` 两行）并检查标签条不遮挡视角。正式 release 上实际查看了搜索 compact 与比较 full 联系表。
 
+### 5.6 近似色系列限额与比较共享字段（2026-09-27，未提交）
+
+- `similar_to` 每个“外观系列”至多列 2 条：16 色染色系列、木种系列（`stripped_{wood}_log`、`{wood}_leaves` 等，oak … warped 12 种）、珊瑚种系列（`dead_{coral}_coral_block` 等）；木种/珊瑚系列要求至少 3 个种存在同形 ID。被略去的成员按相似度列在该系列第一条的 `similar_series`（`block_id_pattern` + `omitted_block_ids`）。关键词搜索不受影响。正式 release 上 `similar_to stone_bricks` 前 8 名由 4 个失活珊瑚块变为 2 个，`stone` 升至第 6，`mossy_stone_bricks`、`cobblestone` 进入；`andesite`（ΔE 4.9，原第 19）与凝灰岩（原第 16）本身色差较大，限额后仍不在前 8，这是颜色距离而非系列挤占。JSON 1,826 → 2,002 B（多出 `similar_series`）。
+- `compare_blocks` 新增 `shared`：所有方块取值相同的字段只写一次并从各方块删去；`family`、`semantics` 整体不同时，仍相同的键（如 `forms`、`material_blocks`）单独进 `shared`。compare v3 Schema 原地更新：方块只必需 `block_id`、`display_name`，字段定义移入 `$defs` 供 `blocks` 与 `shared` 共用，family 的组合约束改写进说明。6 种木板 JSON 6,327 → 4,457 B；stone/andesite 1,953 → 1,790 B。
+- `compare_blocks` 新增 `image`（full / compact / none），与搜索同一合成：6 种木板 compact 768×94、7,094 B（full 1536×256、16,776 B）。
+
+验证：`tests/r4/test_node_mcp.py` 新增夹具用例（FTS/LIKE）：4 个灰色珊瑚块只列最近 2 个、`similar_series` 顺序、关键词搜索全列；两种木板 `shared.family == {forms}`、各方块只留 `base_block`/`form_id_pattern`、compact/none 图片与非法 `image` 拒绝；原 oak_log/oak_wood 比较改为共享 forms/material 键。正式 release 上实际查看了 6 种木板 compact 比较图。
+
 新 release 产出链：渲染定位及修正 → 完整导出 → 新 workspace 导入 → 特征与新标注 → 审核 → 构建 → 四工具集成验收 → 用户发布。无需迁移旧语义和审核；新的非 excluded 候选仍须满足构建的语义完整性要求。
 
 ## 6. 实施阶段与当前状态

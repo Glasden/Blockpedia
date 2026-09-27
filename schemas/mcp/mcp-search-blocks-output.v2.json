@@ -205,6 +205,30 @@
               }
             }
           }
+        },
+        "similar_series": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "similar_to only. Blocks that differ only in dye colour, wood species or coral species look alike by construction, so at most two of each such series are listed; this candidate, the series' best match, names the matching members left out, most similar first. Substitute the colour, wood or coral word into block_id_pattern for a member's block ID.",
+          "required": [
+            "block_id_pattern",
+            "omitted_block_ids"
+          ],
+          "properties": {
+            "block_id_pattern": {
+              "type": "string",
+              "pattern": "^minecraft:[a-z0-9_./-]*\\{(color|wood|coral)\\}[a-z0-9_./-]*$"
+            },
+            "omitted_block_ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 14,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/block_id"
+              }
+            }
+          }
         }
       }
     },

@@ -249,6 +249,29 @@ const colorSeries = (blockId, blockIds) => {
   if (!DYE_COLORS.every((dye) => blockIds.has(`minecraft:${dye}_${suffix}`))) return null;
   return { key: suffix, color };
 };
+// Blocks that differ only in dye colour, wood species or coral species look
+// alike by construction (the five dead coral blocks are all grey), so a
+// similar_to list keeps at most SERIES_LIMIT of each series.  A wood or coral
+// series is a block ID with the species word swapped that at least three
+// species share (dead_{coral}_coral_block, stripped_{wood}_log).
+const SERIES_SPECIES = [
+  ['wood', ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak', 'mangrove', 'cherry', 'pale_oak', 'bamboo', 'crimson', 'warped']],
+  ['coral', ['tube', 'brain', 'bubble', 'fire', 'horn']],
+].map(([kind, species]) => [kind, species, new RegExp(`(^|_)(${[...species].sort((left, right) => right.length - left.length).join('|')})(?=_|$)`)]);
+const SERIES_LIMIT = 2;
+const lookSeries = (blockId, blockIds) => {
+  const dye = colorSeries(blockId, blockIds);
+  if (dye !== null) return `minecraft:{color}_${dye.key}`;
+  const path = blockId.replace(/^minecraft:/, '');
+  for (const [kind, species, pattern] of SERIES_SPECIES) {
+    const match = pattern.exec(path);
+    if (match === null) continue;
+    const start = match.index + match[1].length;
+    const [head, tail] = [path.slice(0, start), path.slice(start + match[2].length)];
+    if (species.filter((name) => blockIds.has(`minecraft:${head}${name}${tail}`)).length >= 3) return `minecraft:${head}{${kind}}${tail}`;
+  }
+  return null;
+};
 
 // The shapes a material comes in, from the registry naming rule: oak_planks
 // has oak_stairs, oak_slab, oak_fence ...; stone_bricks has stone_brick_*;
@@ -1033,6 +1056,23 @@ const foldSeries = (ranked, field, keyOf, prefer) => {
   });
   return out;
 };
+// Keeps the first SERIES_LIMIT entries of each look series in rank order; the
+// rest are listed on the series' first kept entry as seriesOmitted.
+const capSeries = (ranked) => {
+  const kept = new Map();
+  const out = [];
+  for (const entry of ranked) {
+    const members = entry.lookSeries === null ? undefined : kept.get(entry.lookSeries);
+    if (members === undefined || members.length < SERIES_LIMIT) {
+      const copy = { ...entry };
+      if (entry.lookSeries !== null) kept.set(entry.lookSeries, [...(members ?? []), copy]);
+      out.push(copy);
+    } else {
+      members[0].seriesOmitted = [...(members[0].seriesOmitted ?? []), entry];
+    }
+  }
+  return out;
+};
 const oxidationOrder = (entry) => entry.oxidation.order;
 // A waxed block and its unwaxed stage look the same.
 const waxedKey = (entry) => (entry.oxidation ? `${entry.oxidation.key}\u0000${entry.oxidation.stage}` : null);
@@ -1252,7 +1292,7 @@ export class MCPQueryService {
               [similarTo],
             );
           }
-          selected = foldSeries(similar.ranked, 'oxidationFolded', waxedKey, oxidationOrder).slice(0, limit);
+          selected = capSeries(foldSeries(similar.ranked, 'oxidationFolded', waxedKey, oxidationOrder)).slice(0, limit);
           // How every candidate's "ΔE …, texture …" reason reads, said once.
           similarity = {
             block_id: similarTo,
@@ -1317,8 +1357,10 @@ export class MCPQueryService {
   compareBlocks(argumentsValue) {
     const resources = { previewCache: new Map() };
     try {
-      const args = validateObject(argumentsValue, new Set(['minecraft_version', 'block_ids']));
+      const args = validateObject(argumentsValue, new Set(['minecraft_version', 'block_ids', 'image']));
       const version = validateVersionInput(args);
+      const image = 'image' in args ? args.image : 'full';
+      if (!SEARCH_IMAGES.has(image)) throw new MCPInputError('image must be "full", "compact" or "none"');
       const blockIds = args.block_ids;
       if (
         !Array.isArray(blockIds)
@@ -1341,7 +1383,7 @@ export class MCPQueryService {
             invalid,
           );
         }
-        const [output, images] = this._compareData(handle, snapshot, blockIds, resources);
+        const [output, images] = this._compareData(handle, snapshot, blockIds, resources, image);
         return toolResult(output, images);
       } finally {
         handle.close();
@@ -1422,6 +1464,7 @@ export class MCPQueryService {
         buildingForms: hasBuildingForms(String(variant.block_id), blockIds),
         series: colorSeries(String(variant.block_id), blockIds),
         oxidation: oxidationSeries(String(variant.block_id), blockIds),
+        lookSeries: lookSeries(String(variant.block_id), blockIds),
         category: blockCategory(String(variant.block_id), block.tags ?? []),
       });
     }
@@ -1543,7 +1586,7 @@ export class MCPQueryService {
       const [variantId, variant, , block] = row;
       if (variant.block_id === targetId) continue;
       // The target's waxed or unwaxed twin looks exactly like it.
-      const { category, oxidation } = docs.get(variantId);
+      const { category, oxidation, lookSeries: seriesPattern } = docs.get(variantId);
       if (targetOxidation !== null && oxidation?.key === targetOxidation.key && oxidation.stage === targetOxidation.stage) continue;
       if (shapeKey(String(variant.block_id), block.tags ?? [], variant.machine_facts?.geometry) !== targetShape) continue;
       const distance = paletteDistance(reference, this._palette(handle, snapshot, variantId, resources));
@@ -1562,6 +1605,7 @@ export class MCPQueryService {
         exact: false,
         penalized,
         oxidation,
+        lookSeries: seriesPattern,
         // The response's similarity.basis explains these terms once.
         notes: [
           `ΔE ${(distance.color * 100).toFixed(1)}, texture ${(distance.texture * 100).toFixed(1)}`,
@@ -1593,7 +1637,7 @@ export class MCPQueryService {
   // left out: a recommended state equal to the block ID (a block without
   // properties), eligible qualification and breakdown dimensions at 0.
   _candidateDicts(ranked, snapshot) {
-    return ranked.map(({ row, score, breakdown, penalized, notes, series, colorFolded, oxidationFolded }, index) => {
+    return ranked.map(({ row, score, breakdown, penalized, notes, series, colorFolded, oxidationFolded, lookSeries: seriesPattern, seriesOmitted }, index) => {
       const [variantId, variant, , block] = row;
       const blockId = String(variant.block_id);
       const names = block.official_names ?? {};
@@ -1623,6 +1667,12 @@ export class MCPQueryService {
             other_block_ids: [...oxidationFolded]
               .sort((left, right) => oxidationOrder(left) - oxidationOrder(right))
               .map((member) => String(member.row[1].block_id)),
+          },
+        }),
+        ...(seriesOmitted === undefined ? {} : {
+          similar_series: {
+            block_id_pattern: seriesPattern,
+            omitted_block_ids: seriesOmitted.map((member) => String(member.row[1].block_id)),
           },
         }),
       };
@@ -1784,8 +1834,11 @@ export class MCPQueryService {
 
   // Every block's comparable facts side by side, in block_ids order; each
   // block describes its representative (first visual variant) like details.
-  // differing_fields names the fields whose values are not all equal.
-  _compareData(handle, snapshot, blockIds, resources) {
+  // differing_fields names the fields whose values are not all equal.  A field
+  // equal for every block is written once under shared instead; so is a
+  // family or semantics key equal for every block (six planks share one forms
+  // list and one material_blocks list).
+  _compareData(handle, snapshot, blockIds, resources, image = 'full') {
     const tiles = [];
     const tileBlocks = [];
     const blocks = blockIds.map((blockId) => {
@@ -1821,10 +1874,25 @@ export class MCPQueryService {
         warnings: blockWarnings(variant, blockId, block),
       };
     });
-    const differing = COMPARE_FIELDS.filter((field) => new Set(blocks.map((item) => JSON.stringify(item[field]))).size > 1);
-    if (tiles.length === 0) return [{ blocks, differing_fields: differing, images: [] }, []];
-    const sheet = this._contactSheet(handle, tiles, tileBlocks, tiles.length, resources);
-    return [{ blocks, differing_fields: differing, images: [sheet.image] }, [sheet.webp]];
+    const same = (values) => new Set(values.map((value) => JSON.stringify(value))).size === 1;
+    const differing = COMPARE_FIELDS.filter((field) => !same(blocks.map((item) => item[field])));
+    const shared = {};
+    for (const field of COMPARE_FIELDS) {
+      if (!differing.includes(field)) {
+        shared[field] = blocks[0][field];
+        for (const item of blocks) delete item[field];
+      } else if (COMPARE_SHARED_KEYS.has(field) && blocks.every((item) => isMapping(item[field]))) {
+        const keys = Object.keys(blocks[0][field]).filter((key) => blocks.every((item) => key in item[field]) && same(blocks.map((item) => item[field][key])));
+        if (keys.length === 0) continue;
+        shared[field] = Object.fromEntries(keys.map((key) => [key, blocks[0][field][key]]));
+        for (const item of blocks) for (const key of keys) delete item[field][key];
+      }
+    }
+    const output = { blocks, shared, differing_fields: differing, images: [] };
+    if (tiles.length === 0 || image === 'none') return [output, []];
+    const sheet = this._contactSheet(handle, tiles, tileBlocks, tiles.length, resources, image);
+    output.images.push(sheet.image);
+    return [output, [sheet.webp]];
   }
 }
 
@@ -1833,6 +1901,8 @@ export class MCPQueryService {
 const COMPARE_SEMANTIC_KEYS = [
   'summary_en', 'color_terms', 'material_impressions', 'style_tags', 'building_roles',
 ];
+// Mapping fields whose keys are shared one by one when the whole differs.
+const COMPARE_SHARED_KEYS = new Set(['semantics', 'family']);
 const COMPARE_FIELDS = [
   'candidate_qualification', 'shape_class', 'geometry_classes', 'transparent', 'emission_level',
   'redstone_related', 'colors', 'semantics', 'family', 'warnings',

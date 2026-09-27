@@ -2,11 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:blockpedia:schema:mcp:mcp-compare-blocks-output.v3",
   "title": "Blockpedia MCP compare blocks output",
-  "description": "Every requested block with the same fields, in block_ids order. Each block describes its representative (first visual variant) as get_block_details does.",
+  "description": "Every requested block in block_ids order. Each block describes its representative (first visual variant) as get_block_details does; fields equal for all blocks are given once under shared.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "blocks",
+    "shared",
     "differing_fields",
     "images"
   ],
@@ -19,10 +20,47 @@
         "$ref": "#/$defs/block"
       }
     },
+    "shared": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Fields with the same value for every block, written once instead of in each block. When semantics or family differ as a whole, shared.semantics or shared.family holds the keys that are still equal for every block, and each block keeps only its own keys.",
+      "properties": {
+        "candidate_qualification": {
+          "$ref": "#/$defs/candidate_qualification"
+        },
+        "shape_class": {
+          "$ref": "#/$defs/shape_class"
+        },
+        "geometry_classes": {
+          "$ref": "#/$defs/geometry_classes"
+        },
+        "transparent": {
+          "$ref": "#/$defs/transparent"
+        },
+        "emission_level": {
+          "$ref": "#/$defs/emission_level"
+        },
+        "redstone_related": {
+          "$ref": "#/$defs/redstone_related"
+        },
+        "colors": {
+          "$ref": "#/$defs/colors_or_null"
+        },
+        "semantics": {
+          "$ref": "#/$defs/semantics"
+        },
+        "family": {
+          "$ref": "#/$defs/family_or_null"
+        },
+        "warnings": {
+          "$ref": "#/$defs/warnings"
+        }
+      }
+    },
     "differing_fields": {
       "type": "array",
       "uniqueItems": true,
-      "description": "Fields whose values are not all equal across blocks.",
+      "description": "Fields whose values are not all equal across blocks; they are the compared fields present in blocks.",
       "items": {
         "enum": [
           "candidate_qualification",
@@ -70,17 +108,7 @@
       "additionalProperties": false,
       "required": [
         "block_id",
-        "display_name",
-        "candidate_qualification",
-        "shape_class",
-        "geometry_classes",
-        "transparent",
-        "emission_level",
-        "redstone_related",
-        "colors",
-        "semantics",
-        "family",
-        "warnings"
+        "display_name"
       ],
       "properties": {
         "block_id": {
@@ -96,124 +124,37 @@
           "description": "Label of this block's card on the contact sheet; absent when the block has no visual variant."
         },
         "candidate_qualification": {
-          "enum": [
-            "eligible",
-            "conditional",
-            "excluded",
-            null
-          ]
+          "$ref": "#/$defs/candidate_qualification"
         },
         "shape_class": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 40,
-          "description": "Registry-tag shape (stairs, slab, wall, fence, door, trapdoor, pane ...), else from the representative geometry: full_cube (solid full block), passable (no collision: plants, torches, rails), sheet (flat on the floor), small_fixture (at most half a block across: lanterns, flower pots, heads), partial_block (the rest: chests, cauldrons, anvils); other when there is no representative geometry."
+          "$ref": "#/$defs/shape_class"
         },
         "geometry_classes": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": {
-            "type": "string"
-          }
+          "$ref": "#/$defs/geometry_classes"
         },
         "transparent": {
-          "$ref": "#/$defs/tristate"
+          "$ref": "#/$defs/transparent"
         },
         "emission_level": {
-          "oneOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 15
-            },
-            {
-              "const": "unknown"
-            }
-          ]
+          "$ref": "#/$defs/emission_level"
         },
         "redstone_related": {
-          "$ref": "#/$defs/tristate"
+          "$ref": "#/$defs/redstone_related"
         },
         "colors": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/colors"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/colors_or_null"
         },
         "semantics": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "description": "Published semantic fields of the representative visual variant; null when the block has no visual variant. Only the English summary; get_block_details has both languages.",
-          "properties": {
-            "summary_en": {
-              "type": "string",
-              "minLength": 2,
-              "maxLength": 500
-            },
-            "color_terms": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128
-              }
-            },
-            "material_impressions": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128
-              }
-            },
-            "style_tags": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128
-              }
-            },
-            "building_roles": {
-              "type": "array",
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128
-              }
-            }
-          }
+          "$ref": "#/$defs/semantics"
         },
         "family": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/family"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/family_or_null"
         },
         "warnings": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 500
-          }
+          "$ref": "#/$defs/warnings"
         }
-      }
+      },
+      "description": "One requested block. Every compared field is either here, when its value differs between blocks, or once under shared, when it is the same for all of them."
     },
     "face_colors": {
       "type": [
@@ -311,11 +252,7 @@
     "family": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "base_block",
-        "forms"
-      ],
-      "description": "Shapes this block's material comes in, from the registry naming rule (oak_planks: oak_stairs, oak_slab ...). base_block is the material's full block (the block itself when it has no forms, as spruce_log), null when there is none (petrified_oak_slab); forms names the shapes, empty when the full block has none, and a form's block ID is form_id_pattern with {form} replaced (minecraft:oak_{form}: minecraft:oak_stairs). material_blocks, when present, lists every full block of the same material in other finishes, base_block included, as templates: a block ID is minecraft: plus the template with * replaced by material (material spruce: *_log, *_planks, *_wood, stripped_*_log, stripped_*_wood; material tuff: *, polished_*, *_bricks, chiseled_* ...); a copper block's wax and oxidation stage are part of its material and stay in the template (exposed_cut_*).",
+      "description": "Shapes this block's material comes in, from the registry naming rule (oak_planks: oak_stairs, oak_slab ...). base_block is the material's full block (the block itself when it has no forms, as spruce_log), null when there is none (petrified_oak_slab); forms names the shapes, empty when the full block has none, and a form's block ID is form_id_pattern with {form} replaced (minecraft:oak_{form}: minecraft:oak_stairs). material_blocks, when present, lists every full block of the same material in other finishes, base_block included, as templates: a block ID is minecraft: plus the template with * replaced by material (material spruce: *_log, *_planks, *_wood, stripped_*_log, stripped_*_wood; material tuff: *, polished_*, *_bricks, chiseled_* ...); a copper block's wax and oxidation stage are part of its material and stay in the template (exposed_cut_*). In a comparison, family keys equal for every block (often forms and material_blocks) are given once under shared.family and the rest per block; together they form each block's family: base_block and forms are always present, form_id_pattern exactly when forms is non-empty, material together with material_blocks.",
       "properties": {
         "base_block": {
           "oneOf": [
@@ -368,37 +305,12 @@
             "pattern": "^[a-z0-9_./-]*\\*[a-z0-9_./-]*$"
           }
         }
-      },
-      "if": {
-        "properties": {
-          "forms": {
-            "minItems": 1
-          }
-        }
-      },
-      "then": {
-        "required": [
-          "form_id_pattern"
-        ]
-      },
-      "else": {
-        "properties": {
-          "form_id_pattern": false
-        }
-      },
-      "dependentRequired": {
-        "material_blocks": [
-          "material"
-        ],
-        "material": [
-          "material_blocks"
-        ]
       }
     },
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Lossless WebP contact sheet of 256x256 cards, one per block with a candidate_id, labelled with it.",
+      "description": "Lossless WebP contact sheet, one tile per block with a candidate_id, labelled with its candidate_id and block_id (\"T01 stone\"). image=\"full\" (default): 256x256 cards of the four views; image=\"compact\": the isometric and top views at 64px side by side (128 wide) above a label strip as tall as the longest label needs; image=\"none\": no sheet.",
       "required": [
         "content_index",
         "mime_type",
@@ -429,6 +341,124 @@
           "description": "Tiles per row. Tiles are row-major in candidate order: T01 is the first tile, so candidate n is at row (n-1) div columns, column (n-1) mod columns; tile width is width / columns and tile height is height / rows; each tile is labelled with its candidate_id and block_id (\"T01 stone\")."
         }
       }
+    },
+    "candidate_qualification": {
+      "enum": [
+        "eligible",
+        "conditional",
+        "excluded",
+        null
+      ]
+    },
+    "shape_class": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "Registry-tag shape (stairs, slab, wall, fence, door, trapdoor, pane ...), else from the representative geometry: full_cube (solid full block), passable (no collision: plants, torches, rails), sheet (flat on the floor), small_fixture (at most half a block across: lanterns, flower pots, heads), partial_block (the rest: chests, cauldrons, anvils); other when there is no representative geometry."
+    },
+    "geometry_classes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "transparent": {
+      "$ref": "#/$defs/tristate"
+    },
+    "emission_level": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        {
+          "const": "unknown"
+        }
+      ]
+    },
+    "redstone_related": {
+      "$ref": "#/$defs/tristate"
+    },
+    "semantics": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "description": "Published semantic fields of the representative visual variant; null when the block has no visual variant. Only the English summary; get_block_details has both languages. When semantics differ, a key equal for every block is under shared.semantics instead.",
+      "properties": {
+        "summary_en": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 500
+        },
+        "color_terms": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "material_impressions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "style_tags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "building_roles": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    },
+    "colors_or_null": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/colors"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "family_or_null": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/family"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   }
 }

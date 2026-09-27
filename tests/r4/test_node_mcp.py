@@ -296,6 +296,7 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
             if name == "compare_blocks":
                 assert [(item["candidate_id"], item["block_id"]) for item in structured["blocks"]] == [("T01", "minecraft:stone"), ("T02", "minecraft:glass")]
                 assert "transparent" in structured["differing_fields"]
+                assert structured["shared"]["emission_level"] == 0 and all("emission_level" not in item for item in structured["blocks"])
                 assert metadata[0]["columns"] == 2
                 assert (images[0].width, images[0].height) == (2 * CARD, CARD)
                 for x, name in [(128, "stone"), (384, "glass")]:
@@ -357,6 +358,7 @@ def test_four_tools_schemas_images_unicode_and_zero_writes(tmp_path: Path, force
             (27, "search_blocks", {"similar_to": "stone"}),
             (28, "search_blocks", {"similar_to": None}),
             (31, "search_blocks", {"keywords": ["stone"], "image": "small"}),
+            (32, "compare_blocks", {"block_ids": ["minecraft:stone", "minecraft:glass"], "image": "small"}),
             (16, "search_blocks", {"query": "stone"}),
             (17, "search_blocks", {"keywords": ["stone"], "limit": 0}),
             (18, "search_blocks", {"keywords": ["x"] * 17}),
@@ -738,4 +740,67 @@ def test_non_building_blocks_oxidation_series_and_material_groups(tmp_path: Path
         assert "family" not in details(17, "minecraft:cut_copper")
         compared = call(send, 18, "compare_blocks", {"block_ids": ["minecraft:oak_log", "minecraft:oak_wood"]})["structuredContent"]
         Draft202012Validator(load_schema(SCHEMAS["compare_blocks"])).validate(compared)
-        assert [item["family"]["material_blocks"] for item in compared["blocks"]] == [oak, oak]
+        # Only base_block differs; the rest of the family is written once.
+        assert compared["shared"]["family"] == {"forms": [], "material": "oak", "material_blocks": oak}
+        assert [item["family"] for item in compared["blocks"]] == [{"base_block": "minecraft:oak_log"}, {"base_block": "minecraft:oak_wood"}]
+
+
+@pytest.mark.parametrize("force_like", [False, True], ids=["fts5", "like"])
+def test_similar_series_limit_and_compare_shared_fields(tmp_path: Path, force_like: bool) -> None:
+    fixture = build_fixture(tmp_path, force_like=force_like)
+    brown = (160, 130, 80)
+    corals = ["tube", "brain", "bubble", "fire"]
+    with sqlite3.connect(fixture.release / "index.sqlite3") as db:
+        _add_search_block(db, "minecraft:andesite", "安山岩", "Andesite")
+        for index, coral in enumerate(corals):
+            _add_search_block(db, f"minecraft:dead_{coral}_coral_block", f"失活的{coral}珊瑚块", f"Dead {coral.title()} Coral Block")
+            _set_preview(fixture.release, db, f"minecraft:dead_{coral}_coral_block", [(126 + index,) * 3])
+        for wood, zh in [("oak", "橡木"), ("spruce", "云杉木")]:
+            _add_search_block(db, f"minecraft:{wood}_planks", f"{zh}木板", f"{wood.title()} Planks")
+            _add_search_block(db, f"minecraft:{wood}_stairs", f"{zh}楼梯", f"{wood.title()} Stairs", tags=["minecraft:stairs"])
+            _set_preview(fixture.release, db, f"minecraft:{wood}_planks", [brown])
+        _set_preview(fixture.release, db, "minecraft:stone", [(125, 125, 125)])
+        _set_preview(fixture.release, db, "minecraft:andesite", [(135, 135, 135)])
+    search_schema = Draft202012Validator(load_schema(SCHEMAS["search_blocks"]))
+    compare_schema = Draft202012Validator(load_schema(SCHEMAS["compare_blocks"]))
+    with node_session(tmp_path) as send:
+        # All four dead coral blocks are nearer stone than andesite; the two
+        # nearest are listed and the first names the rest, most similar first.
+        similar = call(send, 2, "search_blocks", {"similar_to": "minecraft:stone", "image": "none"})["structuredContent"]
+        search_schema.validate(similar)
+        ids = [item["block_id"] for item in similar["candidates"]]
+        assert ids[:3] == ["minecraft:dead_tube_coral_block", "minecraft:dead_brain_coral_block", "minecraft:andesite"]
+        assert not {"minecraft:dead_bubble_coral_block", "minecraft:dead_fire_coral_block"} & set(ids)
+        assert similar["candidates"][0]["similar_series"] == {
+            "block_id_pattern": "minecraft:dead_{coral}_coral_block",
+            "omitted_block_ids": ["minecraft:dead_bubble_coral_block", "minecraft:dead_fire_coral_block"],
+        }
+        assert all("similar_series" not in item for item in similar["candidates"][1:])
+        # A keyword search lists every coral block.
+        keyword = call(send, 3, "search_blocks", {"keywords": ["coral"], "image": "none"})["structuredContent"]
+        assert sum("coral" in item["block_id"] for item in keyword["candidates"]) == 4
+        assert all("similar_series" not in item for item in keyword["candidates"])
+
+        # Fields equal for both planks are written once; so are the family
+        # keys they share, while base_block and form_id_pattern stay per block.
+        arguments = {"block_ids": ["minecraft:oak_planks", "minecraft:spruce_planks"]}
+        full = call(send, 4, "compare_blocks", arguments)
+        data = full["structuredContent"]
+        compare_schema.validate(data)
+        assert data["shared"]["family"] == {"forms": ["stairs"]}
+        assert data["shared"]["shape_class"] == "full_cube" and data["shared"]["colors"]["top_and_side"]["hex"] == "#a08250"
+        assert [item["family"] for item in data["blocks"]] == [
+            {"base_block": f"minecraft:{wood}_planks", "form_id_pattern": f"minecraft:{wood}_{{form}}"} for wood in ["oak", "spruce"]
+        ]
+        assert set(data["differing_fields"]) == {"semantics", "family"}
+        assert all(set(item) == {"block_id", "display_name", "candidate_id", "semantics", "family"} for item in data["blocks"])
+        assert "summary_en" not in data["shared"]["semantics"] and data["blocks"][0]["semantics"] == {"summary_en": "Oak Planks"}
+        assert data["images"][0]["width"] == 2 * CARD
+        compact = call(send, 5, "compare_blocks", {**arguments, "image": "compact"})
+        compare_schema.validate(compact["structuredContent"])
+        assert compact["structuredContent"]["blocks"] == data["blocks"]
+        [meta] = compact["structuredContent"]["images"]
+        [sheet] = result_images(compact)
+        assert (meta["width"], meta["columns"]) == (256, 2) and (sheet.width, sheet.height) == (meta["width"], meta["height"]) and meta["height"] > 64
+        bare = call(send, 6, "compare_blocks", {**arguments, "image": "none"})
+        assert bare["structuredContent"] == {**data, "images": []} and len(bare["content"]) == 1

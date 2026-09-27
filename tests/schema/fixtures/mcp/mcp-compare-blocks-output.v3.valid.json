@@ -4,12 +4,9 @@
       "block_id": "minecraft:oak_stairs",
       "display_name": "橡木楼梯",
       "candidate_id": "T01",
-      "candidate_qualification": "eligible",
       "shape_class": "stairs",
       "geometry_classes": [],
       "transparent": false,
-      "emission_level": 0,
-      "redstone_related": false,
       "colors": {
         "top": {
           "hex": "#a2824e",
@@ -81,21 +78,17 @@
           "shelf"
         ],
         "form_id_pattern": "minecraft:oak_{form}"
-      },
-      "warnings": []
+      }
     },
     {
       "block_id": "minecraft:glass",
       "display_name": "玻璃",
       "candidate_id": "T02",
-      "candidate_qualification": "eligible",
       "shape_class": "full_cube",
       "geometry_classes": [
         "full_cube"
       ],
       "transparent": true,
-      "emission_level": 0,
-      "redstone_related": false,
       "colors": {
         "top": {
           "hex": "#b0d6db",
@@ -155,10 +148,15 @@
           "pane"
         ],
         "form_id_pattern": "minecraft:glass_{form}"
-      },
-      "warnings": []
+      }
     }
   ],
+  "shared": {
+    "candidate_qualification": "eligible",
+    "emission_level": 0,
+    "redstone_related": false,
+    "warnings": []
+  },
   "differing_fields": [
     "shape_class",
     "geometry_classes",
