@@ -773,7 +773,7 @@ def test_similar_series_limit_and_compare_shared_fields(tmp_path: Path, force_li
         assert not {"minecraft:dead_bubble_coral_block", "minecraft:dead_fire_coral_block"} & set(ids)
         assert similar["candidates"][0]["similar_series"] == {
             "block_id_pattern": "minecraft:dead_{coral}_coral_block",
-            "omitted_block_ids": ["minecraft:dead_bubble_coral_block", "minecraft:dead_fire_coral_block"],
+            "omitted": ["bubble", "fire"],
         }
         assert all("similar_series" not in item for item in similar["candidates"][1:])
         # A keyword search lists every coral block.

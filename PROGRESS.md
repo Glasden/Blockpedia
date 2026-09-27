@@ -304,7 +304,7 @@ Schema：详情 v2 与比较 v3 的 `family.forms` 允许为空并新增 `materi
 
 ### 5.6 近似色系列限额与比较共享字段（2026-09-27，未提交）
 
-- `similar_to` 每个“外观系列”至多列 2 条：16 色染色系列、木种系列（`stripped_{wood}_log`、`{wood}_leaves` 等，oak … warped 12 种）、珊瑚种系列（`dead_{coral}_coral_block` 等）；木种/珊瑚系列要求至少 3 个种存在同形 ID。被略去的成员按相似度列在该系列第一条的 `similar_series`（`block_id_pattern` + `omitted_block_ids`）。关键词搜索不受影响。正式 release 上 `similar_to stone_bricks` 前 8 名由 4 个失活珊瑚块变为 2 个，`stone` 升至第 6，`mossy_stone_bricks`、`cobblestone` 进入；`andesite`（ΔE 4.9，原第 19）与凝灰岩（原第 16）本身色差较大，限额后仍不在前 8，这是颜色距离而非系列挤占。JSON 1,826 → 2,002 B（多出 `similar_series`）。
+- `similar_to` 每个“外观系列”至多列 2 条：16 色染色系列、木种系列（`stripped_{wood}_log`、`{wood}_leaves` 等，oak … warped 12 种）、珊瑚种系列（`dead_{coral}_coral_block` 等）；木种/珊瑚系列要求至少 3 个种存在同形 ID。被略去的成员按相似度列在该系列第一条的 `similar_series`（`block_id_pattern` + `omitted`，只列占位符取值如 `["acacia","birch"]`，不重复完整 ID）。关键词搜索不受影响。正式 release 上 `similar_to stone_bricks` 前 8 名由 4 个失活珊瑚块变为 2 个，`stone` 升至第 6，`mossy_stone_bricks`、`cobblestone` 进入；`andesite`（ΔE 4.9，原第 19）与凝灰岩（原第 16）本身色差较大，限额后仍不在前 8，这是颜色距离而非系列挤占。JSON 1,826 → 2,002 B（多出 `similar_series`）；`similar_series` 改列占位符取值后，`similar_to oak_planks` 2,937 → 2,617 B。
 - `compare_blocks` 新增 `shared`：所有方块取值相同的字段只写一次并从各方块删去；`family`、`semantics` 整体不同时，仍相同的键（如 `forms`、`material_blocks`）单独进 `shared`。compare v3 Schema 原地更新：方块只必需 `block_id`、`display_name`，字段定义移入 `$defs` 供 `blocks` 与 `shared` 共用，family 的组合约束改写进说明。6 种木板 JSON 6,327 → 4,457 B；stone/andesite 1,953 → 1,790 B。
 - `compare_blocks` 新增 `image`（full / compact / none），与搜索同一合成：6 种木板 compact 768×94、7,094 B（full 1536×256、16,776 B）。
 

@@ -253,7 +253,8 @@ const colorSeries = (blockId, blockIds) => {
 // alike by construction (the five dead coral blocks are all grey), so a
 // similar_to list keeps at most SERIES_LIMIT of each series.  A wood or coral
 // series is a block ID with the species word swapped that at least three
-// species share (dead_{coral}_coral_block, stripped_{wood}_log).
+// species share (dead_{coral}_coral_block, stripped_{wood}_log).  Returns the
+// series pattern and this block's word in it ({ pattern, value }), or null.
 const SERIES_SPECIES = [
   ['wood', ['oak', 'spruce', 'birch', 'jungle', 'acacia', 'dark_oak', 'mangrove', 'cherry', 'pale_oak', 'bamboo', 'crimson', 'warped']],
   ['coral', ['tube', 'brain', 'bubble', 'fire', 'horn']],
@@ -261,14 +262,16 @@ const SERIES_SPECIES = [
 const SERIES_LIMIT = 2;
 const lookSeries = (blockId, blockIds) => {
   const dye = colorSeries(blockId, blockIds);
-  if (dye !== null) return `minecraft:{color}_${dye.key}`;
+  if (dye !== null) return { pattern: `minecraft:{color}_${dye.key}`, value: dye.color };
   const path = blockId.replace(/^minecraft:/, '');
   for (const [kind, species, pattern] of SERIES_SPECIES) {
     const match = pattern.exec(path);
     if (match === null) continue;
     const start = match.index + match[1].length;
     const [head, tail] = [path.slice(0, start), path.slice(start + match[2].length)];
-    if (species.filter((name) => blockIds.has(`minecraft:${head}${name}${tail}`)).length >= 3) return `minecraft:${head}{${kind}}${tail}`;
+    if (species.filter((name) => blockIds.has(`minecraft:${head}${name}${tail}`)).length >= 3) {
+      return { pattern: `minecraft:${head}{${kind}}${tail}`, value: match[2] };
+    }
   }
   return null;
 };
@@ -1062,10 +1065,10 @@ const capSeries = (ranked) => {
   const kept = new Map();
   const out = [];
   for (const entry of ranked) {
-    const members = entry.lookSeries === null ? undefined : kept.get(entry.lookSeries);
+    const members = entry.lookSeries === null ? undefined : kept.get(entry.lookSeries.pattern);
     if (members === undefined || members.length < SERIES_LIMIT) {
       const copy = { ...entry };
-      if (entry.lookSeries !== null) kept.set(entry.lookSeries, [...(members ?? []), copy]);
+      if (entry.lookSeries !== null) kept.set(entry.lookSeries.pattern, [...(members ?? []), copy]);
       out.push(copy);
     } else {
       members[0].seriesOmitted = [...(members[0].seriesOmitted ?? []), entry];
@@ -1586,7 +1589,7 @@ export class MCPQueryService {
       const [variantId, variant, , block] = row;
       if (variant.block_id === targetId) continue;
       // The target's waxed or unwaxed twin looks exactly like it.
-      const { category, oxidation, lookSeries: seriesPattern } = docs.get(variantId);
+      const { category, oxidation, lookSeries: series } = docs.get(variantId);
       if (targetOxidation !== null && oxidation?.key === targetOxidation.key && oxidation.stage === targetOxidation.stage) continue;
       if (shapeKey(String(variant.block_id), block.tags ?? [], variant.machine_facts?.geometry) !== targetShape) continue;
       const distance = paletteDistance(reference, this._palette(handle, snapshot, variantId, resources));
@@ -1605,7 +1608,7 @@ export class MCPQueryService {
         exact: false,
         penalized,
         oxidation,
-        lookSeries: seriesPattern,
+        lookSeries: series,
         // The response's similarity.basis explains these terms once.
         notes: [
           `ΔE ${(distance.color * 100).toFixed(1)}, texture ${(distance.texture * 100).toFixed(1)}`,
@@ -1637,7 +1640,7 @@ export class MCPQueryService {
   // left out: a recommended state equal to the block ID (a block without
   // properties), eligible qualification and breakdown dimensions at 0.
   _candidateDicts(ranked, snapshot) {
-    return ranked.map(({ row, score, breakdown, penalized, notes, series, colorFolded, oxidationFolded, lookSeries: seriesPattern, seriesOmitted }, index) => {
+    return ranked.map(({ row, score, breakdown, penalized, notes, series, colorFolded, oxidationFolded, lookSeries: look, seriesOmitted }, index) => {
       const [variantId, variant, , block] = row;
       const blockId = String(variant.block_id);
       const names = block.official_names ?? {};
@@ -1671,8 +1674,9 @@ export class MCPQueryService {
         }),
         ...(seriesOmitted === undefined ? {} : {
           similar_series: {
-            block_id_pattern: seriesPattern,
-            omitted_block_ids: seriesOmitted.map((member) => String(member.row[1].block_id)),
+            block_id_pattern: look.pattern,
+            // Words for the pattern's placeholder, not full IDs.
+            omitted: seriesOmitted.map((member) => member.lookSeries.value),
           },
         }),
       };
