@@ -173,6 +173,25 @@
               }
             }
           }
+        },
+        "oxidation_series": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Present when other oxidation stages or waxed versions of this copper block also matched and were folded into this candidate: waxed versions always (they look the same), other stages when the query named no colour. Not folded for an exact name or ID match.",
+          "required": [
+            "other_block_ids"
+          ],
+          "properties": {
+            "other_block_ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 7,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/block_id"
+              }
+            }
+          }
         }
       }
     },

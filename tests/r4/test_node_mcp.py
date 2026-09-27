@@ -139,7 +139,7 @@ def call(send, id: int, name: str, arguments: dict) -> dict:
     return response["result"]
 
 
-def _add_search_block(db: sqlite3.Connection, block_id: str, zh: str, en: str, *, qualification: str = "eligible", warning: str | None = None, visual: bool = True, tags: list[str] | None = None) -> None:
+def _add_search_block(db: sqlite3.Connection, block_id: str, zh: str, en: str, *, qualification: str = "eligible", warning: str | None = None, visual: bool = True, tags: list[str] | None = None, geometry: dict | None = None) -> None:
     source = "minecraft:stone"
     block = json.loads(db.execute("SELECT record_json FROM blocks WHERE block_id=?", (source,)).fetchone()[0])
     block.update(block_id=block_id, default_state_id=block_id, translation_key="block." + block_id.removeprefix("minecraft:"))
@@ -155,6 +155,7 @@ def _add_search_block(db: sqlite3.Connection, block_id: str, zh: str, en: str, *
     variant = json.loads(db.execute("SELECT record_json FROM visual_variants WHERE variant_id=?", (source,)).fetchone()[0])
     variant.update(variant_id=block_id, block_id=block_id, canonical_state_id=block_id, represented_state_ids=[block_id], candidate_qualification=qualification, warnings=[warning] if warning else [])
     variant["machine_facts"]["behavior_by_state"] = {block_id: variant["machine_facts"]["behavior_by_state"][source]}
+    variant["machine_facts"]["geometry"].update(geometry or {})
     db.execute("INSERT INTO visual_variants SELECT ?,?,?,?,preview_path,mask_path,render_metadata_path,image_sha256,mask_sha256,render_metadata_sha256,?,?,?,feature_json FROM visual_variants WHERE variant_id=?", (block_id, block_id, block_id, json.dumps([block_id]), qualification, json.dumps(variant["warnings"]), json.dumps(variant), source))
     annotation = json.loads(db.execute("SELECT semantic_json FROM annotations WHERE variant_id=?", (source,)).fetchone()[0])
     annotation.update(synonyms_en=["bugstone"] if block_id == "minecraft:infested_stone" else [], summary_en=en)
@@ -601,3 +602,99 @@ def test_face_colours_family_compare_and_similar_to(tmp_path: Path, force_like: 
             "error_code": "BLOCK_HAS_NO_PREVIEW", "message": "The similar_to block has no preview to compare colours with.", "invalid_block_ids": ["minecraft:structure_void"],
         }
         Draft202012Validator(load_schema("mcp-error.v2")).validate(no_preview["structuredContent"])
+
+
+def _fixture_geometry(width: float, height: float, *, collision: bool = True) -> dict:
+    boxes = [{"min_x": 0.5 - width / 2, "min_y": 0, "min_z": 0.5 - width / 2, "max_x": 0.5 + width / 2, "max_y": height, "max_z": 0.5 + width / 2}]
+    return {
+        "shape": {"boxes": boxes}, "collision": {"boxes": boxes if collision else []}, "width": width, "depth": width, "height": height,
+        "is_full_cube": False, "is_horizontal_sheet": False, "geometry_classes": ["partial_height"],
+    }
+
+
+@pytest.mark.parametrize("force_like", [False, True], ids=["fts5", "like"])
+def test_non_building_blocks_oxidation_series_and_material_groups(tmp_path: Path, force_like: bool) -> None:
+    fixture = build_fixture(tmp_path, force_like=force_like)
+    gray, amber = (125, 125, 125), (200, 150, 60)
+    small = _fixture_geometry(0.375, 0.5625)
+    with sqlite3.connect(fixture.release / "index.sqlite3") as db:
+        _add_search_block(db, "minecraft:andesite", "安山岩", "Andesite")
+        _add_search_block(db, "minecraft:copper_ore", "铜矿石", "Copper Ore", tags=["minecraft:copper_ores"])
+        _add_search_block(db, "minecraft:white_shulker_box", "白色潜影盒", "White Shulker Box", tags=["minecraft:shulker_boxes"])
+        for prefix, zh in [("", "切制铜块"), ("exposed_", "斑驳的切制铜块"), ("waxed_", "涂蜡切制铜块"), ("waxed_exposed_", "涂蜡斑驳的切制铜块")]:
+            _add_search_block(db, f"minecraft:{prefix}cut_copper", zh, f"{prefix.replace('_', ' ').title()}Cut Copper")
+        for block_id, zh, en in [("oak_log", "橡木原木", "Oak Log"), ("stripped_oak_log", "去皮橡木原木", "Stripped Oak Log"), ("oak_wood", "橡木", "Oak Wood"), ("oak_planks", "橡木木板", "Oak Planks")]:
+            _add_search_block(db, f"minecraft:{block_id}", zh, en, tags=["minecraft:logs"] if block_id != "oak_planks" else ["minecraft:planks"])
+        _add_search_block(db, "minecraft:oak_stairs", "橡木楼梯", "Oak Stairs", tags=["minecraft:stairs"])
+        _add_search_block(db, "minecraft:lantern", "灯笼", "Lantern", tags=["minecraft:lanterns"], geometry=small)
+        _add_search_block(db, "minecraft:soul_lantern", "灵魂灯笼", "Soul Lantern", tags=["minecraft:lanterns"], geometry=small)
+        _add_search_block(db, "minecraft:potted_poppy", "虞美人盆栽", "Potted Poppy", tags=["minecraft:flower_pots"], geometry=_fixture_geometry(0.375, 0.375))
+        _add_search_block(db, "minecraft:poppy", "虞美人", "Poppy", tags=["minecraft:small_flowers"], geometry=_fixture_geometry(0.375, 0.625, collision=False))
+        _add_search_block(db, "minecraft:chest", "箱子", "Chest", geometry=_fixture_geometry(0.875, 0.875))
+        for block_id, colors in [("minecraft:stone", [gray]), ("minecraft:andesite", [(135, 135, 135)]), ("minecraft:copper_ore", [gray]), ("minecraft:white_shulker_box", [gray]),
+                                 ("minecraft:lantern", [amber]), ("minecraft:soul_lantern", [(190, 150, 70)]), ("minecraft:potted_poppy", [amber]), ("minecraft:poppy", [amber])]:
+            _set_preview(fixture.release, db, block_id, colors)
+    search_schema = Draft202012Validator(load_schema(SCHEMAS["search_blocks"]))
+    details_schema = Draft202012Validator(load_schema(SCHEMAS["get_block_details"]))
+    with node_session(tmp_path) as send:
+        def search(id: int, arguments: dict) -> list[dict]:
+            result = call(send, id, "search_blocks", {"limit": 12, **arguments})
+            assert not result["isError"], result
+            search_schema.validate(result["structuredContent"])
+            return result["structuredContent"]["candidates"]
+
+        def details(id: int, block_id: str) -> dict:
+            result = call(send, id, "get_block_details", {"block_id": block_id})["structuredContent"]
+            details_schema.validate(result)
+            return result
+
+        # An ore and a shulker box as grey as stone rank ×0.5 below andesite.
+        ranked = {item["block_id"]: item for item in search(2, {"similar_to": "minecraft:stone"})}
+        ids = list(ranked)
+        assert ids.index("minecraft:andesite") < ids.index("minecraft:copper_ore") and ids.index("minecraft:andesite") < ids.index("minecraft:white_shulker_box")
+        assert ranked["minecraft:copper_ore"]["score"] == pytest.approx(0.5, abs=1e-6)
+        assert "ore ×0.5 (not a building material)" in ranked["minecraft:copper_ore"]["reason"]
+        assert ranked["minecraft:white_shulker_box"]["score"] == pytest.approx(0.5, abs=1e-6)
+        # The same holds for a keyword every block matches only by its role,
+        # but "ore" names an ore by the head of its name while "copper" does not.
+        wall = {item["block_id"]: item["score"] for item in search(3, {"keywords": ["wall"]})}
+        assert max(wall.values()) > 0 and wall.get("minecraft:copper_ore", 0) <= 0.5 * max(wall.values()) + 1e-6
+        ore = search(4, {"keywords": ["ore"]})[0]
+        assert ore["block_id"] == "minecraft:copper_ore" and ore["score"] > 0.8 and "×0.5" not in ore["reason"]
+        assert search(5, {"keywords": ["copper ore"]})[0]["block_id"] == "minecraft:copper_ore"
+        copper_ore = next(item for item in search(6, {"keywords": ["copper"]}) if item["block_id"] == "minecraft:copper_ore")
+        assert "ore ×0.5" in copper_ore["reason"]
+
+        # Lantern: same small-fixture class; the potted plant ranks ×0.5 and
+        # the poppy (no collision) is another class.
+        assert details(7, "minecraft:lantern")["representative"]["shape_class"] == "small_fixture"
+        assert details(8, "minecraft:poppy")["representative"]["shape_class"] == "passable"
+        assert details(9, "minecraft:chest")["representative"]["shape_class"] == "partial_block"
+        lantern = search(10, {"similar_to": "minecraft:lantern"})
+        assert [item["block_id"] for item in lantern] == ["minecraft:soul_lantern", "minecraft:potted_poppy"]
+        assert lantern[1]["score"] == pytest.approx(0.5, abs=1e-6)
+        # Same kind as the reference: no demotion among plants.
+        assert search(11, {"similar_to": "minecraft:potted_poppy"})[0]["score"] > 0.9
+
+        # Oxidation stages and waxed versions fold into the unwaxed block.
+        folded = [item for item in search(12, {"keywords": ["copper"]}) if "cut_copper" in item["block_id"]]
+        assert [item["block_id"] for item in folded] == ["minecraft:cut_copper"]
+        assert folded[0]["oxidation_series"] == {"other_block_ids": ["minecraft:exposed_cut_copper", "minecraft:waxed_cut_copper", "minecraft:waxed_exposed_cut_copper"]}
+        # With a colour only the waxed twin folds; an exact ID keeps its entry.
+        colored = {item["block_id"]: item for item in search(13, {"keywords": ["green", "copper"]}) if "cut_copper" in item["block_id"]}
+        assert {key: value["oxidation_series"]["other_block_ids"] for key, value in colored.items()} == {
+            "minecraft:cut_copper": ["minecraft:waxed_cut_copper"],
+            "minecraft:exposed_cut_copper": ["minecraft:waxed_exposed_cut_copper"],
+        }
+        exact = search(14, {"keywords": ["minecraft:waxed_cut_copper"]})
+        assert exact[0]["block_id"] == "minecraft:waxed_cut_copper" and "oxidation_series" not in exact[0]
+
+        # Log, wood, stripped log and planks are one material.
+        oak = ["minecraft:oak_log", "minecraft:oak_planks", "minecraft:oak_wood", "minecraft:stripped_oak_log"]
+        assert details(15, "minecraft:stripped_oak_log")["family"] == {"base_block": "minecraft:stripped_oak_log", "forms": {}, "material_blocks": oak}
+        assert details(16, "minecraft:oak_stairs")["family"] == {"base_block": "minecraft:oak_planks", "forms": {"stairs": "minecraft:oak_stairs"}, "material_blocks": oak}
+        # Wax and oxidation stay part of the material: cut copper has no copper block here.
+        assert "family" not in details(17, "minecraft:cut_copper")
+        compared = call(send, 18, "compare_blocks", {"block_ids": ["minecraft:oak_log", "minecraft:oak_wood"]})["structuredContent"]
+        Draft202012Validator(load_schema(SCHEMAS["compare_blocks"])).validate(compared)
+        assert [item["family"]["material_blocks"] for item in compared["blocks"]] == [oak, oak]

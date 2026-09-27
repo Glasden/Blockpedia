@@ -240,6 +240,25 @@ B 阶段已在 Node MCP 实现，Schema 升为 `mcp-*-output.v2`／`mcp-error.v2
 
 验证：`python -m pytest tests -q` **373 passed、6 skipped**（Windows、GPU 与 PowerShell 相关）。新测试用按面光照系数生成的预览，检查贴图色还原、纹理标准差、双主色、预乘 alpha、系列、比较结构、similar_to 的排序、形状过滤、名单降权、关键词筛选与两种错误，FTS/LIKE 两条路径都执行。本机真实 stdio 连接正式 release 调用四个工具，输出均通过服务端 Schema 校验。本会话已连接的 blockpedia MCP 进程仍是旧代码，需要重载后才能用到新接口。
 
+### 5.3 建材筛选、形状细分、铜氧化折叠与材料组（2026-09-27，未提交）
+
+针对用户反馈的三类问题，只改 Node MCP 在线排序与输出，不改导出、标注或 release；当前正式 release 即可生效，无新依赖。改前在正式 release 上逐条复现了反馈中的全部现象。
+
+- 非建材降权：矿石（`*_ores` tag、`_ore` 后缀、远古残骸）、资源存储块（`beacon_base_blocks` 与粗矿块、煤/青金石/红石块）、容器（潜影盒、铜箱子、蜂巢 tag 及箱子、木桶）、功能方块（铁砧、炼药锅、铁轨 tag，工作台、熔炉、侦测器、铜灯等固定 ID）与植物（花、盆栽、树苗、作物、珊瑚等 tag，蘑菇、竹子、甘蔗等固定 ID，死珊瑚按名称）×0.5。有形状分类的方块（铜门、苔藓地毯）与树叶不算。`similar_to` 中参照方块同类时不降权；关键词检索中查询词命中名称或同义词的中心词（末词，中文为词尾：`ore`→铜矿石，`copper` 不算）时视为点名，不降权。
+- 形状细分：原 `other` 按代表状态几何细分为 `passable`（无碰撞：花草、火把、铁轨）、`sheet`（贴地薄片）、`small_fixture`（宽深都不超过半格：灯笼、花盆、头颅）、`partial_block`（其余：箱子、炼药锅、铁砧）；`full_cube` 还要求有碰撞，高草、藤蔓等外形满格但无碰撞的不再算满方块。无代表几何时仍为 `other`。
+- 铜氧化系列：同一铜方块的 4 个氧化阶段及其涂蜡版为一个系列（`copper_block` 的阶段名省略 `_block`）。涂蜡版外观与未涂蜡相同，始终折叠进未涂蜡；查询不含颜色时各阶段也折叠为一条，候选新增 `oxidation_series.other_block_ids`。精确名称/ID 不折叠。`similar_to` 只折叠涂蜡版，并排除参照方块自己的涂蜡/未涂蜡孪生。
+- 查询词：`red brick`/`红砖` 作为复合词，颜色改用“砖红”（实测 bricks L* 35、彩度 21、色相 41），不再以饱和红为准；暖色的命名词去掉 `gold`（名称中是金属：深板岩金矿石）；`shingle`/`瓦` 改为楼梯/台阶形状意图，去掉只命中带釉陶瓦和地毯的 `tile`。
+- 相关性下限：关键词检索中，相关性低于最佳非精确候选 55% 的不返回（名单与非建材系数不参与此判断，降权方块不会因降权被删）。`glass` 因此只返回 5 种玻璃，不再以信标、灯笼、黑曜石（“volcanic glass”）补足。
+- 材料组：详情与比较的 `family` 新增 `material_blocks`，按命名规则剥离表面处理前缀（stripped/polished/cut/chiseled/cracked/mossy/smooth/cobbled/packed）和种类后缀（planks/log/wood/stem/hyphae/bricks/tiles/block/pillar/mosaic/grate）得到材料根；铜的涂蜡与氧化阶段保留在根内。形态方块（楼梯、台阶等）仍挂在其满方块的 `forms` 下，植物与名单方块不入组。全 release 得 48 组，包括 11 种木材各 5 块（原木、木头、去皮原木、去皮木头、木板）、深板岩 8 块、石头 6 块、凝灰岩 5 块等。没有形态但有材料组的方块（`spruce_log`）也返回 `family`，`base_block` 为自身、`forms` 为空。
+
+Schema：详情 v2 与比较 v3 的 `family.forms` 允许为空并新增 `material_blocks`，`shape_class` 说明更新；搜索 v2 新增可选 `oxidation_series`。均未升版。
+
+复测（正式 release）：`similar_to` stone_bricks、white_concrete、bricks 的前 12 名不再有矿石、潜影盒、铁块、铜灯、粗矿块；lantern 前两名为灵魂灯笼、滴水石锥，其后是铜灯笼，盆栽仍在第 5、8 名（已 ×0.5，但该形状类中与灯笼同色的非植物方块很少）。`warm roof shingle` 前 12 名全是暖色楼梯/台阶；`red brick wall` 第 1 名为 bricks；`栏杆` 为铁栏杆、铜栏杆（折叠 7 个）后接栅栏；`copper` 不再出现铜矿石，`ore`/`矿石`/`chest` 仍正常返回对应方块。全 release 1,196 个详情摘要通过 Schema，最大 3,999 B（`powder_snow_cauldron`）；本机真实 stdio 调用四工具通过服务端 Schema 校验。
+
+验证：建筑查询集由 25 条增至 32 条（新增 warm roof shingle、暖色瓦屋顶、glass 与 4 条 `similar_to`；`栏杆`/`railing` 新增 `require` 须含栅栏和栏杆，`red brick wall` 固定第 1 名 bricks），另加正式 release 上的材料组检查；新增条目在改前代码上 9 条失败，改后全部通过。`tests/r4/test_node_mcp.py` 新增夹具用例，FTS/LIKE 两路径覆盖降权与中心词点名、同类不降权、形状细分、氧化折叠（含带颜色时只折叠涂蜡、精确 ID 独立）与材料组。`python -m pytest tests -q` **376 passed、6 skipped**（Windows、GPU 与 PowerShell 相关）。
+
+未做：`dark_prismarine` 与 `prismarine`、`cobblestone` 与 `stone` 等命名不同源的材料不入同组；非建材类别只影响搜索排序，未写入详情或比较输出；中文单字按子串匹配的既有问题（`花` 命中花岗岩）未处理；中心词按名称末词判断，“Block of Raw Copper”这类英文名会被 `copper` 视为点名，粗铜块在 `copper` 中仍排第 7。
+
 新 release 产出链：渲染定位及修正 → 完整导出 → 新 workspace 导入 → 特征与新标注 → 审核 → 构建 → 四工具集成验收 → 用户发布。无需迁移旧语义和审核；新的非 excluded 候选仍须满足构建的语义完整性要求。
 
 ## 6. 实施阶段与当前状态
@@ -252,7 +271,7 @@ B 阶段已在 Node MCP 实现，Schema 升为 `mcp-*-output.v2`／`mcp-error.v2
 | B 详情与 MCP 图片输出 | summary/states、分页；三种带图工具最终响应采用256卡片/无损WebP，处理过程使用原图 | 实现者：两个摘要尺寸断言、全 release 大小扫描、分页集合一致、Schema/MIME、图片元数据、无损解码、客户端及视觉检查 | 已实现，见第 3.6 节；Windows 端需 `npm ci` 后复验 |
 | C 特征多 worker | 第 4 节配置与进程池；可与 B/D 独立开发 | 实现者：串并行结果一致、生命周期/故障检查、同 run 并行证据及真实计时 | 已实现；默认 1。Windows 本次已用 5 个实际子进程完成 1,172 项特征；Linux 生命周期与计时见第 4.1 节 |
 | D 渲染与形状事实 | D1 颜色修复及完整单次导出已交付；形状分类继续待办 | 实现者：Java 构建、真实 GPU 样本、分类来源检查；主代理核对完整导出验证 | 定向 GPU 与 Windows 完整单次导入校验已完成，见第 8、9 节；形状分类及双次确定性验证未完成 |
-| E 搜索与名单 | 相关性、中文映射、技术及虫蚀降权；名单已获用户批准，最终颜色/形状验收依赖 D | 实现者：约20条查询、FTS/LIKE、精确与泛用途查询对照、稳定排序 | E1、E2 已实现；E3 相关性、中文映射与 16 色系列合并已实现、未提交，建筑查询集 25/25 通过，见第 5.1 节；P1 分面颜色、系列形状、比较 v3 与 `similar_to` 已实现、未提交，见第 5.2 节 |
+| E 搜索与名单 | 相关性、中文映射、技术及虫蚀降权；名单已获用户批准，最终颜色/形状验收依赖 D | 实现者：约20条查询、FTS/LIKE、精确与泛用途查询对照、稳定排序 | E1、E2 已实现；E3 相关性、中文映射与 16 色系列合并已实现、未提交，建筑查询集 25/25 通过，见第 5.1 节；P1 分面颜色、系列形状、比较 v3 与 `similar_to` 已实现、未提交，见第 5.2 节；建材降权、形状细分、铜氧化折叠与材料组见第 5.3 节，查询集 32/32 |
 | F 新 release | 整合 B–E，新 workspace 完整处理并构建 | 主代理：构建通过，真实产物 summary 扫描、查询集、四工具 stdio 和状态引用一致；provider 结果独立取证 | 当前已实现版本的 Windows 候选已构建并通过四工具验证，见第 9 节；B、D 形状分类及 E 剩余项未完成，因此不代表全部计划验收完成 |
 | G 发布 | 当前候选验收后按用户明确授权发布 | 主代理：实际指针切换及下一次 MCP 查询指向新 release | 已按用户新授权在 Windows 与本机 Linux 发布同一 release；本机会话四工具读取新版本。B/D/E 其余计划仍未结项 |
 

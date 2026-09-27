@@ -1,5 +1,5 @@
 {
-  "description": "Real building requests for search_blocks. Each query passes when all of its top-3 block IDs match `accept` (fnmatch patterns without the minecraft: prefix) and no `reject` pattern appears in the top 8. `top1` pins the first result where the answer is unambiguous. Acceptable sets are deliberately broad: the gate checks relevance, not one fixed order. `max_per_series` caps how many members of one 16-dye-colour series (white_wool ... black_wool) may appear in the top 8; without a colour in the query they are merged into one candidate.",
+  "description": "Real building requests for search_blocks. Each query passes when all of its top-3 block IDs match `accept` (fnmatch patterns without the minecraft: prefix) and no `reject` pattern appears in the top 8. `top1` pins the first result where the answer is unambiguous. Acceptable sets are deliberately broad: the gate checks relevance, not one fixed order. `max_per_series` caps how many members of one 16-dye-colour series (white_wool ... black_wool) may appear in the top 8; without a colour in the query they are merged into one candidate. `require` lists patterns of which at least one block must appear in the top 8. An entry with `similar_to` instead of (or with) `keywords` checks the palette-similarity ranking.",
   "queries": [
     {
       "keywords": [
@@ -285,7 +285,12 @@
       ],
       "reject": [
         "vine"
-      ]
+      ],
+      "require": [
+        "*_fence",
+        "*_bars"
+      ],
+      "max_per_series": 1
     },
     {
       "keywords": [
@@ -300,7 +305,12 @@
       ],
       "reject": [
         "vine"
-      ]
+      ],
+      "require": [
+        "*_fence",
+        "*_bars"
+      ],
+      "max_per_series": 1
     },
     {
       "keywords": [
@@ -467,7 +477,8 @@
         "*_hanging_sign",
         "*_banner",
         "*_candle"
-      ]
+      ],
+      "top1": "bricks"
     },
     {
       "keywords": [
@@ -522,6 +533,139 @@
       ],
       "reject": [],
       "max_per_series": 1
+    },
+    {
+      "keywords": [
+        "warm roof shingle"
+      ],
+      "accept": [
+        "*_stairs",
+        "*_slab"
+      ],
+      "reject": [
+        "*_ore",
+        "*_glazed_terracotta",
+        "gold_block",
+        "*_carpet"
+      ]
+    },
+    {
+      "keywords": [
+        "暖色",
+        "瓦",
+        "屋顶"
+      ],
+      "accept": [
+        "*_stairs",
+        "*_slab"
+      ],
+      "reject": [
+        "*_ore",
+        "*_glazed_terracotta",
+        "gold_block",
+        "*_carpet"
+      ]
+    },
+    {
+      "keywords": [
+        "glass"
+      ],
+      "top1": "glass",
+      "accept": [
+        "glass",
+        "tinted_glass",
+        "*_stained_glass",
+        "glass_pane",
+        "*_stained_glass_pane"
+      ],
+      "reject": [
+        "beacon",
+        "*lantern",
+        "obsidian",
+        "crying_obsidian"
+      ]
+    },
+    {
+      "similar_to": "minecraft:stone_bricks",
+      "accept": [
+        "*stone_bricks",
+        "stone",
+        "cobblestone",
+        "andesite",
+        "tuff*",
+        "dead_*_coral_block",
+        "gravel"
+      ],
+      "reject": [
+        "*_ore",
+        "raw_*_block",
+        "iron_block",
+        "*_shulker_box",
+        "beehive",
+        "bee_nest"
+      ]
+    },
+    {
+      "similar_to": "minecraft:white_concrete",
+      "accept": [
+        "white_*",
+        "*quartz*",
+        "calcite",
+        "bone_block",
+        "mushroom_stem",
+        "snow_block",
+        "diorite",
+        "polished_diorite"
+      ],
+      "reject": [
+        "*_shulker_box",
+        "iron_block",
+        "raw_iron_block",
+        "netherite_block",
+        "*_ore"
+      ]
+    },
+    {
+      "similar_to": "minecraft:bricks",
+      "accept": [
+        "granite",
+        "polished_granite",
+        "*mud*",
+        "*terracotta",
+        "dripstone_block",
+        "rooted_dirt",
+        "dirt",
+        "cinnabar*"
+      ],
+      "reject": [
+        "*copper_bulb",
+        "raw_*_block",
+        "*_ore",
+        "beehive",
+        "bee_nest"
+      ]
+    },
+    {
+      "similar_to": "minecraft:lantern",
+      "accept": [
+        "*lantern",
+        "pointed_dripstone",
+        "sulfur_spike",
+        "heavy_core",
+        "*_head",
+        "*_skull"
+      ],
+      "reject": [
+        "*_mushroom",
+        "*_fungus",
+        "*_tulip",
+        "poppy",
+        "dandelion",
+        "torchflower",
+        "*eyeblossom",
+        "hanging_roots",
+        "*_sapling"
+      ]
     }
   ]
 }

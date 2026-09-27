@@ -107,7 +107,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 40,
-          "description": "Registry-tag shape (stairs, slab, wall, fence, door, trapdoor, pane ...), else full_cube or other from the representative geometry."
+          "description": "Registry-tag shape (stairs, slab, wall, fence, door, trapdoor, pane ...), else from the representative geometry: full_cube (solid full block), passable (no collision: plants, torches, rails), sheet (flat on the floor), small_fixture (at most half a block across: lanterns, flower pots, heads), partial_block (the rest: chests, cauldrons, anvils); other when there is no representative geometry."
         },
         "geometry_classes": {
           "type": "array",
@@ -299,7 +299,7 @@
         "base_block",
         "forms"
       ],
-      "description": "Shapes this block's material comes in, from the registry naming rule (oak_planks: oak_stairs, oak_slab ...). base_block is the material's full block, null when there is none (petrified_oak_slab).",
+      "description": "Shapes this block's material comes in, from the registry naming rule (oak_planks: oak_stairs, oak_slab ...). base_block is the material's full block (the block itself when it has no forms, as spruce_log), null when there is none (petrified_oak_slab); forms is empty when the full block has no shaped forms. material_blocks, when present, lists every full block of the same material in other finishes, base_block included (spruce_log, spruce_planks, spruce_wood, stripped_spruce_log, stripped_spruce_wood; tuff, polished_tuff, tuff_bricks, chiseled_tuff ...); a copper block's wax and oxidation stage are part of its material.",
       "properties": {
         "base_block": {
           "oneOf": [
@@ -313,7 +313,7 @@
         },
         "forms": {
           "type": "object",
-          "minProperties": 1,
+          "minProperties": 0,
           "additionalProperties": false,
           "properties": {
             "stairs": {
@@ -361,6 +361,14 @@
             "shelf": {
               "$ref": "#/$defs/block_id"
             }
+          }
+        },
+        "material_blocks": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/block_id"
           }
         }
       }

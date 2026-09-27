@@ -114,7 +114,9 @@ const VOCAB = [
   [['dark', '深', '深色', '暗', '暗色'], { color: 'dark' }],
   [['pale', '浅', '浅色', '淡色'], { color: 'pale' }],
   [['warm', '暖', '暖色'], { color: 'warm' }],
-  [['红砖'], { color: 'red', alts: ['brick', '砖'] }],
+  // "Red brick" names the ordinary fired-clay brick, whose colour is a
+  // brownish brick red rather than the saturated red of red nether bricks.
+  [['红砖', 'red brick', 'red bricks'], { color: 'brick', alts: ['brick', '砖'] }],
   [['light', 'lighting', 'glowing', 'luminous', '光', '发光', '照明', '光源'], { light: true }],
   [['暖光'], { color: 'warm', light: true }],
   [['lamp', 'lamps', '灯', '灯具'], { light: true, alts: ['lamp', 'lantern', 'light source', '灯'] }],
@@ -137,7 +139,9 @@ const VOCAB = [
   [['trim', 'molding', 'moulding', 'cornice', '线脚', '腰线', '饰线', '装饰线'], { alts: ['trim', 'molding', 'border', 'ledge'] }],
   [['beam', 'beams', '梁', '横梁'], { alts: ['beam', 'log', 'pillar'] }],
   [['木梁'], { alts: ['beam', 'log', '原木'] }],
-  [['shingle', 'shingles', '瓦', '瓦片', '屋瓦'], { alts: ['shingle', 'roof', 'roofing', 'tile'] }],
+  // Roof shingles are laid as stairs and slabs.  "Tile" is not an alt: the
+  // annotations use it for glazed terracotta and carpets.
+  [['shingle', 'shingles', '瓦', '瓦片', '屋瓦'], { shapes: ['stairs', 'slab'], alts: ['shingle', 'roof', 'roofing'] }],
   [['plaster', 'stucco', '抹灰', '灰泥', '灰浆', '粉刷'], { alts: ['plaster', 'stucco', 'concrete'] }],
   [['old', 'aged', 'ancient', '旧', '老', '古旧', '破旧', '陈旧'], { alts: ['old', 'weathered', 'cracked', 'mossy', 'aged'] }],
   [['wooden', 'wood', '木', '木头', '木质', '木制', '木材'], { alts: ['wood', 'wooden', 'planks', '木'] }],
@@ -164,12 +168,14 @@ const VOCAB = [
 ];
 const VOCAB_INDEX = new Map(VOCAB.flatMap(([terms, spec]) => terms.map((term) => [term, spec])));
 // Words that state a colour in a name or annotation; official zh names use
-// the 色 forms (白色混凝土, 淡灰色羊毛).
+// the 色 forms (白色混凝土, 淡灰色羊毛).  "Gold" is not a warm word: in a name
+// it is the metal (Deepslate Gold Ore).
 const COLOR_NAME_WORDS = {
   white: ['white', '白色'], black: ['black', '黑色'], gray: ['gray', 'grey', '灰色'], brown: ['brown', '棕色'],
   red: ['red', '红色'], orange: ['orange', '橙色'], yellow: ['yellow', '黄色'], green: ['green', '绿色'],
   cyan: ['cyan', 'teal', '青色'], blue: ['blue', '蓝色'], purple: ['purple', '紫色'], pink: ['pink', '粉红色'],
-  dark: ['dark', '深色'], pale: ['pale', '淡'], warm: ['warm', 'amber', 'orange', 'golden', 'gold', '暖'],
+  dark: ['dark', '深色'], pale: ['pale', '淡'], warm: ['warm', 'amber', 'orange', 'golden', '暖'],
+  brick: ['brick red', 'red brown', '砖红', '红棕'],
 };
 
 // Colour intents over the preview's mean CIELAB as L, chroma, hue.  Previews
@@ -193,6 +199,8 @@ const COLOR_SCORES = {
   dark: ([l]) => ramp(l, 40, 20),
   pale: ([l]) => ramp(l, 45, 62),
   warm: ([, c, h]) => hueNear(h, 55, 45) * ramp(c, 8, 20),
+  // Fired-clay brick: bricks measure about L* 35, chroma 21, hue 41.
+  brick: ([l, c, h]) => hueNear(h, 40, 18) * ramp(c, 10, 18) * Math.min(ramp(l, 18, 26), ramp(l, 55, 45)),
 };
 const lch = (lab) => {
   if (!Array.isArray(lab) || lab.length !== 3 || lab.some((value) => typeof value !== 'number')) return null;
@@ -288,9 +296,130 @@ const shapeClass = (blockId, tags = []) => {
   if (WALL_MOUNTED_RE.test(blockId.replace(/^minecraft:/, ''))) return 'wall_mounted';
   return SHAPE_ID_SUFFIXES.find(([, suffix]) => blockId.endsWith(suffix))?.[0] ?? null;
 };
-// Shape class for comparison and similarity: the tag class, else full_cube or
-// other from the representative's geometry.
-const shapeKey = (blockId, tags, geometry) => shapeClass(blockId, tags) ?? (geometry?.is_full_cube === true ? 'full_cube' : 'other');
+// Shape class for comparison and similarity: the tag class, else from the
+// representative's geometry.  full_cube is a solid full block (tall grass and
+// vines fill the block outline but have no collision); passable has no
+// collision (plants, torches, rails); sheet lies flat on the floor;
+// small_fixture is at most half a block across (lanterns, flower pots, heads);
+// partial_block is the rest (chests, cauldrons, anvils).  other: no geometry.
+const shapeKey = (blockId, tags, geometry) => {
+  const tagged = shapeClass(blockId, tags);
+  if (tagged !== null) return tagged;
+  const collision = geometry?.collision?.boxes;
+  if (!Array.isArray(collision)) return 'other';
+  if (collision.length === 0) return 'passable';
+  if (geometry.is_full_cube === true) return 'full_cube';
+  if ((geometry.geometry_classes ?? []).includes('horizontal_sheet')) return 'sheet';
+  if (geometry.width <= 0.5 && geometry.depth <= 0.5) return 'small_fixture';
+  return 'partial_block';
+};
+
+// Blocks that can share a look or a word with building materials but are not
+// one: ores and raw-resource storage, containers, workstations and redstone
+// machinery, and plants.  Tags first; the IDs cover what no tag expresses.
+// A block with a shape class (a copper door, a moss carpet) or leaves is never
+// one of these.  They rank ×0.5 unless the query asks for them.
+const NON_BUILDING_FACTOR = 0.5;
+const tagSet = (...tags) => tags.map((tag) => `minecraft:${tag}`);
+const CATEGORY_RULES = [
+  {
+    category: 'ore',
+    tags: tagSet('coal_ores', 'copper_ores', 'diamond_ores', 'emerald_ores', 'gold_ores', 'iron_ores', 'lapis_ores', 'redstone_ores'),
+    ids: blockSet('ancient_debris'),
+    pattern: /_ore$/,
+  },
+  {
+    category: 'resource block',
+    tags: tagSet('beacon_base_blocks'),
+    ids: blockSet('raw_iron_block', 'raw_copper_block', 'raw_gold_block', 'coal_block', 'lapis_block', 'redstone_block'),
+  },
+  {
+    category: 'container',
+    tags: tagSet('shulker_boxes', 'copper_chests', 'beehives'),
+    ids: blockSet('chest', 'trapped_chest', 'ender_chest', 'barrel'),
+  },
+  {
+    category: 'functional block',
+    tags: tagSet('anvil', 'cauldrons', 'rails'),
+    ids: blockSet(
+      'crafting_table', 'furnace', 'smoker', 'blast_furnace', 'loom', 'cartography_table', 'fletching_table',
+      'smithing_table', 'stonecutter', 'grindstone', 'lectern', 'enchanting_table', 'brewing_stand', 'composter',
+      'jukebox', 'note_block', 'beacon', 'conduit', 'lodestone', 'respawn_anchor', 'bell', 'crafter', 'dispenser',
+      'dropper', 'observer', 'piston', 'sticky_piston', 'hopper', 'daylight_detector', 'target', 'tnt',
+      'sculk_sensor', 'calibrated_sculk_sensor', 'sculk_shrieker', 'sculk_catalyst', 'comparator', 'repeater',
+      'redstone_wire', 'lever', 'tripwire_hook', 'redstone_torch', 'redstone_wall_torch',
+    ),
+    pattern: /copper_bulb$/,
+  },
+  {
+    category: 'plant',
+    tags: tagSet(
+      'flowers', 'small_flowers', 'flower_pots', 'saplings', 'crops', 'bee_growables', 'corals', 'coral_plants',
+      'wall_corals', 'cave_vines', 'replaceable_by_trees',
+    ),
+    ids: blockSet(
+      'azalea', 'bamboo', 'bamboo_sapling', 'big_dripleaf', 'big_dripleaf_stem', 'small_dripleaf', 'cactus',
+      'sugar_cane', 'kelp', 'kelp_plant', 'lily_pad', 'sea_pickle', 'cocoa', 'nether_wart', 'chorus_plant',
+      'red_mushroom', 'brown_mushroom', 'crimson_fungus', 'warped_fungus', 'twisting_vines', 'twisting_vines_plant',
+      'weeping_vines', 'weeping_vines_plant', 'pale_hanging_moss', 'attached_melon_stem', 'attached_pumpkin_stem',
+    ),
+    // Dead coral plants and fans carry no coral tag.
+    pattern: /^minecraft:dead_[a-z]+_coral(?:_fan)?$/,
+  },
+];
+const blockCategory = (blockId, tags = []) => {
+  if (shapeClass(blockId, tags) !== null || tags.includes('minecraft:leaves')) return null;
+  return CATEGORY_RULES.find((rule) => rule.tags.some((tag) => tags.includes(tag))
+    || rule.ids.has(blockId)
+    || rule.pattern?.test(blockId))?.category ?? null;
+};
+
+// Copper oxidation: a copper block's four weathering stages, each also waxed,
+// are one series (cut_copper_stairs ... waxed_oxidized_cut_copper_stairs).
+// copper_block's stages drop the _block (exposed_copper).  A waxed block looks
+// exactly like its unwaxed stage.  Null for copper that does not oxidize.
+const OXIDATION_STAGES = ['', 'exposed_', 'weathered_', 'oxidized_'];
+const OXIDATION_RE = /^(waxed_)?(exposed_|weathered_|oxidized_)?(.+)$/;
+const oxidationSeries = (blockId, blockIds) => {
+  const [, , stage = '', rest] = OXIDATION_RE.exec(blockId.replace(/^minecraft:/, ''));
+  const base = rest === 'copper' ? 'copper_block' : rest;
+  const member = (wax, prefix) => `minecraft:${wax}${prefix}${prefix && base === 'copper_block' ? 'copper' : base}`;
+  const members = ['', 'waxed_'].flatMap((wax) => OXIDATION_STAGES.map((prefix) => member(wax, prefix)))
+    .filter((id) => blockIds.has(id));
+  if (members.length < 2 || !members.includes(blockId)) return null;
+  return { key: base, stage, order: members.indexOf(blockId) };
+};
+
+// Full blocks of one material in different finishes, by the registry naming
+// rule: spruce_log, spruce_wood, stripped_spruce_log, stripped_spruce_wood and
+// spruce_planks; tuff, polished_tuff, tuff_bricks, chiseled_tuff ...  Finish
+// prefixes and block-kind suffixes are stripped to a material root; a copper
+// block's wax and oxidation stay part of it (exposed_cut_copper goes with
+// exposed_copper).  Forms (stairs, slab ...) stay under their full block's
+// family; plants and recommendation-list blocks (infested_stone) join none.
+const FINISH_PREFIXES = ['stripped_', 'polished_', 'cut_', 'chiseled_', 'cracked_', 'mossy_', 'smooth_', 'cobbled_', 'packed_'];
+const KIND_SUFFIXES = ['_planks', '_log', '_wood', '_stem', '_hyphae', '_bricks', '_tiles', '_block', '_pillar', '_mosaic', '_grate'];
+const materialRoot = (blockId) => {
+  const [, waxed = '', stage = '', path] = OXIDATION_RE.exec(blockId.replace(/^minecraft:/, ''));
+  let rest = path;
+  let prefix;
+  while ((prefix = FINISH_PREFIXES.find((value) => rest.startsWith(value))) !== undefined) rest = rest.slice(prefix.length);
+  const suffix = KIND_SUFFIXES.find((value) => rest.endsWith(value));
+  return `${waxed}${stage}${suffix === undefined ? rest : rest.slice(0, -suffix.length)}`;
+};
+// Root -> sorted full-block IDs, for roots shared by at least two blocks.
+const materialGroups = (blocks) => {
+  const blockIds = new Set(Object.keys(blocks));
+  const groups = new Map();
+  for (const [blockId, block] of Object.entries(blocks)) {
+    const family = materialFamily(blockId, blockIds);
+    if (family !== null && family.base_block !== blockId) continue;
+    if (policyWarning(blockId) !== null || blockCategory(blockId, block.tags ?? []) === 'plant') continue;
+    const root = materialRoot(blockId);
+    groups.set(root, [...(groups.get(root) ?? []), blockId]);
+  }
+  return new Map([...groups].filter(([, ids]) => ids.length > 1).map(([root, ids]) => [root, ids.sort(byUtf8)]));
+};
 // Palette similarity is 1 at identical colour and texture and 0 at this
 // distance (Oklab plus the texture term) or beyond.
 const SIMILARITY_RANGE = 0.25;
@@ -631,11 +760,18 @@ const runStarts = (haystack, needle) => {
 };
 
 // One matcher per query word: Han by substring (no word boundaries), others by
-// whole stemmed words in order.
+// whole stemmed words in order.  head() is whether it matches the end of the
+// text, the head noun of an English or Chinese name (Copper Ore, 铜矿石).
 const matcher = (text) => {
-  if (HAN_RE.test(text)) return { text, han: true, test: (item) => item.raw.includes(text) };
+  if (HAN_RE.test(text)) return { text, han: true, test: (item) => item.raw.includes(text), head: (item) => item.raw.endsWith(text) };
   const words = wordsOf(text);
-  return { text, han: false, words, test: (item) => runStarts(item.words, words).length > 0 };
+  return {
+    text,
+    han: false,
+    words,
+    test: (item) => runStarts(item.words, words).length > 0,
+    head: (item) => runStarts(item.words, words).some((start) => start + words.length === item.words.length),
+  };
 };
 
 const fieldItem = (field, text) => {
@@ -770,6 +906,10 @@ const scoreDocument = (doc, query) => {
   const breakdown = { text: 0, color: 0, shape: 0, light: 0 };
   const present = [];
   const notes = [];
+  // Whether some query word is the head of the block's name or a synonym
+  // ("ore" for Copper Ore, not "copper"), which asks for it even when it is
+  // not a building material.
+  let asked = false;
   if (query.textTerms.length > 0) {
     present.push('text');
     let total = 0;
@@ -785,6 +925,7 @@ const scoreDocument = (doc, query) => {
           if (doc.mounted && wallWord) continue;
           const fieldWeight = wallWord && doc.shape === 'wall' ? Math.min(item.weight, WALL_SHAPE_WEIGHT) : item.weight;
           const value = fieldWeight * candidate.weight;
+          if ((item.field === 'name' || item.field === 'synonym') && !asked && candidate.head(item)) asked = true;
           if ((value > best || !fields.has(item.field)) && candidate.test(item)) {
             fields.add(item.field);
             if (value > best) {
@@ -856,8 +997,41 @@ const scoreDocument = (doc, query) => {
     score *= factor;
     if (score > 0) notes.push(`${doc.shape} form ×${factor} (no shape asked)`);
   }
-  return { score: pyRound8(clamp01(score)), breakdown, notes };
+  return { score: pyRound8(clamp01(score)), breakdown, notes, asked };
 };
+
+// A keyword match scoring under this fraction of the best non-exact match is
+// not returned: after the glass blocks, "glass" would otherwise go on to
+// beacons, lanterns and obsidian ("volcanic glass") by material words alone.
+const RELEVANCE_FLOOR = 0.55;
+
+// Folds ranked entries that share keyOf(entry) into the best-ranked one,
+// placed where the group first appears; among members tied on that score the
+// lowest prefer(entry) wins.  Folded entries accumulate in entry[field].  An
+// exact name or ID keeps its own entry.
+const foldSeries = (ranked, field, keyOf, prefer) => {
+  const keys = ranked.map((entry) => (entry.exact ? null : keyOf(entry)));
+  const groups = new Map();
+  ranked.forEach((entry, index) => {
+    if (keys[index] !== null) groups.set(keys[index], [...(groups.get(keys[index]) ?? []), entry]);
+  });
+  const out = [];
+  ranked.forEach((entry, index) => {
+    const members = keys[index] === null ? undefined : groups.get(keys[index]);
+    if (members === undefined || members.length === 1) {
+      out.push(entry);
+      return;
+    }
+    if (members[0] !== entry) return;
+    const best = members.filter((member) => member.score === entry.score).sort((left, right) => prefer(left) - prefer(right))[0];
+    const folded = members.filter((member) => member !== best).flatMap((member) => [member, ...(member[field] ?? [])]);
+    out.push({ ...best, [field]: [...(best[field] ?? []), ...folded] });
+  });
+  return out;
+};
+const oxidationOrder = (entry) => entry.oxidation.order;
+// A waxed block and its unwaxed stage look the same.
+const waxedKey = (entry) => (entry.oxidation ? `${entry.oxidation.key}\u0000${entry.oxidation.stage}` : null);
 
 const sortedObject = (mapping) => {
   const result = {};
@@ -1032,7 +1206,18 @@ export class MCPQueryService {
         }
         let selected;
         if (similarTo === null) {
-          const merged = query.colors.length > 0 ? ranked : MCPQueryService._mergeColorSeries(ranked);
+          // A waxed copper block always folds into its unwaxed twin; without a
+          // colour in the query the 16 dye colours and the oxidation stages
+          // of one block fold into one candidate as well.
+          const unwaxed = foldSeries(ranked, 'oxidationFolded', waxedKey, oxidationOrder);
+          const merged = query.colors.length > 0
+            ? unwaxed
+            : foldSeries(
+              foldSeries(unwaxed, 'oxidationFolded', (entry) => entry.oxidation?.key ?? null, oxidationOrder),
+              'colorFolded',
+              (entry) => entry.series?.key ?? null,
+              (entry) => DYE_COLORS.indexOf(entry.series.color),
+            );
           selected = merged.slice(0, limit);
         } else {
           if (!(similarTo in snapshot.blocks)) {
@@ -1052,7 +1237,7 @@ export class MCPQueryService {
               [similarTo],
             );
           }
-          selected = similar.slice(0, limit);
+          selected = foldSeries(similar, 'oxidationFolded', waxedKey, oxidationOrder).slice(0, limit);
         }
         const candidates = this._candidateDicts(selected, snapshot);
         if (candidates.length === 0) return toolResult({ candidates, images: [] });
@@ -1216,6 +1401,8 @@ export class MCPQueryService {
         confidence: typeof semanticValue.confidence === 'number' ? semanticValue.confidence : 0,
         buildingForms: hasBuildingForms(String(variant.block_id), blockIds),
         series: colorSeries(String(variant.block_id), blockIds),
+        oxidation: oxidationSeries(String(variant.block_id), blockIds),
+        category: blockCategory(String(variant.block_id), block.tags ?? []),
       });
     }
     const lexicon = new Set([...VOCAB_INDEX.keys()].filter((term) => HAN_RE.test(term)));
@@ -1264,7 +1451,7 @@ export class MCPQueryService {
   // Exact official names and IDs first; then score.  Ties go to annotation
   // confidence, then (when no shape was asked) base blocks over their derived
   // forms, then construction materials, then eligible over conditional, then
-  // variant ID.
+  // variant ID.  Matches far weaker than the best one are dropped.
   _rankRows(rows, snapshot, query, exactQuery) {
     const { docs } = this._searchIndex(snapshot);
     const result = [];
@@ -1272,21 +1459,32 @@ export class MCPQueryService {
       const [variantId, variant, , block] = row;
       const doc = docs.get(variantId);
       const exact = exactBlockQuery(exactQuery, variant.block_id, block.official_names ?? {});
-      const { score, breakdown, notes } = scoreDocument(doc, query);
+      const { score, breakdown, notes, asked } = scoreDocument(doc, query);
       if (!exact && score <= 0) continue;
       const penalized = policyWarning(variant.block_id) !== null && !exact;
+      // An ore, chest or flower that only matched by colour or a material
+      // word ranks below building materials; naming it asks for it.
+      const demoted = doc.category !== null && !exact && !asked;
+      let adjusted = penalized ? pyRound8(score * 0.25) : score;
+      if (demoted) {
+        adjusted = pyRound8(adjusted * NON_BUILDING_FACTOR);
+        notes.push(`${doc.category} ×${NON_BUILDING_FACTOR} (not a building material)`);
+      }
       result.push({
         row,
         // A full official name or block ID is a perfect match by definition.
-        score: exact ? 1 : penalized ? pyRound8(score * 0.25) : score,
+        score: exact ? 1 : adjusted,
+        relevance: score,
         breakdown,
         exact,
         penalized,
+        asked,
         notes,
         confidence: doc.confidence,
         derived: query.shapes.size === 0 && SHAPE_FACTORS.has(doc.shape),
         buildingForms: doc.buildingForms,
         series: doc.series,
+        oxidation: doc.oxidation,
         conditional: variant.candidate_qualification === 'conditional',
       });
     }
@@ -1297,40 +1495,57 @@ export class MCPQueryService {
       || Number(right.buildingForms) - Number(left.buildingForms)
       || Number(left.conditional) - Number(right.conditional)
       || byUtf8(left.row[0], right.row[0]));
-    return result;
+    // The floor is on relevance before the list and category factors, so a
+    // demoted block ranks low but is not dropped for being demoted.
+    const best = Math.max(0, ...result.filter((entry) => !entry.exact).map((entry) => entry.relevance));
+    return result.filter((entry) => entry.exact || entry.relevance >= RELEVANCE_FLOOR * best);
   }
 
   // Blocks of the same shape class as `targetId`, nearest palette first.  With
   // keywords, `textRanked` (their ranked matches) is the pool and the score is
   // still the palette similarity alone.  Null when the target has no preview
   // or no visible face.  Recommendation-list blocks keep the ×0.25 penalty,
-  // so infested stone does not lead a search for stone.
+  // so infested stone does not lead a search for stone; ores, containers,
+  // functional blocks and plants rank ×0.5 unless the target is of the same
+  // kind or the keywords name them.
   _rankSimilar(handle, snapshot, targetId, textRanked, resources) {
     const target = variantsFor(snapshot, targetId)[0];
     if (target === undefined || !isMapping(target.render)) return null;
     const reference = this._palette(handle, snapshot, String(target.variant_id), resources);
     if (reference.top === null && reference.side === null) return null;
     const targetShape = shapeKey(targetId, snapshot.blocks[targetId].tags ?? [], target.machine_facts?.geometry);
-    const pool = textRanked ?? this._eligibleRows(snapshot).map((row) => ({ row, breakdown: { text: 0, color: 0, shape: 0, light: 0 } }));
+    const targetCategory = blockCategory(targetId, snapshot.blocks[targetId].tags ?? []);
+    const { docs } = this._searchIndex(snapshot);
+    const pool = textRanked ?? this._eligibleRows(snapshot).map((row) => ({ row, breakdown: { text: 0, color: 0, shape: 0, light: 0 }, asked: false }));
     const result = [];
-    for (const { row, breakdown } of pool) {
+    const targetOxidation = oxidationSeries(targetId, new Set(Object.keys(snapshot.blocks)));
+    for (const { row, breakdown, asked } of pool) {
       const [variantId, variant, , block] = row;
       if (variant.block_id === targetId) continue;
+      // The target's waxed or unwaxed twin looks exactly like it.
+      const { category, oxidation } = docs.get(variantId);
+      if (targetOxidation !== null && oxidation?.key === targetOxidation.key && oxidation.stage === targetOxidation.stage) continue;
       if (shapeKey(String(variant.block_id), block.tags ?? [], variant.machine_facts?.geometry) !== targetShape) continue;
       const distance = paletteDistance(reference, this._palette(handle, snapshot, variantId, resources));
       if (distance === null) continue;
       const similarity = pyRound8(clamp01(1 - distance.distance / SIMILARITY_RANGE));
       if (similarity <= 0) continue;
       const penalized = policyWarning(variant.block_id) !== null;
+      const demoted = category !== null && category !== targetCategory && !asked;
+      let score = penalized ? pyRound8(similarity * 0.25) : similarity;
+      if (demoted) score = pyRound8(score * NON_BUILDING_FACTOR);
       const colorDeltaE = Number((distance.color * 100).toFixed(1));
       result.push({
         row,
-        score: penalized ? pyRound8(similarity * 0.25) : similarity,
+        score,
         breakdown: { text: breakdown.text, color: similarity, shape: 1, light: 0 },
+        exact: false,
         penalized,
+        oxidation,
         notes: [
           `palette similarity ${similarity.toFixed(2)} to ${targetId}: colour ΔE ${colorDeltaE} (Oklab ×100 over top and side faces), texture term ${(distance.texture * 100).toFixed(1)}`,
           `same shape class ${targetShape}`,
+          ...(demoted ? [`${category} ×${NON_BUILDING_FACTOR} (not a building material)`] : []),
           ...(textRanked === null ? [] : ['keywords matched']),
         ],
         colorDeltaE,
@@ -1356,39 +1571,8 @@ export class MCPQueryService {
     return palette;
   }
 
-  // Without a colour in the query, the 16 dye colours of one series collapse
-  // into their best-ranked member (white first among equal scores), placed
-  // where the series first appears.  An exact name or ID keeps its own entry.
-  static _mergeColorSeries(ranked) {
-    const bySeries = new Map();
-    for (const entry of ranked) {
-      if (entry.series === null || entry.exact) continue;
-      const members = bySeries.get(entry.series.key) ?? [];
-      members.push(entry);
-      bySeries.set(entry.series.key, members);
-    }
-    const out = [];
-    for (const entry of ranked) {
-      const members = entry.series === null || entry.exact ? undefined : bySeries.get(entry.series.key);
-      if (members === undefined) {
-        out.push(entry);
-        continue;
-      }
-      if (members[0] !== entry) continue;
-      const best = members.filter((member) => member.score === entry.score)
-        .sort((left, right) => DYE_COLORS.indexOf(left.series.color) - DYE_COLORS.indexOf(right.series.color))[0];
-      if (members.length === 1) {
-        out.push(best);
-        continue;
-      }
-      const others = DYE_COLORS.filter((dye) => dye !== best.series.color && members.some((member) => member.series.color === dye));
-      out.push({ ...best, others });
-    }
-    return out;
-  }
-
   _candidateDicts(ranked, snapshot) {
-    return ranked.map(({ row, score, breakdown, penalized, notes, series, others, colorDeltaE }, index) => {
+    return ranked.map(({ row, score, breakdown, penalized, notes, series, colorFolded, oxidationFolded, colorDeltaE }, index) => {
       const [variantId, variant, , block] = row;
       const names = block.official_names ?? {};
       const reason = MCPQueryService._reason(notes, semantic(snapshot.annotations[variantId]));
@@ -1405,8 +1589,18 @@ export class MCPQueryService {
         reason: penalized ? `${reason.slice(0, 450)} Local recommendation rule: general-use score ×0.25.` : reason,
         warnings: blockWarnings(variant, String(variant.block_id), block),
         ...(colorDeltaE === undefined ? {} : { color_delta_e: colorDeltaE }),
-        ...(others === undefined ? {} : {
-          color_series: { block_id_pattern: `minecraft:{color}_${series.key}`, other_colors: others },
+        ...(colorFolded === undefined ? {} : {
+          color_series: {
+            block_id_pattern: `minecraft:{color}_${series.key}`,
+            other_colors: DYE_COLORS.filter((dye) => dye !== series.color && colorFolded.some((member) => member.series.color === dye)),
+          },
+        }),
+        ...(oxidationFolded === undefined ? {} : {
+          oxidation_series: {
+            other_block_ids: [...oxidationFolded]
+              .sort((left, right) => oxidationOrder(left) - oxidationOrder(right))
+              .map((member) => String(member.row[1].block_id)),
+          },
         }),
       };
     });
@@ -1499,7 +1693,7 @@ export class MCPQueryService {
       warnings,
       images: [],
     };
-    const family = materialFamily(blockId, new Set(Object.keys(snapshot.blocks)));
+    const family = MCPQueryService._family(snapshot, blockId);
     if (family !== null) output.family = family;
     const skip = MCPQueryService._skipReason(snapshot.manual, blockId);
     if (variant === undefined && skip !== null) output.skip_reason = skip;
@@ -1538,6 +1732,25 @@ export class MCPQueryService {
     };
   }
 
+  // The shapes of the block's material (its full block's stairs, slab ...)
+  // and, when the material comes in several finishes, all of those full
+  // blocks (spruce_log, spruce_wood, stripped_spruce_*, spruce_planks).  Null
+  // when the block has neither.
+  static _family(snapshot, blockId) {
+    snapshot.blockIds ??= new Set(Object.keys(snapshot.blocks));
+    snapshot.materials ??= materialGroups(snapshot.blocks);
+    const family = materialFamily(blockId, snapshot.blockIds);
+    const base = family === null ? blockId : family.base_block;
+    const group = base === null ? undefined : snapshot.materials.get(materialRoot(base));
+    const materials = group?.includes(base) ? group : undefined;
+    if (family === null && materials === undefined) return null;
+    return {
+      base_block: base,
+      forms: family?.forms ?? {},
+      ...(materials === undefined ? {} : { material_blocks: [...materials] }),
+    };
+  }
+
   static _skipReason(manual, blockId) {
     const reviews = Array.isArray(manual.skip_reviews) ? manual.skip_reviews : [];
     const review = reviews.find((item) => isMapping(item) && (item.target_id === blockId || item.block_id === blockId));
@@ -1548,7 +1761,6 @@ export class MCPQueryService {
   // block describes its representative (first visual variant) like details.
   // differing_fields names the fields whose values are not all equal.
   _compareData(handle, snapshot, blockIds, resources) {
-    const allIds = new Set(Object.keys(snapshot.blocks));
     const tiles = [];
     const blocks = blockIds.map((blockId) => {
       const block = snapshot.blocks[blockId];
@@ -1578,7 +1790,7 @@ export class MCPQueryService {
         semantics: annotation === undefined ? null : Object.fromEntries(COMPARE_SEMANTIC_KEYS
           .filter((key) => key in semanticValue)
           .map((key) => [key, semanticValue[key]])),
-        family: materialFamily(blockId, allIds),
+        family: MCPQueryService._family(snapshot, blockId),
         warnings: blockWarnings(variant, blockId, block),
       };
     });
