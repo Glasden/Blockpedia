@@ -2,7 +2,7 @@
 
 更新：2026-09-27。代码调查基线：`44233c2`。本文件是当前决定、实施顺序和进度的唯一维护入口；旧文档已归档，不再与本文并行维护。
 
-**用户已于 2026-09-27 授权开始实施，D1 exporter 颜色修复、C 特征多 worker 与 E1 推荐名单降权已实现。** 其余接口和参数仍是后续实施目标，并非当前已有能力。256×256 无损 WebP 决定已获用户批准；用户随后授权 Windows 导出至构建流程，实际进展见第 9 节，发布仍未获授权。
+**用户已于 2026-09-27 授权开始实施，D1 exporter 颜色修复、C 特征多 worker 与 E1 推荐名单降权已实现。** 其余接口和参数仍是后续实施目标，并非当前已有能力。256×256 无损 WebP 决定已获用户批准；Windows 导出至构建进展见第 9 节。用户随后明确授权正式发布并上传本机，两端发布及本机 MCP 验证已完成，见第 10 节。
 
 ## 1. 已确认决定与范围
 
@@ -16,7 +16,7 @@
 
 继续保留的产品边界：Minecraft Java 26.2；Fabric 导出运行时事实与原图；Python Studio 处理离线数据；Node MCP 只有四个只读 stdio 工具，在线不调用 provider。SQLite 已提交业务行、release 目录、`current.json` 分别表示工作结果、构建结果和发布结果。单 data-root 一个可写 Studio；保留外部输入和路径校验、事务、原子提交、provider 批准与未知发送结果人工处理。已取消的本地防篡改检测、专用 banner repair 和双 release 发布门不恢复。
 
-计划建新 release 不代表本轮已获准执行付费标注或切换 `current.json`。新工作区按完整流程生成标注与审核结果，不假定旧审核或少量补标能自动满足新构建。实际 provider 批次沿用 Studio 的批准流程；构建后由用户明确发布。新格式上线时配套更新 MCP 与 Schema，不要求新版读取旧 release；不承诺跨格式回滚，旧数据继续留存。
+新工作区按完整流程生成标注与审核结果，不假定旧审核或少量补标能自动满足新构建。实际 provider 批次沿用 Studio 的批准流程；切换 `current.json` 须有用户明确发布授权。本次后续授权及执行结果见第 9、10 节。新格式上线时配套更新 MCP 与 Schema，不要求新版读取旧 release；不承诺跨格式回滚，旧数据继续留存。
 
 ## 2. 推荐降权名单：技术方块与蠹虫方块（用户已批准，2026-09-27）
 
@@ -177,7 +177,7 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 | D 渲染与形状事实 | D1 颜色修复及完整单次导出已交付；形状分类继续待办 | 实现者：Java 构建、真实 GPU 样本、分类来源检查；主代理核对完整导出验证 | 定向 GPU 与 Windows 完整单次导入校验已完成，见第 8、9 节；形状分类及双次确定性验证未完成 |
 | E 搜索与名单 | 相关性、中文映射、技术及虫蚀降权；名单已获用户批准，最终颜色/形状验收依赖 D | 实现者：约20条查询、FTS/LIKE、精确与泛用途查询对照、稳定排序 | E1 技术及虫蚀降权已实现；广义相关性、中文映射与完整建筑查询集仍未实施 |
 | F 新 release | 整合 B–E，新 workspace 完整处理并构建 | 主代理：构建通过，真实产物 summary 扫描、查询集、四工具 stdio 和状态引用一致；provider 结果独立取证 | 当前已实现版本的 Windows 候选已构建并通过四工具验证，见第 9 节；B、D 形状分类及 E 剩余项未完成，因此不代表全部计划验收完成 |
-| G 发布 | F 验收后由用户明确发布 | 主代理：实际指针切换及下一次 MCP 查询指向新 release | 未授权执行，未发布 |
+| G 发布 | 当前候选验收后按用户明确授权发布 | 主代理：实际指针切换及下一次 MCP 查询指向新 release | 已按用户新授权在 Windows 与本机 Linux 发布同一 release；本机会话四工具读取新版本。B/D/E 其余计划仍未结项 |
 
 聚焦测试、概念验证、真实 GPU 导出、provider 标注、Windows/Linux 平台证据和最终发布分别报告，不用其中一种替代其他证明。失败只修复对应范围并复验，不为追求全绿重跑外部请求或降低既有安全边界。
 
@@ -211,7 +211,7 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 
 复验入口：`renderLightingProbeJar` 生成独立测试 JAR；与 exporter 一起放进隔离 Fabric 游戏目录，指定 `-Dblockpedia.probe.output=<全新输出目录>` 后加载测试世界，探针运行完会退出客户端。必须检查 `PASS.txt` 存在且无 `FAIL.txt`，再以 `BLOCKPEDIA_RENDER_EVIDENCE=<该目录> python -m pytest -q tests/test_render_lighting.py` 检查真实 PNG。没有 GPU 产物时该项明确跳过，不算通过。原图、纹理及本地量测保留在忽略目录 `build/lighting-v2-evidence/{before,final}/`，不提交游戏资产；远端临时计划任务已移除。
 
-后续 Windows 完整单次导出、特征重算、新标注与候选构建已完成，见第 9 节。仍未完成完整导出的双次确定性验证、Linux/Vulkan GPU 验证、形状分类或详情压缩。旧 release 保留原始产物；新候选尚未发布。
+后续 Windows 完整单次导出、特征重算、新标注与候选构建已完成，见第 9 节；正式发布见第 10 节。仍未完成完整导出的双次确定性验证、Linux/Vulkan GPU 验证、形状分类或详情压缩。旧 release 保留原始产物。
 
 ## 9. Windows 新导出与候选 release 验证（2026-09-27）
 
@@ -227,4 +227,16 @@ Buffer.byteLength(JSON.stringify(structuredContent), 'utf8') < 8000
 
 Windows Node 24.14.0 的真实 stdio 客户端使用候选副本和隔离验证指针执行四工具检查，Schema 与图片返回通过。`infested` 查询的 7 个虫蚀候选分数均为 0.25；`command` 查询的 3 个命令方块分数均为 0.25；完整中英文官方名称免罚并优先，精确 ID 可定位；沙子与沙砾仍为原始分数且没有名单提示。详情返回本地虫蚀风险提示。验证同时修正测试夹具对 Windows `node.EXE` 标准 SQLite 实验性警告的识别；Linux MCP 测试 7 项通过，生产检索逻辑未因此更改。
 
-本地证据在忽略目录 `build/windows-release-evidence/`，包含构建回执、质量报告、release 元信息与 MCP 验证报告。正式 `current.json` 在构建及验证前后 SHA-256 均为 `633f6f309f4a95f6673a8e5e0379b1c3a98a36b4140e5ca09ea0348ac19f298d`。发布未获授权，本次只构建候选并验证，不切换正式指针。
+本地证据在忽略目录 `build/windows-release-evidence/`，包含构建回执、质量报告、release 元信息与 MCP 验证报告。构建及隔离验证阶段未切换正式指针，其前后 SHA-256 均为 `633f6f309f4a95f6673a8e5e0379b1c3a98a36b4140e5ca09ea0348ac19f298d`；后续发布授权和指针变更见下节。
+
+## 10. 正式发布与本机同步（2026-09-27）
+
+用户明确要求“发布正式release并上传到本机”。正式版本为 `rel_ec8397fe58cb4faba5fa15b1de406ca0`，沿用第 9 节验收的同一不可变产物。Windows 通过 `POST /api/releases/publish` 发布，本机 Linux 通过相同 `ActivationService.publish` 在 Studio 写锁下发布；两端均校验原 current token，写入正式发布审计并将 26.2 设为默认版本。两端结果均为 `published`，无 warning 或未完成审计。
+
+Windows release 目录见第 9 节；本机目录为 `/home/ubuntu/.local/share/blockpedia/releases/26.2/rel_ec8397fe58cb4faba5fa15b1de406ca0`。仅同步 release 产物，未复制 Windows 凭据或工作区。传输包 18,127,503 字节，两端 SHA-256 一致：`e60548c645305bc33d2e8446d04ebe04d5c30322063966876c778da1361b4c94`。本机先校验身份及质量报告，再原子安装目录；旧 release 仍保留。
+
+Windows 发布于 `2026-09-27T13:39:47Z`，current token 为 `sha256:7f72b9f1cc5a0b395bbd89b1c91ef228d0eba1df03033c5f4dd469039a79af58`；本机发布于 `2026-09-27T13:40:26Z`，current token 为 `sha256:85f7d57c3c055f8eaad83cb5c86faa8f9a74aab389c45665f2f9a74a27b253aa`。两端均指向相同 release 和 manifest `sha256:e96c53126ee0431b33ba8e2178d6f63efb3041522d4173bb06bafb35e1abc762`。
+
+本机会话最初仍缓存旧查询代码；定位该只读 MCP 进程并通过 App Server 的 MCP 配置重载恢复连接后，当前真实工具调用已验证：`index_info` 指向新 release，质量门通过，1,196 blocks／1,172 visual variants／24 audited skips；7 个虫蚀及 3 个命令方块泛用分数均为 0.25，完整中文官方名称查询为 1；详情含风险提示，搜索、详情、比较均返回图片。四工具均读取正式本机指针，未使用隔离验证指针。
+
+发布回执、传输准备结果与本机真实 MCP 结果保存在忽略目录 `build/windows-release-evidence/publication/`。本次正式发布不表示 B、D 形状分类及 E 其余规划已完成。
