@@ -423,12 +423,13 @@ def test_workspace_search_e1_ranks_before_limit_and_keeps_exact_names(tmp_path: 
                 connection.execute("INSERT INTO fts_documents(block_id,content) VALUES (?,?)", (block_id, content.casefold()))
         search = WorkspaceQueryService(database)
         wall = search.query("wall")
-        assert {hit.block_id for hit in wall[:4]} == {"minecraft:bedrock", "minecraft:gravel", "minecraft:sand", "minecraft:stone"}
+        deprioritized = {"minecraft:barrier", "minecraft:bedrock", "minecraft:infested_stone"}
+        assert {hit.block_id for hit in wall[:3]} == {"minecraft:gravel", "minecraft:sand", "minecraft:stone"}
         assert search.query("wall", limit=1) == wall[:1]
-        assert {hit.block_id for hit in wall[4:]} == {"minecraft:barrier", "minecraft:infested_stone"}
+        assert {hit.block_id for hit in wall[3:]} == deprioritized
         for hit in wall:
             expected = _score("wall", normalize_text(hit.content))
-            assert hit.score == round(expected * (0.25 if hit.block_id in {"minecraft:barrier", "minecraft:infested_stone"} else 1), 8)
+            assert hit.score == round(expected * (0.25 if hit.block_id in deprioritized else 1), 8)
         for term in ("MINECRAFT:INFESTED_STONE", "  iNfEsTeD   StOnE  ", "虫蚀石头"):
             hit = search.query(term, limit=1)[0]
             assert hit.block_id == "minecraft:infested_stone"
@@ -438,6 +439,7 @@ def test_workspace_search_e1_ranks_before_limit_and_keeps_exact_names(tmp_path: 
             hit = search.query(term)[0]
             assert hit.block_id == "minecraft:infested_stone" and 0 < hit.score < 0.25
         assert search.query("Barrier", limit=1)[0].block_id == "minecraft:barrier"
+        assert search.query("基岩", limit=1)[0].block_id == "minecraft:bedrock"
         assert search.query("MINECRAFT:BARRIER", limit=1)[0].block_id == "minecraft:barrier"
         assert search.query("minecraft:light") == []
 

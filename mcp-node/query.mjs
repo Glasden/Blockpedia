@@ -15,22 +15,69 @@ const VERSION_RE = /^[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})?$/;
 const IMAGE_MIME_TYPE = 'image/webp';
 
 export const WEIGHTS = { shape: 0.35, color: 0.3, use: 0.15, name_synonym: 0.1, style: 0.05, behavior: 0.05 };
-const TECHNICAL_BLOCKS = new Set([
+const blockSet = (...ids) => new Set(ids.map((id) => `minecraft:${id}`));
+const TECHNICAL_BLOCKS = blockSet(
   'air', 'cave_air', 'void_air', 'barrier', 'light', 'structure_void',
   'structure_block', 'jigsaw', 'test_block', 'test_instance_block',
   'command_block', 'chain_command_block', 'repeating_command_block',
   'moving_piston', 'piston_head', 'nether_portal', 'end_portal', 'end_gateway',
-].map((id) => `minecraft:${id}`));
-const INFESTED_BLOCKS = new Set([
+);
+const INFESTED_BLOCKS = blockSet(
   'infested_stone', 'infested_cobblestone', 'infested_stone_bricks',
   'infested_mossy_stone_bricks', 'infested_cracked_stone_bricks',
   'infested_chiseled_stone_bricks', 'infested_deepslate',
-].map((id) => `minecraft:${id}`));
-const policyWarning = (blockId) => INFESTED_BLOCKS.has(blockId)
-  ? '本地推荐规则：虫蚀方块有蠹虫风险，泛用途检索降权；此提示不是运行时事实或人工审核。'
-  : TECHNICAL_BLOCKS.has(blockId)
-    ? '本地推荐规则：技术或特殊用途方块在泛用途检索中降权；此提示不是运行时事实或人工审核。'
-    : null;
+);
+// Structure-generated blocks that survival play cannot normally obtain or
+// place; builders asking for a look-alike material want the ordinary block.
+const SPECIAL_BLOCKS = blockSet(
+  'bedrock', 'spawner', 'trial_spawner', 'vault', 'end_portal_frame',
+  'reinforced_deepslate', 'petrified_oak_slab', 'suspicious_sand', 'suspicious_gravel',
+);
+const POLICY_RULES = [
+  [INFESTED_BLOCKS, '本地推荐规则：虫蚀方块有蠹虫风险，泛用途检索降权；此提示不是运行时事实或人工审核。'],
+  [TECHNICAL_BLOCKS, '本地推荐规则：技术或特殊用途方块在泛用途检索中降权；此提示不是运行时事实或人工审核。'],
+  [SPECIAL_BLOCKS, '本地推荐规则：结构生成或生存难以获取的特殊方块，泛用途检索降权；此提示不是运行时事实或人工审核。'],
+];
+const policyWarning = (blockId) => POLICY_RULES.find(([ids]) => ids.has(blockId))?.[1] ?? null;
+// Behaviour warnings come from the release's registry tags first; the ID lists
+// only cover behaviour that no vanilla tag expresses (minecraft:ice also holds
+// packed and blue ice, which never melt).  Both sources are named in the text.
+const BEHAVIOR_RULES = [
+  {
+    text: '受重力影响，下方悬空时会下落。',
+    tags: ['sand', 'concrete_powders', 'anvil'],
+    ids: blockSet('gravel', 'suspicious_gravel', 'dragon_egg'),
+  },
+  {
+    text: '会融化：附近方块光照过强时化成水或消失，霜冰还会自行融化。',
+    tags: [],
+    ids: blockSet('ice', 'frosted_ice', 'snow'),
+  },
+  {
+    text: '火会蔓延并烧毁周围可燃方块，也会自行熄灭。',
+    tags: ['fire'],
+    ids: blockSet(),
+  },
+  {
+    text: '会生长或扩展（自然生长或骨粉催熟），外形和占位会改变。',
+    tags: ['saplings', 'crops', 'cave_vines', 'bee_growables'],
+    ids: blockSet(
+      'bamboo', 'bamboo_sapling', 'sugar_cane', 'cactus', 'kelp', 'vine', 'twisting_vines',
+      'weeping_vines', 'chorus_flower', 'nether_wart', 'cocoa', 'budding_amethyst',
+      'red_mushroom', 'brown_mushroom',
+    ),
+  },
+].map((rule) => ({ ...rule, tags: rule.tags.map((tag) => `minecraft:${tag}`) }));
+const behaviorWarnings = (blockId, tags = []) => BEHAVIOR_RULES.flatMap((rule) => {
+  const tag = rule.tags.find((value) => tags.includes(value));
+  if (tag !== undefined) return [`行为提示（依据 tag ${tag}）：${rule.text}`];
+  return rule.ids.has(blockId) ? [`行为提示（本地方块规则）：${rule.text}`] : [];
+});
+const blockWarnings = (variant, blockId, block) => [...new Set([
+  ...(variant?.warnings ?? []),
+  ...(policyWarning(blockId) ? [policyWarning(blockId)] : []),
+  ...behaviorWarnings(blockId, block?.tags),
+])];
 const exactBlockQuery = (query, blockId, names) =>
   query === normalized(blockId)
   || [names.zh_cn, names.en_us].some((name) => name && query === normalized(name));
@@ -807,7 +854,7 @@ export class MCPQueryService {
         reason: exact || !policy
           ? MCPQueryService._reason(breakdown, semanticValue)
           : `${MCPQueryService._reason(breakdown, semanticValue).slice(0, 450)} Local recommendation rule: general-use score ×0.25.`,
-        warnings: [...(variant.warnings ?? []), ...(policy ? [policy] : [])],
+        warnings: blockWarnings(variant, String(variant.block_id), block),
       };
     });
   }
@@ -872,8 +919,7 @@ export class MCPQueryService {
     let stateCount = 0;
     for (const value of Object.values(snapshot.states)) if (value.block_id === blockId) stateCount += 1;
     const geometry = variant?.machine_facts?.geometry ?? {};
-    const policy = policyWarning(blockId);
-    const warnings = [...new Set([...(variant?.warnings ?? []), ...(policy ? [policy] : [])])];
+    const warnings = blockWarnings(variant, blockId, block);
     const annotation = variant === undefined ? undefined : snapshot.annotations[String(variant.variant_id)];
     const output = {
       block_id: blockId,

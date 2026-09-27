@@ -32,7 +32,16 @@
 
 用户追加确认：7 种蠹虫方块也按同一系数降权：`infested_stone`、`infested_cobblestone`、`infested_stone_bricks`、`infested_mossy_stone_bricks`、`infested_cracked_stone_bricks`、`infested_chiseled_stone_bricks`、`infested_deepslate`。这些 ID 已在本次 26.2 真实导出中核对，均有视觉候选；它们属于虫蚀风险类别，不冒充技术方块分类。
 
-不默认纳入 `bedrock`、`spawner`、`trial_spawner`、`vault`：它们仍可能被明确用于建筑或装饰。重力、融化、蔓延、支撑等其他行为风险继续作为事实与使用条件保留，本次不新增统一降权，也不把缺失事实推断为安全。旧稿“bedrock 必须不出现”的验收不采用。
+E2（用户于 2026-09-27 改定）：结构生成或生存难以获取的特殊方块也按 `0.25` 降权：`bedrock`、`spawner`、`trial_spawner`、`vault`、`end_portal_frame`、`reinforced_deepslate`、`petrified_oak_slab`、`suspicious_sand`、`suspicious_gravel`，均已在当前 release 核对有视觉候选。此前“不默认纳入 bedrock 等”的决定作废；精确 ID／官方全名查询仍可找到。
+
+E2 行为提示（仅 Node MCP 搜索与详情，不降权、不改 qualification；用户决定本轮不做 Studio 分级）：优先依据 release 方块记录中的 registry tags 推导，tag 无法表达的行为才用固定 ID 补充，提示文字注明来源（`依据 tag …` 或 `本地方块规则`）。当前 export 没有 Java 方块类别事实，`requires_support` 全为 unknown，故“需要支撑”本轮不提示；铜氧化等其他自变化也未覆盖。
+
+| 行为 | tags | 补充 ID（无对应 tag） |
+|---|---|---|
+| 受重力下落 | `sand`、`concrete_powders`、`anvil` | `gravel`、`suspicious_gravel`、`dragon_egg` |
+| 会融化 | —（`ice` tag 含不融化的浮冰和蓝冰，不用） | `ice`、`frosted_ice`、`snow` |
+| 火蔓延／熄灭 | `fire` | — |
+| 生长或扩展 | `saplings`、`crops`、`cave_vines`、`bee_growables` | `bamboo`、`bamboo_sapling`、`sugar_cane`、`cactus`、`kelp`、`vine`、`twisting_vines`、`weeping_vines`、`chorus_flower`、`nether_wart`、`cocoa`、`budding_amethyst`、`red_mushroom`、`brown_mushroom` |
 
 E1 实现：Node MCP 与 Studio 工作区查询均接入以下固定规则；不改动导出机器事实、AI 标注或 qualification。
 
@@ -40,7 +49,7 @@ E1 实现：Node MCP 与 Studio 工作区查询均接入以下固定规则；不
 - 泛用途检索中，对名单内已召回候选的相关性分乘 `0.25`，在 Top-N 截断前执行；候选的 `score`（B 阶段起合并原先恒等的 `local_score`／`final_score`）返回降权后的分数，理由说明名单降权，原匹配分项保持其匹配含义。
 - 精确完整 block ID 或官方中英文全名查询保留名称优先，不施加这项泛用途惩罚；子串和同义词命中不算精确查询。并列按稳定 `variant_id` 排序。
 - 既有 `excluded` 过滤仍有效；精确查询也不恢复 excluded 或没有预览的搜索候选。不为名单中缺少预览的条目伪造图像。
-- 搜索和详情分别提供固定的技术／特殊用途提示、虫蚀风险提示；提示是本地推荐规则，不冒充新增运行时行为事实、AI 结论或人工 qualification review。`get_block_details` 仍能查询已登记的这些方块。
+- 搜索和详情分别提供固定的技术／特殊用途提示、虫蚀风险提示、结构生成特殊方块提示；提示是本地推荐规则，不冒充新增运行时行为事实、AI 结论或人工 qualification review。`get_block_details` 仍能查询已登记的这些方块。
 - 验收同时覆盖泛用途降权、精确名称可找到、非名单候选分数不被误改、名单内无视觉候选不被新增，以及 FTS/LIKE 两条路径。
 
 验证：Studio 核心 28 项、Web/构建/MCP 集成 46 项通过，涵盖 0.25 系数、Top-N 前排序、精确 ID／官方名称豁免、子串和同义词不豁免、稳定排序、其他风险与非名单方块不误降，以及 excluded／无视觉候选不恢复。实现不新增依赖、规则引擎或配置账本；提交前审核与 Windows 交付结果见会话。
@@ -190,7 +199,7 @@ B 阶段已在 Node MCP 实现，Schema 升为 `mcp-*-output.v2`／`mcp-error.v2
 | 形状分类 | 优先将已有 stairs/slabs/walls/fences 等 registry tags 映射到统一分类；只有缺少事实的类别才补 exporter 最小运行时分类。查询词与实际分类对齐。 |
 | 搜索相关性 | 保留现有 FTS/LIKE 宽召回，改进短语、词覆盖率与字段加权；英文按词边界，名称/同义词高于用途/材料/风格，再高于摘要。补中文颜色与常用用途映射，材料真正参与评分；不新增在线模型。 |
 | `avoid_for` | 只从正向索引文本排除。暂不拆分标注字段或重做受控词表：没有旧兼容要求，也不意味着必须扩大本次 Schema 改造。保留共享语义投影/人工覆盖功能，不把含义混杂的历史字段直接用于负向惩罚。 |
-| 资格与风险 | 技术名单及用户追加的 7 种蠹虫方块按第 2 节降权；已有 conditional 警告保留。其他行为风险与技术名单分开，未知事实明确未知，不声称完成全量风险审核。 |
+| 资格与风险 | 技术名单、7 种蠹虫方块及 E2 特殊方块按第 2 节降权；重力、融化、火、生长提示按 E2 从 tags 推导；已有 conditional 警告保留。其他行为风险与名单分开，未知事实明确未知，不声称完成全量风险审核。 |
 | 建筑查询集 | 约 20 条中英真实需求，覆盖光滑石墙、深木屋顶、百叶/窗框、白色墙面、旧苔墙、木梁、栏杆、窗台线脚、暖光。每条列可接受的前三候选集合及反例；实施时定稿，作为本轮相关性回归门，不锁死唯一名次。 |
 | 比较字段 | P1 后续：优先复用已有颜色、亮度、纹理和语义字段；届时同时处理目前未使用的 `context`/`compare_states`，不在本轮文档中宣称已支持。 |
 | 图上名称、搜索输出精简 | P1 后续：名称标签需实际可读；输出先测量，保留可用的事实追溯方式。 |
@@ -209,7 +218,7 @@ B 阶段已在 Node MCP 实现，Schema 升为 `mcp-*-output.v2`／`mcp-error.v2
 | B 详情与 MCP 图片输出 | summary/states、分页；三种带图工具最终响应采用256卡片/无损WebP，处理过程使用原图 | 实现者：两个摘要尺寸断言、全 release 大小扫描、分页集合一致、Schema/MIME、图片元数据、无损解码、客户端及视觉检查 | 已实现，见第 3.6 节；Windows 端需 `npm ci` 后复验 |
 | C 特征多 worker | 第 4 节配置与进程池；可与 B/D 独立开发 | 实现者：串并行结果一致、生命周期/故障检查、同 run 并行证据及真实计时 | 已实现；默认 1。Windows 本次已用 5 个实际子进程完成 1,172 项特征；Linux 生命周期与计时见第 4.1 节 |
 | D 渲染与形状事实 | D1 颜色修复及完整单次导出已交付；形状分类继续待办 | 实现者：Java 构建、真实 GPU 样本、分类来源检查；主代理核对完整导出验证 | 定向 GPU 与 Windows 完整单次导入校验已完成，见第 8、9 节；形状分类及双次确定性验证未完成 |
-| E 搜索与名单 | 相关性、中文映射、技术及虫蚀降权；名单已获用户批准，最终颜色/形状验收依赖 D | 实现者：约20条查询、FTS/LIKE、精确与泛用途查询对照、稳定排序 | E1 技术及虫蚀降权已实现；广义相关性、中文映射与完整建筑查询集仍未实施 |
+| E 搜索与名单 | 相关性、中文映射、技术及虫蚀降权；名单已获用户批准，最终颜色/形状验收依赖 D | 实现者：约20条查询、FTS/LIKE、精确与泛用途查询对照、稳定排序 | E1 技术及虫蚀降权、E2 特殊方块降权与 MCP 行为提示已实现；广义相关性、中文映射与完整建筑查询集仍未实施 |
 | F 新 release | 整合 B–E，新 workspace 完整处理并构建 | 主代理：构建通过，真实产物 summary 扫描、查询集、四工具 stdio 和状态引用一致；provider 结果独立取证 | 当前已实现版本的 Windows 候选已构建并通过四工具验证，见第 9 节；B、D 形状分类及 E 剩余项未完成，因此不代表全部计划验收完成 |
 | G 发布 | 当前候选验收后按用户明确授权发布 | 主代理：实际指针切换及下一次 MCP 查询指向新 release | 已按用户新授权在 Windows 与本机 Linux 发布同一 release；本机会话四工具读取新版本。B/D/E 其余计划仍未结项 |
 

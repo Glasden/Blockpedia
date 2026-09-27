@@ -139,11 +139,13 @@ def call(send, id: int, name: str, arguments: dict) -> dict:
     return response["result"]
 
 
-def _add_search_block(db: sqlite3.Connection, block_id: str, zh: str, en: str, *, qualification: str = "eligible", warning: str | None = None, visual: bool = True) -> None:
+def _add_search_block(db: sqlite3.Connection, block_id: str, zh: str, en: str, *, qualification: str = "eligible", warning: str | None = None, visual: bool = True, tags: list[str] | None = None) -> None:
     source = "minecraft:stone"
     block = json.loads(db.execute("SELECT record_json FROM blocks WHERE block_id=?", (source,)).fetchone()[0])
     block.update(block_id=block_id, default_state_id=block_id, translation_key="block." + block_id.removeprefix("minecraft:"))
     block["official_names"] = {"zh_cn": zh, "en_us": en}
+    if tags is not None:
+        block["tags"] = tags
     db.execute("INSERT INTO blocks SELECT ?,minecraft_version,?, ?, ?, ?,machine_facts_json,? FROM blocks WHERE block_id=?", (block_id, block["translation_key"], zh, en, block_id, json.dumps(block), source))
     state = json.loads(db.execute("SELECT record_json FROM states WHERE state_id=?", (source,)).fetchone()[0])
     state.update(state_id=block_id, block_id=block_id, variant_ids=[block_id] if visual else [])
@@ -169,8 +171,11 @@ def test_e1_local_ranking_exact_names_and_warnings(tmp_path: Path, force_like: b
         _add_search_block(db, "minecraft:barrier", "屏障", "Barrier", qualification="conditional", warning="existing review warning")
         _add_search_block(db, "minecraft:command_block", "命令方块", "Command Block")
         _add_search_block(db, "minecraft:infested_stone", "虫蚀石头", "Infested Stone")
-        _add_search_block(db, "minecraft:sand", "沙子", "Sand")
-        _add_search_block(db, "minecraft:gravel", "沙砾", "Gravel")
+        _add_search_block(db, "minecraft:sand", "沙子", "Sand", tags=["minecraft:mineable/shovel", "minecraft:sand"])
+        _add_search_block(db, "minecraft:gravel", "沙砾", "Gravel", tags=["minecraft:mineable/shovel"])
+        _add_search_block(db, "minecraft:bedrock", "基岩", "Bedrock")
+        _add_search_block(db, "minecraft:packed_ice", "浮冰", "Packed Ice", tags=["minecraft:ice"])
+        _add_search_block(db, "minecraft:soul_fire", "灵魂火", "Soul Fire", tags=["minecraft:fire"])
         _add_search_block(db, "minecraft:light", "光源方块", "Light", qualification="excluded")
         _add_search_block(db, "minecraft:structure_void", "结构空位", "Structure Void", visual=False)
     with node_session(tmp_path) as send:
@@ -186,6 +191,13 @@ def test_e1_local_ranking_exact_names_and_warnings(tmp_path: Path, force_like: b
         assert search("wall", 1)[0]["block_id"] == "minecraft:glass"
         assert by_id["minecraft:barrier"]["score"] == by_id["minecraft:glass"]["score"] * 0.25
         assert by_id["minecraft:infested_stone"]["score"] == by_id["minecraft:stone"]["score"] * 0.25
+        assert by_id["minecraft:bedrock"]["score"] == by_id["minecraft:stone"]["score"] * 0.25
+        assert "结构生成" in " ".join(by_id["minecraft:bedrock"]["warnings"])
+        assert by_id["minecraft:sand"]["warnings"] == ["行为提示（依据 tag minecraft:sand）：受重力影响，下方悬空时会下落。"]
+        assert by_id["minecraft:gravel"]["warnings"] == ["行为提示（本地方块规则）：受重力影响，下方悬空时会下落。"]
+        assert "minecraft:fire" in " ".join(by_id["minecraft:soul_fire"]["warnings"])
+        assert by_id["minecraft:packed_ice"]["warnings"] == []
+        assert by_id["minecraft:soul_fire"]["score"] == by_id["minecraft:packed_ice"]["score"] == by_id["minecraft:glass"]["score"]
         assert by_id["minecraft:barrier"]["score_breakdown"] == by_id["minecraft:glass"]["score_breakdown"]
         assert by_id["minecraft:sand"]["score"] == by_id["minecraft:gravel"]["score"] == by_id["minecraft:glass"]["score"]
         assert [item["block_id"] for item in wall if item["block_id"] in {"minecraft:barrier", "minecraft:command_block"}] == ["minecraft:barrier", "minecraft:command_block"]
@@ -208,9 +220,10 @@ def test_e1_local_ranking_exact_names_and_warnings(tmp_path: Path, force_like: b
         assert search("MINECRAFT:BARRIER", 1)[0]["block_id"] == "minecraft:barrier"
         assert search("  BARRIER  ", 1)[0]["score"] == 1
         assert search("屏障", 1)[0]["block_id"] == "minecraft:barrier"
+        assert search("基岩", 1)[0]["score"] == 1
         assert search("minecraft:light") == []
         assert search("minecraft:structure_void") == []
-        for block_id, expected in (("minecraft:barrier", "本地推荐规则"), ("minecraft:infested_stone", "蠹虫风险"), ("minecraft:structure_void", "本地推荐规则")):
+        for block_id, expected in (("minecraft:barrier", "本地推荐规则"), ("minecraft:infested_stone", "蠹虫风险"), ("minecraft:structure_void", "本地推荐规则"), ("minecraft:bedrock", "结构生成"), ("minecraft:sand", "受重力影响")):
             details = call(send, 51, "get_block_details", {"block_id": block_id})["structuredContent"]
             Draft202012Validator(load_schema(SCHEMAS["get_block_details"])).validate(details)
             assert expected in " ".join(details["warnings"])

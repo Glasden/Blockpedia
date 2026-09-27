@@ -33,6 +33,8 @@ DEPRIORITIZED_BLOCKS = frozenset("minecraft:" + block_id for block_id in (
     "infested_stone", "infested_cobblestone", "infested_stone_bricks",
     "infested_mossy_stone_bricks", "infested_cracked_stone_bricks",
     "infested_chiseled_stone_bricks", "infested_deepslate",
+    "bedrock", "spawner", "trial_spawner", "vault", "end_portal_frame",
+    "reinforced_deepslate", "petrified_oak_slab", "suspicious_sand", "suspicious_gravel",
 ))
 
 
